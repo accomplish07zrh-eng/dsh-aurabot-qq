@@ -21,7 +21,7 @@ import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, WORKSPACE_DIR } from './chat/hub.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
-import { defaultModel, askModel } from './core/llm.js'
+import { defaultModel, askModel, modelReasoning, clearReasoningCache } from './core/llm.js'
 import { mimeOf } from './chat/inbound.js'
 import { dataDir, ensureDir } from './core/store.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
@@ -140,14 +140,21 @@ export function apply(ctx) {
   const local = createLocal({ getConfig, log: logger })
   const mutes = createMutes()
 
-  /** DSH 里能用的所有模型：[{provider, model, name}] */
+  /**
+   * DSH 里能用的所有模型：[{provider, model, name, reasoning}]。
+   * reasoning 是 {efforts:[...], default} 或 null（null = 这个模型不支持思考强度，
+   * 面板据此把「思考强度」置灰，免得选了之后整轮报错）。
+   */
   async function listModels() {
     const llm = ctx.llm || ctx.get('llm')
     const out = []
     for (const p of llm.listProviders() || []) {
       const provider = typeof p === 'string' ? p : p.provider || p.id || p.name
       try {
-        for (const m of (await llm.listModels(provider)) || []) out.push({ provider, model: m.id || m.model, name: m.name || m.id || m.model })
+        for (const m of (await llm.listModels(provider)) || []) {
+          const model = m.id || m.model
+          out.push({ provider, model, name: m.name || model, reasoning: await modelReasoning(ctx, provider, model) })
+        }
       } catch (error) {}
     }
     if (out.length) modelCache = out
@@ -643,8 +650,9 @@ export function apply(ctx) {
   open('/events', async (req) => bridge.ops.events(query(req)))
 
   // 模型：列出 DSH 里可用的模型，测一下哪个回得快
-  route('/models', async () => {
+  route('/models', async (req) => {
     try {
+      if (new URL(req.url, 'http://x').searchParams.get('refresh') === '1') clearReasoningCache()
       return { ok: true, list: await listModels() }
     } catch (error) {
       return { ok: false, message: error.message, list: [] }

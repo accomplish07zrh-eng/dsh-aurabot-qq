@@ -17,7 +17,7 @@ import { fetchImage, segmentBytes } from '../core/net.js'
 import { toMono16k } from '../voice/wav.js'
 import { mimeOf } from './inbound.js'
 import { redact } from '../core/redact.js'
-import { defaultModel } from '../core/llm.js'
+import { defaultModel, pickReasoningEffort } from '../core/llm.js'
 import { resolveChatModel } from './chat-model.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。老安装沿用 C:\Aurabot\qq-chats；新安装放在用户目录下（不用往 C 盘根目录写）
@@ -192,10 +192,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       agent = await resolveAgent(sid)
     }
     // 模型 / 思考强度和设置不一致就切过去（面板改了模型，下一条消息起生效）
-    const want = modelKey(chat)
+    const target = await resolveTarget(chat)
+    const want = keyOf(target)
     const m = map()
     if (want && m.chats[chat.chatId] && m.chats[chat.chatId].model !== want) {
-      if (applyModel(agent, chat)) {
+      if (applyModel(agent, target)) {
         m.chats[chat.chatId].model = want
         saveMap(m)
         log.info(`${chat.chatId} 的模型切到 ${want}`)
@@ -224,18 +225,25 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     return sel
   }
-  function modelKey(chat) {
+  /**
+   * 想要的思考强度要先按模型能力收敛：没有推理元数据的模型（本地 Ollama、部分手写 provider）
+   * 只要收到 reasoningEffort 就会被 DSH 整轮拒掉（UNSUPPORTED_REASONING_EFFORT），
+   * 等于这个模型直接没法用。不支持就不传这个参数，让 DSH 用模型自己的默认。
+   */
+  async function resolveTarget(chat) {
     const t = targetModel(chat)
-    return t ? `${t.provider}::${t.model}::${t.reasoningEffort || ''}` : ''
+    if (!t) return null
+    const effort = await pickReasoningEffort(dsh, t.provider, t.model, t.reasoningEffort)
+    return { provider: t.provider, model: t.model, ...(effort ? { reasoningEffort: effort } : {}) }
   }
+  const keyOf = (t) => (t ? `${t.provider}::${t.model}::${t.reasoningEffort || ''}` : '')
 
   /** 让聊天会话用面板里选的模型和思考强度；只改这个会话，不改 DSH 的默认模型。 */
-  function applyModel(agent, chat) {
+  function applyModel(agent, target) {
     try {
-      const t = targetModel(chat)
-      if (!t) return false
-      const sel = { provider: t.provider, model: t.model }
-      if (t.reasoningEffort) sel.reasoningEffort = t.reasoningEffort
+      if (!target) return false
+      const sel = { provider: target.provider, model: target.model }
+      if (target.reasoningEffort) sel.reasoningEffort = target.reasoningEffort
       // 活着的会话只认会话控制器内存里的选择：用它的 selectForNextRequest（selectModel 也是调它，
       // 但 selectModel 还会顺手改掉 DSH 的全局默认模型，我们不要）。拿不到就只写持久事件（重启恢复时生效）。
       const agents = controller().agents
