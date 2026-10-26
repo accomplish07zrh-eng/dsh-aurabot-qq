@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { imageSize, mimeOf, stickerSizeOk } from '../chat/inbound.js'
 import { segmentBytes, fetchImage } from '../core/net.js'
-import { askModel } from '../core/llm.js'
+import { askModel, canSeeImages } from '../core/llm.js'
 
 const dir = () => dataDir('stickers')
 const indexFile = () => join(dir(), 'index.json')
@@ -79,6 +79,11 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
 
   async function caption(buf, mime, hint) {
     try {
+      // 模型看不了图就别硬发：会报错，名字也起不出来
+      if ((await canSeeImages(dsh, getConfig())) === false) {
+        log.debug('模型不支持看图，跳过表情起名')
+        return { name: '', tags: [] }
+      }
       const text = await askModel(dsh, {
         cfg: getConfig(),
         system: '你给表情包起名字。只输出一行：不超过 12 个字的中文备注，描述这个表情表达的情绪或内容（例如「委屈巴巴的小猫」「得意地叉腰」）。然后空格，再写 1~3 个标签，从这些里挑：' + DEFAULT_TAGS.join('、') + '。格式：备注 #标签1 #标签2',

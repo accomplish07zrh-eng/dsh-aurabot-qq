@@ -12,6 +12,44 @@ export function defaultModel(dsh, cfg) {
   return null
 }
 
+// ---------- 视觉能力 ----------
+//
+// 模型能不能看图写在 DSH 的模型元数据里（inputModalities，DSH 自己的图片入口也靠它判断）。
+// 三态：true = 明确声明支持；false = 明确声明不支持；null = 宿主没说清楚（按现状照发，别乱降级）。
+// 明确不支持时还硬塞图片块，整轮请求会被模型拒掉 —— 她就一个字都回不了。
+
+const VISION_TTL = 10 * 60_000
+const visionCache = new Map() // `provider::model` → { at, value }
+
+export function clearVisionCache () {
+  visionCache.clear()
+}
+
+/** 这个模型能看图吗。null = 不知道。 */
+export async function modelVision (dsh, provider, model) {
+  const key = `${provider}::${model}`
+  const hit = visionCache.get(key)
+  if (hit && Date.now() - hit.at < VISION_TTL) return hit.value
+  let value = null
+  try {
+    const llm = dsh.llm || dsh.get('llm')
+    if (llm && typeof llm.resolveModelInfo === 'function') {
+      const info = await llm.resolveModelInfo(provider, model)
+      const mods = info && info.inputModalities
+      if (Array.isArray(mods)) value = mods.includes('image')
+    }
+  } catch (error) {}
+  visionCache.set(key, { at: Date.now(), value })
+  return value
+}
+
+/** 当前设置里的模型能看图吗。null = 不知道。 */
+export async function canSeeImages (dsh, cfg) {
+  const t = defaultModel(dsh, cfg)
+  if (!t) return null
+  return modelVision(dsh, t.provider, t.model)
+}
+
 // ---------- 思考强度 ----------
 //
 // 不是所有模型都支持「思考强度」：DSH 里没有推理元数据的模型（本地 Ollama 的那几个、一些手写的

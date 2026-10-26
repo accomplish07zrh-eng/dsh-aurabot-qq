@@ -17,7 +17,7 @@ import { fetchImage, segmentBytes } from '../core/net.js'
 import { toMono16k } from '../voice/wav.js'
 import { mimeOf } from './inbound.js'
 import { redact } from '../core/redact.js'
-import { defaultModel, pickReasoningEffort } from '../core/llm.js'
+import { defaultModel, pickReasoningEffort, canSeeImages } from '../core/llm.js'
 import { resolveChatModel } from './chat-model.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。老安装沿用 C:\Aurabot\qq-chats；新安装放在用户目录下（不用往 C 盘根目录写）
@@ -775,7 +775,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const content = msg.kind === 'group' ? [] : [{ type: 'text', text: `【私聊】${msg.nickname}(${msg.userId})：` + (text || '（没有文字）') }]
     const imgs = await imagesOf(msg)
     if (imgs.length) {
-      for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
+      // 模型明确不支持看图：硬塞图片块会让整轮请求被拒（她就一个字都回不了），改成一行文字提示
+      if ((await canSeeImages(dsh, cfg)) === false) {
+        content.push({ type: 'text', text: `（${msg.nickname} 发了 ${imgs.length} 张图片，你现在的模型看不了图，只能知道有这么回事）` })
+        log.debug(`模型不支持看图：${msg.chatId} 的 ${imgs.length} 张图换成文字提示`)
+      } else {
+        for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
+      }
     }
     logChat(msg.chatId, msg.nickname, text, msg.userId)
     lastChatAt = now
@@ -843,6 +849,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const p = pending.get(msg.chatId)
     if (!p || p.images.length >= 4) return
     try {
+      if ((await canSeeImages(dsh, getConfig())) === false) return
       const imgs = await imagesOf(msg)
       for (let i = 0; i < imgs.length && p.images.length < 4; i++) p.images.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
     } catch (error) {}

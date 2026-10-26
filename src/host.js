@@ -21,7 +21,7 @@ import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, WORKSPACE_DIR } from './chat/hub.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
-import { defaultModel, askModel, modelReasoning, clearReasoningCache } from './core/llm.js'
+import { defaultModel, askModel, modelReasoning, clearReasoningCache, clearVisionCache } from './core/llm.js'
 import { mimeOf } from './chat/inbound.js'
 import { dataDir, ensureDir } from './core/store.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
@@ -390,6 +390,9 @@ export function apply(ctx) {
     let pw = null
     if (newPw && newPw !== before.snowluma.webuiPassword) pw = await snowluma.setPassword(newPw)
     const changedConn = ['httpUrl', 'wsUrl', 'httpToken', 'wsToken', 'dir'].some((k) => before.snowluma[k] !== cfg.snowluma[k])
+    // 换了模型：思考强度和「能不能看图」的探测结果都得重来，不然要等 10 分钟缓存过期
+    const changedModel = before.model.provider !== cfg.model.provider || before.model.model !== cfg.model.model
+    if (changedModel) { clearReasoningCache(); clearVisionCache() }
     if (changedConn || before.botQQ !== cfg.botQQ) wrongAccount = ''
     if (changedConn && onebot.state !== 'stopped') onebot.restart()
     if (!before.enabled && cfg.enabled) setTimeout(safe(watchdog, '看门狗'), 100)
@@ -652,7 +655,7 @@ export function apply(ctx) {
   // 模型：列出 DSH 里可用的模型，测一下哪个回得快
   route('/models', async (req) => {
     try {
-      if (new URL(req.url, 'http://x').searchParams.get('refresh') === '1') clearReasoningCache()
+      if (new URL(req.url, 'http://x').searchParams.get('refresh') === '1') { clearReasoningCache(); clearVisionCache() }
       return { ok: true, list: await listModels() }
     } catch (error) {
       return { ok: false, message: error.message, list: [] }
