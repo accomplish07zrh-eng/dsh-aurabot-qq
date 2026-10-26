@@ -31,6 +31,22 @@ test('canSeeImages 用当前设置里的模型', async () => {
   assert.equal(await canSeeImages(dsh, { model: {} }), null, '没配模型 → 不知道')
 })
 
+test('面板手动声明「支持 / 不支持」会覆盖 DSH 的元数据', async () => {
+  clearVisionCache()
+  const dsh = stub(async () => ({ inputModalities: ['text'] })) // DSH 说不支持
+  // 手动说支持 → 就按支持发（哪怕元数据说不支持）
+  assert.equal(await canSeeImages(dsh, { model: { provider: 'p', model: 'm', vision: 'on' } }), true)
+  // 手动说不支持 → 哪怕元数据说支持，也不发图
+  const dsh2 = stub(async () => ({ inputModalities: ['text', 'image'] }))
+  assert.equal(await canSeeImages(dsh2, { model: { provider: 'p', model: 'm', vision: 'off' } }), false)
+  // auto 仍走元数据
+  clearVisionCache()
+  assert.equal(await canSeeImages(dsh2, { model: { provider: 'p', model: 'm', vision: 'auto' } }), true)
+  // 没配模型时，手动声明依然说话算数
+  assert.equal(await canSeeImages(dsh, { model: { vision: 'on' } }), true)
+  assert.equal(await canSeeImages(dsh, { model: { vision: 'off' } }), false)
+})
+
 // ---- 真跑一遍 hub：模型不支持看图时，图片不能出现在这一轮的内容里 ----
 const dataDir = mkdtempSync(join(tmpdir(), 'aurabot-vision-'))
 process.env.AURABOT_DATA_DIR = dataDir

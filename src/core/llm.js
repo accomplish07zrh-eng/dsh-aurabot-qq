@@ -43,8 +43,11 @@ export async function modelVision (dsh, provider, model) {
   return value
 }
 
-/** 当前设置里的模型能看图吗。null = 不知道。 */
+/** 当前设置里的模型能看图吗。面板上「视觉能力」可以手动声明，覆盖元数据。null = 不知道。 */
 export async function canSeeImages (dsh, cfg) {
+  const v = cfg && cfg.model && cfg.model.vision
+  if (v === 'on') return true
+  if (v === 'off') return false
   const t = defaultModel(dsh, cfg)
   if (!t) return null
   return modelVision(dsh, t.provider, t.model)

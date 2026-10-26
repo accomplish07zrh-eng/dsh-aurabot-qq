@@ -21,7 +21,7 @@ import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, WORKSPACE_DIR } from './chat/hub.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
-import { defaultModel, askModel, modelReasoning, clearReasoningCache, clearVisionCache } from './core/llm.js'
+import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
 import { mimeOf } from './chat/inbound.js'
 import { dataDir, ensureDir } from './core/store.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
@@ -153,7 +153,7 @@ export function apply(ctx) {
       try {
         for (const m of (await llm.listModels(provider)) || []) {
           const model = m.id || m.model
-          out.push({ provider, model, name: m.name || model, reasoning: await modelReasoning(ctx, provider, model) })
+          out.push({ provider, model, name: m.name || model, reasoning: await modelReasoning(ctx, provider, model), vision: await modelVision(ctx, provider, model) })
         }
       } catch (error) {}
     }
