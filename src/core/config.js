@@ -3,6 +3,7 @@
 import { dataDir, readJson, writeJson } from './store.js'
 import { DEFAULT_GROUP_POLICY } from '../chat/group-policy.js'
 import { LEVELS, PROFILE_PERM_KEYS, PROFILE_PERM_LEVELS } from '../chat/access.js'
+import { normalizeChatModels } from '../chat/chat-model.js'
 
 export const DEFAULTS = {
   enabled: false, // 总开关：关着一句都不发
@@ -28,6 +29,8 @@ export const DEFAULTS = {
     wsToken: '',
   },
   model: { provider: '', model: '', reasoningEffort: 'low' }, // 留空 = 跟随 DSH 默认
+  // 按聊天选模型（主人在面板「模型」页设）：私聊 QQ 号 > 群号 > 所有私聊 / 所有群默认 > 上面的全局模型；没写的一级退到下一级
+  chatModels: { privateDefault: { provider: '', model: '', reasoningEffort: '' }, groupDefault: { provider: '', model: '', reasoningEffort: '' }, privates: {}, groups: {} },
   merge: { enabled: true, waitSec: 2.5, maxSec: 8, groupWaitSec: 5, groupMaxSec: 15 }, // 连发合并：对方停顿 waitSec 秒再一起回，最多等 maxSec 秒；群里等得久一点，把一段话攒齐
   imageGen: {
     enabled: false,
@@ -178,6 +181,7 @@ export function normalize(raw) {
   c.setupDone = bool(c.setupDone, false)
   c.ownerLevel = LEVELS.includes(c.ownerLevel) ? c.ownerLevel : 'full'
   c.longTasks = bool(c.longTasks, false)
+  c.chatModels = normalizeChatModels(c.chatModels)
   c.profilePerms = Object.fromEntries(PROFILE_PERM_KEYS.map((k) => [k, PROFILE_PERM_LEVELS.includes(c.profilePerms?.[k]) ? c.profilePerms[k] : 'owner']))
   c.allow = { private: qqList(c.allow.private), groups: qqList(c.allow.groups) }
   const g = c.group
@@ -385,6 +389,9 @@ export function mergeFromPanel(current, incoming) {
   // B 站：只改了其中一个值时，另一个保留；整串粘进来的会在 normalize 里拆开
   if (incoming?.bili && (incoming.bili.sessdata || incoming.bili.biliJct)) next.bili.cookie = ''
   if (incoming?.group?.overrides) next.group.overrides = incoming.group.overrides
+  // 按聊天选模型：两张表整张替换（deepMerge 会让删掉的条目又回来）
+  if (incoming?.chatModels?.privates) next.chatModels.privates = incoming.chatModels.privates
+  if (incoming?.chatModels?.groups) next.chatModels.groups = incoming.chatModels.groups
   if (incoming?.allow) next.allow = { ...current.allow, ...incoming.allow }
   return normalize(next)
 }

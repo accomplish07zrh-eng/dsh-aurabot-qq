@@ -18,6 +18,7 @@ import { toMono16k } from '../voice/wav.js'
 import { mimeOf } from './inbound.js'
 import { redact } from '../core/redact.js'
 import { defaultModel } from '../core/llm.js'
+import { resolveChatModel } from './chat-model.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。老安装沿用 C:\Aurabot\qq-chats；新安装放在用户目录下（不用往 C 盘根目录写）
 const LEGACY_WORKSPACE = 'C:\\Aurabot\\qq-chats'
@@ -40,12 +41,12 @@ const sessionKey = (id) => {
  *   prompt(content, info) → 改交给她的内容（文字 / 图片块）；返回 null 表示这次不交给她
  *   items(items, info) → 改拆好的回复（每条 { kind: text|voice|sticker|poke|image, value, replyTo }）
  *   send(message, info) → 改最终发出去的 OneBot 消息段；返回 null 表示不发
- *   model(selection, chat) → 这个聊天用哪个模型 { provider, model, reasoningEffort }（同步）
+ *   model(selection, chat) → 这个聊天用哪个模型 { provider, model, reasoningEffort }（同步）；selection 已经按主人「按聊天选模型」的设置算过
  *   poke(event) → true 表示戳一戳被模块接管了
  */
 // 模拟测试：这里面发出去的消息只记下来，不真发
 const captureStore = new AsyncLocalStorage()
-export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onCommand, isMuted, moodEffects, localApi, hooks }) {
+export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onCommand, isMuted, moodEffects, localApi, hooks, availableModels }) {
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
   const mood = () => (typeof moodEffects === 'function' ? moodEffects() : null) || { sticker: 1, voice: 1, delay: 1, chatty: 1 }
   const mapFile = () => dataDir('sessions.json')
@@ -205,11 +206,16 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return { agent, sessionId: sid, level }
   }
 
-  /** 这个聊天要用的模型：面板里选的（或 DSH 默认），扩展模块可以按聊天改。 */
+  /** 这个聊天要用的模型：主人按聊天指定的 > 面板里选的全局模型（或 DSH 默认），扩展模块还可以再按聊天改。 */
   function targetModel(chat) {
     const cfg = getConfig()
     const t = defaultModel(dsh, cfg)
     let sel = t ? { provider: t.provider, model: t.model, reasoningEffort: cfg.model.reasoningEffort || '' } : null
+    // 主人按聊天指定的模型（私聊 QQ 号 > 群号 > 所有私聊 / 所有群默认）；没指定或指定的模型已不存在就用上面的
+    try {
+      const r = resolveChatModel(cfg, chat, typeof availableModels === 'function' ? availableModels() : null)
+      if (r) sel = { provider: r.provider, model: r.model, reasoningEffort: r.reasoningEffort || cfg.model.reasoningEffort || '' }
+    } catch (error) {}
     if (hooks?.model && chat) {
       try {
         const r = hooks.model(sel, chat)

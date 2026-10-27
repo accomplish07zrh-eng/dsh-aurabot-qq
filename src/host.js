@@ -150,8 +150,12 @@ export function apply(ctx) {
         for (const m of (await llm.listModels(provider)) || []) out.push({ provider, model: m.id || m.model, name: m.name || m.id || m.model })
       } catch (error) {}
     }
+    if (out.length) modelCache = out
     return out
   }
+  // 最近一次查到的模型列表：按聊天选的模型已经不在 DSH 里了，就退回下一级（同步取，hub 每条消息都要用）
+  let modelCache = null
+  setTimeout(() => { listModels().catch(() => {}) }, 3000).unref?.()
 
   // 聊天中枢找表情库、语音时，找的是当时在跑的那个模块；模块关着就当没有
   const use = (id) => mods?.use(id) || null
@@ -193,6 +197,7 @@ export function apply(ctx) {
     },
     isMuted: (chatId) => mutes.muted(chatId),
     moodEffects: () => use('mood')?.effects?.() ?? null,
+    availableModels: () => modelCache,
     hooks: {
       message: (msg) => mods.claim('message', msg),
       reply: (text, info) => mods.filter('reply', text, info),
