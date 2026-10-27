@@ -322,7 +322,7 @@ test('解析：合并转发记下 id，回复里的 <poke> 变成戳一戳', asy
 test('#6 改资料权限：默认仅主人私聊；所有人含群；关了都不行；执行时再查', async () => {
   const { normalize } = await import('../src/core/config.js')
   const d = normalize({ ownerQQ: '1' })
-  assert.deepEqual(d.profilePerms, { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner' })
+  assert.deepEqual(d.profilePerms, { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', qqFriendRequest: 'owner', whitelist: 'owner' })
   assert.equal(normalize({ profilePerms: { qqAvatar: 'boss', biliSign: 'all' } }).profilePerms.qqAvatar, 'owner', '乱填的回到默认')
   const ownerPm = { kind: 'private', userId: '1' }
   const otherPm = { kind: 'private', userId: '2' }

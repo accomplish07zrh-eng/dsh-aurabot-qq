@@ -13,5 +13,6 @@ import speakup from './speakup/index.js'
 import bili from './bili/index.js'
 import song from './song/index.js'
 import profile from './profile/index.js'
+import contacts from './contacts/index.js'
 
-export const BUILTINS = [stickers, voice, mood, memory, qqTools, groupAdmin, imagegen, diary, qzoneSocial, speakup, bili, song, profile]
+export const BUILTINS = [stickers, voice, mood, memory, qqTools, groupAdmin, imagegen, diary, qzoneSocial, speakup, bili, song, profile, contacts]

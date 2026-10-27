@@ -43,9 +43,9 @@ export function isOwner(cfg, userId) {
   return String(userId || '') !== '' && String(userId) === String(cfg.ownerQQ || '')
 }
 
-/** 改资料类操作（改昵称 / 签名 / 头像、改 B 站签名）的三档权限。 */
+/** 改资料类操作（改昵称 / 签名 / 头像、改 B 站签名），以及处理好友申请、改白名单的三档权限。 */
 export const PROFILE_PERM_LEVELS = ['off', 'owner', 'all']
-export const PROFILE_PERM_KEYS = ['qqNickname', 'qqSignature', 'qqAvatar', 'biliSign', 'biliAvatar']
+export const PROFILE_PERM_KEYS = ['qqNickname', 'qqSignature', 'qqAvatar', 'biliSign', 'biliAvatar', 'qqFriendRequest', 'whitelist']
 
 /** 这一档在这个会话里要不要挂工具。owner = 只在主人私聊里挂；all = 哪都挂；off = 不挂。 */
 export function profileToolVisible(cfg, key, chat) {

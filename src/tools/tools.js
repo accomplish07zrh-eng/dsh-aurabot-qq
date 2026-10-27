@@ -25,3 +25,4 @@ export function defineTool({ name, description, properties = {}, required = [], 
 
 export const str = (description) => ({ type: 'string', description })
 export const int = (description) => ({ type: 'integer', description })
+export const bool = (description) => ({ type: 'boolean', description })
