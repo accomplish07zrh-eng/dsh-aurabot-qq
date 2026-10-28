@@ -32,6 +32,13 @@ window.__ModuleLoader__.load({
     const getPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj)
     const pct = (v) => Math.round((Number(v) || 0) * 100)
     const cx = (...a) => a.filter(Boolean).join(' ')
+    // 音调存的是 '+20Hz' 这种字符串，滑条要数字；合法范围 ±80Hz（再往上 edge-tts 服务端会夹）
+    const pitchNum = (s) => {
+      const m = /^([+-]?\d+)Hz$/i.exec(String(s || ''))
+      return m ? Math.max(-80, Math.min(80, Number(m[1]))) : 0
+    }
+    const pitchText = (n) => (n < 0 ? '-' : '+') + Math.abs(n) + 'Hz'
+    const pitchLabel = (n) => (n === 0 ? '正常（+0Hz）' : (n > 0 ? '+' : '') + n + ' Hz')
     const timeAgo = (t) => {
       if (!t) return '—'
       const s = Math.round((Date.now() - t) / 1000)
@@ -1000,6 +1007,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               { value: 'zh-CN-liaoning-XiaobeiNeural', label: '晓北', desc: '东北女声', group: '方言' }, { value: 'zh-CN-shaanxi-XiaoniNeural', label: '晓妮', desc: '陕西女声', group: '方言' },
               { value: 'zh-TW-HsiaoChenNeural', label: '曉臻', desc: '台湾女声', group: '方言' }], { width: 220 })),
             h(Row, { key: 'r', label: '语速' }, f.select('voice.rate', [{ value: '-20%', label: '慢一点' }, { value: '-10%', label: '稍慢' }, { value: '+0%', label: '正常' }, { value: '+10%', label: '稍快' }, { value: '+20%', label: '快一点' }], { width: 140 })),
+            h(Row, { key: 'p', label: '音调', hint: '拖动调整，±80Hz 为上限（实测再往上 edge-tts 会静默夹住）；只对 edge-tts 有效' },
+              h(Range, {
+                min: -80,
+                max: 80,
+                step: 10,
+                value: pitchNum(draft.voice.pitch),
+                fmt: pitchLabel,
+                onChange: (v) => setDraft(setPath(draft, 'voice.pitch', pitchText(v))),
+              })),
           ] : null,
           draft.voice.engine === 'cosyvoice' ? [
             h(Row, { key: 'u', label: '服务地址', hint: 'CosyVoice 自带 runtime/python/fastapi/server.py' }, f.text('voice.cosyvoice.url', { size: 'wide', placeholder: 'http://127.0.0.1:50000' })),
