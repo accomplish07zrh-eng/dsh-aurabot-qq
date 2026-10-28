@@ -142,13 +142,14 @@ test('#7 主人私聊：她这一轮还在跑时再发消息，直接 steer 进�
 })
 
 test('系统会话超时会及时返回，晚到的回复不会发到 QQ', async () => {
-  const n = mock.sent('send_private_msg').length
   const start = Date.now()
   await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '慢慢想', { timeoutMs: 50 }), /等太久/)
   assert.ok(Date.now() - start < 1500)
   await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '下一轮', { timeoutMs: 50 }), /上一轮还没结束/)
   await sleep(2800)
-  assert.equal(mock.sent('send_private_msg').length, n)
+  // 只看这次迟到的回复有没有被发出去：别的用例可能刚好在这 2.8 秒里发消息，用全局条数判断会误报
+  const late = mock.sent('send_private_msg').filter((c) => JSON.stringify(c.params || {}).includes('想好了'))
+  assert.deepEqual(late, [], '超时后晚到的回复不能发到 QQ')
 })
 
 test('不在白名单的私聊：不理', async () => {
@@ -438,14 +439,15 @@ test('听语音：收到语音先转文字再交给她', async () => {
 })
 
 test('空间日记：手动写一篇（仅自己可见），不往聊天里发，然后删除', async () => {
-  const before = mock.calls.filter((c) => c.action.startsWith('send_') && c.action.endsWith('_msg') && c.action !== 'send_qzone_msg').length
-  const r = (await fake.call('/diary/run', { visibility: 'self' })).json()
+  // 只统计这次调用里产生的投递：前一条消息的回复可能还在异步发送，
+  // 用「调用前后全局条数」判断会偶发失败（就是那个 27 !== 26 的老毛病）
+  const { result, sent } = await api.hub.capture(() => fake.call('/diary/run', { visibility: 'self' }))
+  const r = result.json()
   assert.equal(r.ok, true, r.message)
   const q = mock.sent('send_qzone_msg')[0]
   assert.equal(q.params.ugc_right, 64)
   assert.match(q.params.content, /白米饭/)
-  const after = mock.calls.filter((c) => c.action.startsWith('send_') && c.action.endsWith('_msg') && c.action !== 'send_qzone_msg').length
-  assert.equal(after, before, '日记那一轮没转发到聊天里')
+  assert.deepEqual(sent, [], '日记那一轮没转发到聊天里')
   const d = (await fake.call('/qzone/delete', { tid: r.tid })).json()
   assert.equal(d.ok, true)
   assert.equal(mock.qzone.size, 0)

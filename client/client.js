@@ -1972,15 +1972,61 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function ImageGen({ draft, setDraft }) {
       const f = useField(draft, setDraft)
       const c = draft.imageGen
+      const custom = c.custom || {}
+      const isCustom = c.provider === 'custom'
+      const isPost = custom.method === 'POST'
+      const params = Array.isArray(custom.params) ? custom.params : []
+      const setParams = (next) => setDraft(setPath(draft, 'imageGen.custom.params', next))
+      const setP = (i, k, v) => setParams(params.map((p, j) => (j === i ? { ...p, [k]: v } : p)))
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '让她画图', right: f.sw('imageGen.enabled'), desc: '接上一个生图服务后，聊天里让她「画一张……」，她会画好直接发出来。支持兼容 OpenAI 生图接口（/v1/images/generations）的服务：硅基流动、各家大模型平台，或本地 ComfyUI / SD WebUI 的 OpenAI 兼容代理。想直接用本地的 SD WebUI / ComfyUI API？去「本地接口」页接「生图」，这里可以不填。' },
-          h(Row, { label: '服务地址', hint: '一般以 /v1 结尾' }, f.text('imageGen.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
-          h(Row, { label: 'API Key', hint: '只存在本机，不会显示出来' }, f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
-          h(Row, { label: '模型' }, f.text('imageGen.model', { size: 'wide', placeholder: '例如 Kwai-Kolors/Kolors' })),
-          h(Row, { label: '图片尺寸' }, f.select('imageGen.size', [{ value: '1024x1024', label: '1024 × 1024', desc: '方图' }, { value: '768x1024', label: '768 × 1024', desc: '竖图' }, { value: '1024x768', label: '1024 × 768', desc: '横图' }, { value: '512x512', label: '512 × 512', desc: '小图，更快' }], { width: 200 })),
+        h(Card, { title: '让她画图', right: f.sw('imageGen.enabled'), desc: '接上一个生图服务后，聊天里让她「画一张……」，她会画好直接发出来。两种接法：OpenAI 兼容接口（/v1/images/generations，硅基流动、各家大模型平台、ComfyUI / SD WebUI 的兼容代理），或者自己填一个按 URL 调用的接口。想用本机的 SD WebUI / ComfyUI？去「本地接口」页接「生图」，这里可以不填。' },
+          h(Row, { label: '接口格式', hint: '第二个适合 pollinations 这类「GET 一个地址就出图」的服务' },
+            h(Seg, {
+              value: isCustom ? 'custom' : 'openai',
+              onChange: (v) => setDraft(setPath(draft, 'imageGen.provider', v)),
+              options: [{ value: 'openai', label: 'OpenAI 格式' }, { value: 'custom', label: '自定义接口' }],
+            })),
+          isCustom ? h('div', null,
+            h(Row, { label: '请求方式', hint: 'GET 把参数都拼在地址上；POST 放进请求体' },
+              h(Seg, {
+                value: isPost ? 'POST' : 'GET',
+                onChange: (v) => setDraft(setPath(draft, 'imageGen.custom.method', v)),
+                options: [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }],
+              })),
+            h(Row, { label: '接口地址', hint: '可以用 {prompt} {model} {size} {width} {height}' },
+              f.text('imageGen.custom.url', { size: 'wide', placeholder: 'https://image.pollinations.ai/prompt/{prompt}' })),
+            h(Row, { label: 'API Key', hint: '会以 Authorization: Bearer 发出；不需要就留空' },
+              f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+            h('div', { className: 'ab-label', style: { marginTop: 12 } },
+              h('b', null, isPost ? '请求体参数' : 'URL 参数'),
+              h('small', null, '参数名和值都自己填；值里可以用 {prompt}')),
+            params.length
+              ? params.map((p, i) => h('div', { key: i, className: 'ab-flex', style: { gap: 6, marginBottom: 6 } },
+                h('input', { className: 'ab-input', style: { width: 170 }, value: p.key || '', placeholder: '参数名，如 model', onChange: (e) => setP(i, 'key', e.target.value) }),
+                h('input', { className: 'ab-input', style: { flex: 1 }, value: p.value || '', placeholder: '值，可以用 {prompt}', onChange: (e) => setP(i, 'value', e.target.value) }),
+                h(Btn, { small: true, onClick: () => setParams(params.filter((_, j) => j !== i)) }, '删')))
+              : h('div', { className: 'ab-muted ab-small', style: { marginBottom: 6 } }, '还没有参数 —— 比如 model=flux-anime、width=1080、height=1920、nologo=true'),
+            h('div', { className: 'ab-flex', style: { marginBottom: 10 } },
+              h(Btn, { small: true, onClick: () => setParams([...params, { key: '', value: '' }]) }, '＋ 加一个参数')),
+            isPost ? h(Row, { label: '请求体格式' },
+              h(Seg, {
+                value: custom.bodyType === 'form' ? 'form' : 'json',
+                onChange: (v) => setDraft(setPath(draft, 'imageGen.custom.bodyType', v)),
+                options: [{ value: 'json', label: 'JSON' }, { value: 'form', label: '表单' }],
+              })) : null,
+            h(Row, { label: '取值路径', hint: '接口直接回图片就留空；回 JSON 时填地址字段' },
+              f.text('imageGen.custom.responsePath', { size: 'wide', placeholder: '如 data.0.url（留空自动找）' })),
+          ) : h('div', null,
+            h(Row, { label: '服务地址', hint: '一般以 /v1 结尾' }, f.text('imageGen.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
+            h(Row, { label: 'API Key', hint: '只存在本机，不会显示出来' }, f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+            h(Row, { label: '模型' }, f.text('imageGen.model', { size: 'wide', placeholder: '例如 Kwai-Kolors/Kolors' })),
+          ),
+          h(Row, { label: '图片尺寸', hint: isCustom ? '接口地址 / 参数里可以用 {size} 或 {width}/{height}' : '' },
+            f.select('imageGen.size', [{ value: '1024x1024', label: '1024 × 1024', desc: '方图' }, { value: '768x1024', label: '768 × 1024', desc: '竖图' }, { value: '1024x768', label: '1024 × 768', desc: '横图' }, { value: '512x512', label: '512 × 512', desc: '小图，更快' }], { width: 200 })),
           h(Row, { label: '固定风格', hint: '每次画都会加在描述前面' }, f.text('imageGen.stylePrompt', { size: 'wide', placeholder: '例如：日系二次元，柔和光线，蓝白配色' })),
           h(Row, { label: '只给主人画', hint: '关掉后群友也能让她画（会花你的额度）' }, f.sw('imageGen.ownerOnly')),
-          !c.enabled ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '还没开启。填好地址和模型、打开右上角开关并保存后，她就会多一个「画图」能力。') : null,
+          isCustom ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '例子：地址填 https://image.pollinations.ai/prompt/{prompt}，再加 model=flux-anime、width=1080、height=1920、nologo=true 四个参数，GET 就会请求 …/prompt/<提示词>?model=flux-anime&width=1080&…') : null,
+          !c.enabled ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '还没开启。填好接口信息、打开右上角开关并保存后，她就会多一个「画图」能力。') : null,
         ),
       )
     }

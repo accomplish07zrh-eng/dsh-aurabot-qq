@@ -39,13 +39,15 @@ export const DEFAULTS = {
   merge: { enabled: true, waitSec: 2.5, maxSec: 8, groupWaitSec: 5, groupMaxSec: 15 }, // 连发合并：对方停顿 waitSec 秒再一起回，最多等 maxSec 秒；群里等得久一点，把一段话攒齐
   imageGen: {
     enabled: false,
-    provider: 'openai', // openai = 兼容 OpenAI /v1/images/generations 的服务（硅基流动、通义、本地 ComfyUI 代理……）
+    provider: 'openai', // openai = 兼容 OpenAI /v1/images/generations 的服务；custom = 自己填接口（GET/POST + 参数）
     baseUrl: '',
     apiKey: '',
     model: '',
     size: '1024x1024',
     stylePrompt: '', // 每次生图自动加在前面的风格描述
     ownerOnly: true, // 只有主人能让她画
+    // 自定义接法：url 里可以用 {prompt} {model} {size} {width} {height}；params 是参数名/值（值里也能用这些占位符）
+    custom: { method: 'GET', url: '', bodyType: 'json', responsePath: '', params: [] },
   },
   persona: { current: 'dafeiyu' },
   group: { ...DEFAULT_GROUP_POLICY, overrides: {} },
@@ -321,6 +323,18 @@ export function normalize(raw) {
   c.imageGen.enabled = bool(c.imageGen.enabled, false)
   c.imageGen.ownerOnly = bool(c.imageGen.ownerOnly, true)
   if (!/^\d{3,4}x\d{3,4}$/.test(String(c.imageGen.size))) c.imageGen.size = '1024x1024'
+  // provider：custom = 自己填接口（GET/POST + 自定义参数），其它按 OpenAI 兼容
+  c.imageGen.provider = c.imageGen.provider === 'custom' ? 'custom' : 'openai'
+  if (!c.imageGen.custom || typeof c.imageGen.custom !== 'object') c.imageGen.custom = { ...DEFAULTS.imageGen.custom }
+  const igc = c.imageGen.custom
+  igc.method = String(igc.method || 'GET').toUpperCase() === 'POST' ? 'POST' : 'GET'
+  igc.bodyType = igc.bodyType === 'form' ? 'form' : 'json'
+  igc.url = String(igc.url || '').trim().slice(0, 2000)
+  igc.responsePath = String(igc.responsePath || '').trim().slice(0, 200)
+  igc.params = (Array.isArray(igc.params) ? igc.params : [])
+    .map((p) => ({ key: String((p && p.key) || '').trim().slice(0, 60), value: String(p && p.value != null ? p.value : '').slice(0, 500) }))
+    .filter((p) => p.key)
+    .slice(0, 30)
   c.song.enabled = bool(c.song.enabled, false)
   c.song.ownerOnly = bool(c.song.ownerOnly, true)
   c.song.pitch = num(c.song.pitch, 0, -24, 24)
