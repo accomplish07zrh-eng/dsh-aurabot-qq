@@ -1,0 +1,187 @@
+<!doctype html>
+<!-- Aurabot 桌宠渲染页（模板/生成物）：透明无边框、气泡、拖拽 + 甩抛（physics.js）、webm 动画池。 -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: "Microsoft YaHei", sans-serif; user-select: none; }
+  /* 舞台：动画 / 静态形象都在这里，整块可拖拽（拖拽不用 -webkit-app-region，那样会吞掉指针事件，
+     JS 拖拽才能采到轨迹算甩抛初速，见 physics.js）。 */
+  #stage {
+    position: absolute; left: 20px; bottom: 16px; width: 240px; height: 160px;
+    cursor: grab; touch-action: none;
+  }
+  #stage.dragging { cursor: grabbing; }
+  /* 静态形象（没有任何动画素材时的兜底） */
+  #pet {
+    position: absolute; right: 24px; bottom: 8px; width: 96px; height: 96px;
+    border-radius: 50%; background: rgba(60, 170, 220, .85);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 46px; transition: transform .2s;
+    transform-origin: 50% 100%;
+  }
+  #pet.mood-very-happy { transform: scale(1.12) rotate(-6deg); }
+  #pet.mood-happy { transform: scale(1.05); }
+  #pet.mood-neutral { transform: none; }
+  #pet.mood-low { transform: scale(.94); filter: saturate(.7); }
+  #pet.mood-sad { transform: scale(.88) rotate(4deg); filter: saturate(.4) brightness(.9); }
+  /* webm 动画层（P1）：素材就绪时盖住静态形象 */
+  #anim { position: absolute; left: 0; bottom: 0; width: 240px; display: none; pointer-events: none; }
+  #anim.squashing { transform-origin: 50% 100%; }
+  #bubble {
+    position: absolute; left: 8px; top: 0; max-width: 240px;
+    background: rgba(255, 255, 255, .96); border: 1px solid #bcd9ea; border-radius: 12px;
+    padding: 10px 12px; font-size: 13px; line-height: 1.6; color: #234;
+    box-shadow: 0 4px 14px rgba(30, 80, 120, .25); display: none; cursor: default;
+  }
+  #bubble .tag { display: inline-block; font-size: 10px; color: #2a86c6; margin-bottom: 4px; }
+  #bubble.show { display: block; }
+</style>
+</head>
+<body>
+  <div id="bubble"><div class="tag">主动来找你</div><div id="bubbleText"></div></div>
+  <div id="stage">
+    <div id="pet" class="mood-neutral">🐳</div>
+    <video id="anim" autoplay muted playsinline></video>
+  </div>
+<script src="physics.js"></script>
+<script>
+  const bubble = document.getElementById('bubble')
+  const bubbleText = document.getElementById('bubbleText')
+  const pet = document.getElementById('pet')
+  const stage = document.getElementById('stage')
+  const video = document.getElementById('anim')
+  const P = window.PetPhysics
+
+  // ---------- 形象包（P1/P4）：动画池 + 权重 + 物理参数；缺素材回静态形象 ----------
+  let packAnims = {}   // 动画名 → 带 token 的素材地址（主进程给）
+  let pools = { idle: [], speak: [], click: [] }
+  let weights = {}
+  let physicsParams = null
+  window.__setPack = (p) => {
+    packAnims = p && p.anims ? p.anims : {}
+    pools = (p && p.pools) || { idle: [], speak: [], click: [] }
+    weights = (p && p.weights) || {}
+    physicsParams = (p && p.physics) || null
+    if (!hasAnims()) stopVideo()
+    scheduleIdle()
+  }
+  const hasAnims = () => Object.keys(packAnims).length > 0
+
+  // ---------- 动画播放（权重随机，播完回 idle；出错/缺素材回静态形象，不报错） ----------
+  let currentAnim = ''
+  function pickFrom(poolName) {
+    const pool = (pools[poolName] || []).filter((n) => packAnims[n])
+    if (!pool.length) return ''
+    const w = pool.map((n) => Math.max(0, Number(weights[poolName]) || 1))
+    const total = w.reduce((a, b) => a + b, 0)
+    if (!(total > 0)) return pool[Math.floor(Math.random() * pool.length)]
+    let r = Math.random() * total
+    for (let i = 0; i < pool.length; i++) { r -= w[i]; if (r <= 0) return pool[i] }
+    return pool[pool.length - 1]
+  }
+  function stopVideo() {
+    video.pause(); video.removeAttribute('src'); video.style.display = 'none'
+    pet.style.display = 'flex'
+    currentAnim = ''
+  }
+  function playAnim(name, onEnd) {
+    const url = packAnims[name]
+    if (!url) return false // 没素材：回落静态形象（验收：animations.json 缺失不报错）
+    currentAnim = name
+    pet.style.display = 'none'
+    video.classList.remove('squashing')
+    video.style.display = 'block'
+    video.onended = () => { const f = onEnd; onEnd = null; f ? f() : playIdle() }
+    video.onerror = () => { delete packAnims[name]; stopVideo(); scheduleIdle() }
+    video.src = url
+    video.play().catch(() => { stopVideo() })
+    return true
+  }
+  function playIdle() {
+    const name = pickFrom('idle')
+    if (!name) return stopVideo()
+    playAnim(name, () => playIdle()) // idle 池首尾相接
+  }
+  let idleTimer = null
+  function scheduleIdle() {
+    clearTimeout(idleTimer)
+    if (!hasAnims()) return
+    idleTimer = setTimeout(() => { if (!currentAnim) playIdle(); scheduleIdle() }, 6000 + Math.random() * 8000)
+  }
+
+  // ---------- 气泡（主动事件）：优先播点播 anim（P2），否则从 speak 池抽一段 ----------
+  let bubbleTimer = null
+  window.__bubble = (t, mood, secs, anim, playbackId) => {
+    bubbleText.textContent = t
+    bubble.classList.add('show')
+    pet.className = 'mood-' + (mood || 'neutral')
+    clearTimeout(bubbleTimer)
+    bubbleTimer = setTimeout(hide, Math.max(6500, (secs || 8) * 1000))
+    // 起播动画：点播优先，其次 speak 池；点播 + 有回执号时把它带回给主进程（POST /playback）
+    const name = (anim && packAnims[anim]) ? anim : pickFrom('speak')
+    const played = (anim && playbackId && packAnims[anim]) ? { anim, playbackId } : null
+    if (name) playAnim(name)
+    return played
+  }
+  function hide() { bubble.classList.remove('show') }
+  window.__hideBubble = hide
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide() })
+
+  // ---------- 落地挤压（P3）：主进程甩抛落地回调 __squash(冲击速度) ----------
+  window.__squash = (impactSpeed) => {
+    const squash = P ? P.landingSquash(impactSpeed) : 0.55
+    const duration = 220
+    const target = video.style.display !== 'none' ? video : pet
+    target.classList.add('squashing')
+    const t0 = performance.now()
+    const tick = (now) => {
+      const u = Math.min(1, (now - t0) / duration)
+      const scaleY = P ? P.squashScale(u, squash) : 1
+      const scaleX = 2 - scaleY // 体积守恒的横向鼓出
+      target.style.transform = `scale(${scaleX.toFixed(3)}, ${scaleY.toFixed(3)})`
+      if (u < 1) requestAnimationFrame(tick)
+      else { target.style.transform = ''; target.classList.remove('squashing') }
+    }
+    requestAnimationFrame(tick)
+  }
+  window.__onThrowEnd = () => { scheduleIdle() }
+
+  // ---------- 拖拽 + 甩抛（P3）：JS 拖拽采轨迹，松手按初速度交给主进程抛 ----------
+  let dragging = null // { trail:[{t,x,y}], base:{x,y}, start:{px,py} }
+  stage.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    window.petBridge && window.petBridge.stopThrow()
+    window.petBridge && window.petBridge.screenInfo().then((info) => {
+      if (!info) return
+      dragging = { trail: [{ t: Date.now(), x: e.clientX, y: e.clientY }], base: { x: info.x, y: info.y }, start: { px: e.screenX, py: e.screenY } }
+      stage.classList.add('dragging')
+      stage.setPointerCapture(e.pointerId)
+    })
+  })
+  stage.addEventListener('pointermove', (e) => {
+    if (!dragging) return
+    dragging.trail.push({ t: Date.now(), x: e.clientX, y: e.clientY })
+    if (dragging.trail.length > 64) dragging.trail.shift()
+    const dx = e.screenX - dragging.start.px
+    const dy = e.screenY - dragging.start.py
+    window.petBridge && window.petBridge.moveTo(dragging.base.x + dx, dragging.base.y + dy)
+  })
+  const endDrag = (e) => {
+    if (!dragging) return
+    const d = dragging
+    dragging = null
+    stage.classList.remove('dragging')
+    d.trail.push({ t: Date.now(), x: e.clientX, y: e.clientY })
+    if (!P || !window.petBridge) return
+    const params = physicsParams || P.DEFAULT_PHYSICS
+    const trail = P.trimTrail(d.trail, Date.now())
+    const v = P.estimateReleaseVelocity(trail, Date.now(), params)
+    if (v && (Math.abs(v.vx) > 0 || Math.abs(v.vy) > 0)) window.petBridge.throwWith(v.vx, v.vy) // 甩出去：主进程积分抛物线+反弹
+    // 否则温柔放下，什么都不做
+  }
+  stage.addEventListener('pointerup', endDrag)
+  stage.addEventListener('pointercancel', () => { dragging = null; stage.classList.remove('dragging') })
+</script>
+</body>
+</html>

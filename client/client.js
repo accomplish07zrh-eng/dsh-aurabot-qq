@@ -454,6 +454,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'imagegen', label: '生图', flag: 'imageGen.enabled' },
       { id: 'diary', label: '空间日记', flag: 'diary.enabled' },
       { id: 'speakup', label: '主动搭话', flag: 'speakUp.enabled' },
+      { id: 'pet', label: '桌宠' },
       { id: 'mood', label: '心情与记忆', flag: 'mood.enabled' },
       { id: 'song', label: '翻唱', flag: 'song.enabled' },
       { id: 'bili', label: 'B站', flag: 'bili.enabled' },
@@ -463,7 +464,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
-    const TAB_MODS = { voice: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup'], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'] }
+    const TAB_MODS = { voice: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup'], pet: ['pet'], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'] }
     const modOn = (st, id) => (st.modules || []).some((m) => m.id === id && m.running)
     function ModOff({ name }) {
       return h(Card, { title: name }, h('div', { className: 'ab-muted ab-small' }, '「' + name + '」模块关着，这部分用不了。要用的话去「扩展」页把它打开。'))
@@ -1246,11 +1247,132 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: 'ab-spacer' }),
             h(Btn, { small: true, onClick: async () => { const r = await post('/speakup/fire'); toast(r.message) } }, '现在就让她来找我')),
         ),
+        h(PurposeStatus, { st, toast }),
+      )
+    }
+
+    // 「目的机制」状态卡：链路计数、驱力条、目标假设、载体与节奏。数据走 /panel/purpose/* 代理（模块缺新接口时降级提示）。
+    const DRIVE_LABELS = { play: '玩', learn: '学', install: '装', connect: '连', care: '陪', share: '分', identity: '我', create: '创', consume: '收' }
+    const GOAL_OWNER_LABELS = { self: '自己', owner: '主人', member: '群友', media: '媒体' }
+    const PACING_PRESETS = [{ value: 'conservative', label: '保守' }, { value: 'default', label: '默认' }, { value: 'active', label: '活跃' }]
+    function PurposeStatus({ toast }) {
+      const [d, setD] = useState(null)
+      const [awakeFrom, setAwakeFrom] = useState('')
+      const [awakeTo, setAwakeTo] = useState('')
+      const [maxN, setMaxN] = useState('')
+      const [busy, setBusy] = useState('')
+      const [preview, setPreview] = useState(null)
+      const load = () => get('/panel/purpose/status').then((r) => {
+        if (!r.ok) return
+        setD(r)
+        setAwakeFrom((v) => (v === '' && r.purpose.awakeFrom != null) ? String(r.purpose.awakeFrom) : v)
+        setAwakeTo((v) => (v === '' && r.purpose.awakeTo != null) ? String(r.purpose.awakeTo) : v)
+        setMaxN((n) => (n === '' && r.purpose.dailyMax != null) ? String(r.purpose.dailyMax) : n)
+      })
+      useEffect(() => { load(); const t = setInterval(load, 10000); return () => { clearInterval(t) } }, [])
+      const p = d && d.purpose
+      if (!p) return null
+      const s = p.status || {}
+      const drives = Object.entries(s.drives || {}).sort((a, b) => (b[1] || 0) - (a[1] || 0)).slice(0, 5)
+      const goals = (s.goals || []).slice(0, 3)
+      const chain = [
+        ['素材', s.materialCount], ['观察', s.observationCount], ['目标假设', s.goalCount], ['候选', s.candidateCount], ['今日', (s.countToday ?? p.count) + '/' + (s.dailyMax ?? p.dailyMax ?? '?')],
+      ]
+      const save = (patch) => async () => {
+        setBusy(patch.__k || 'save'); delete patch.__k
+        try { const r = await post('/panel/purpose/config', patch); if (!r.ok) toast(r.message || '没成功', 'err'); else { setD(r); toast('保存好了', 'ok') } }
+        catch (e) { toast(e.message) } finally { setBusy('') }
+      }
+      return h(Card, { title: '目的机制', desc: '她会自己从聊天和记忆里找「想跟你说的事」：攒素材 → 记观察 → 立目标假设 → 挑一个候选，到点了才来找你。' },
+        !p.available ? h('div', { className: 'ab-note' }, 'purpose 引擎还没启用（当前仍是旧的主动搭话逻辑）。等模块升级后，这里会显示完整链路状态。') : null,
+        h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' } },
+          chain.map(([l, n]) => h('div', { key: l, className: 'ab-card', style: { flex: '1 1 90px', padding: '8px 10px' } },
+            h('div', { className: 'ab-muted ab-small' }, l), h('b', null, n == null ? '—' : n)))),
+        drives.length ? h(Row, { label: '驱力', hint: '越高越想说这类话题' },
+          h('div', { style: { flex: 1, minWidth: 180 } }, drives.map(([k, v]) => h('div', { key: k, className: 'ab-flex', style: { marginBottom: 3 } },
+            h('span', { className: 'ab-small', style: { width: 28 } }, DRIVE_LABELS[k] || k),
+            h('div', { className: 'ab-mood', style: { flex: 1 } }, h('i', { style: { width: Math.round((v || 0) * 100) + '%' } })),
+            h('span', { className: 'ab-muted ab-small', style: { width: 34, textAlign: 'right' } }, Math.round((v || 0) * 100) + '%'))))) : null,
+        goals.length ? h('div', { className: 'ab-list', style: { margin: '8px 0' } }, goals.map((g, i) => h('div', { key: g.id || i, className: 'ab-li' },
+          h('div', { className: 'meta' }, (g.ownerLabel || GOAL_OWNER_LABELS[g.owner] || g.owner || '?') + ' · 置信 ' + Math.round((g.confidence || 0) * 100) + '% · 风险 ' + Math.round((g.risk || 0) * 100) + '%' + (g.status ? ' · ' + g.status : '')),
+          h('div', { className: 'body' }, g.intent || g.object || '（没写意图）')))) : null,
+        s.nextFireText || s.lastOutcome ? h(Row, { label: '下次 / 上轮', hint: '上轮结果：' + (s.lastOutcome || '—') + (s.lastPurpose ? '（' + s.lastPurpose + '）' : '') }, h('span', { className: 'ab-muted ab-small' }, s.nextFireText || '待排')) : null,
+        h(Row, { label: '投递载体', hint: 'pet = 走桌宠气泡（桌宠离线时可按下面开关回落 QQ）' },
+          h(Select, { value: p.carrier, options: [{ value: 'qq', label: 'QQ 私聊' }, { value: 'pet', label: '桌宠' }], onChange: (v) => save({ carrier: v, __k: 'carrier' })() })),
+        h(Row, { label: '桌宠离线时回落 QQ' }, h(Switch, { on: p.petFallbackToQQ, onChange: save({ petFallbackToQQ: !p.petFallbackToQQ, __k: 'fb' }) })),
+        h(Row, { label: '节奏预设' },
+          h(Select, { value: p.pacing, options: PACING_PRESETS, onChange: (v) => save({ pacing: v, __k: 'pacing' })() })),
+        h(Row, { label: '安静时段', hint: '由「醒着时间」推算：' + p.quietStart + ' 到 ' + p.quietEnd + ' 不打扰。醒着时间在上方「主动搭话」卡里改' },
+          h('span', { className: 'ab-muted ab-small' }, '醒着 ' + p.awakeFrom + ' 点到 ' + p.awakeTo + ' 点（安静 ' + p.quietStart + '~' + p.quietEnd + '）')),
+        h(Row, { label: '每日上限' },
+          h('input', { className: 'ab-input sm', type: 'number', min: 0, value: maxN, onChange: (e) => setMaxN(e.target.value) }),
+          h('span', { className: 'ab-muted' }, '次/天'),
+          h(Btn, { small: true, disabled: busy === 'save', onClick: () => {
+            const patch = { __k: 'save' }
+            const af = Number(awakeFrom); const at = Number(awakeTo)
+            if (Number.isFinite(af) && Number.isFinite(at) && af >= 0 && at <= 24) { patch.awakeFrom = af; patch.awakeTo = at }
+            if (maxN !== '' && Number.isFinite(Number(maxN))) patch.maxPerDay = Number(maxN)
+            save(patch)()
+          } }, '应用')),
+        h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+          h(Btn, { small: true, disabled: !p.available, onClick: async () => { setBusy('preview'); setPreview(null); try { const r = await post('/panel/purpose/preview'); setPreview(r); if (!r.ok) toast(r.message || '没成功', 'err') } catch (e) { toast(e.message) } finally { setBusy('') } } }, busy === 'preview' ? '预览中…' : '预览这一轮（零副作用）'),
+          h(Btn, { small: true, kind: 'primary', disabled: !p.available, onClick: async () => { setBusy('run'); try { const r = await post('/panel/purpose/run'); toast(r.ok ? '发出去了，去 QQ 看看' : (r.message || '没成功'), r.ok ? 'ok' : 'err') } catch (e) { toast(e.message) } finally { setBusy('') } } }, busy === 'run' ? '在试…' : '立即试一次')),
+        preview && preview.ok && preview.result ? h('div', { className: 'ab-note', style: { marginTop: 8 } },
+          (() => {
+            const r = preview.result
+            const head = r.selected && r.selected.text ? '这轮会想说：「' + r.selected.text + '」' : '这轮没选出目的（素材还不够，或都试过了）'
+            const cand = (r.candidates || []).slice(0, 3).map((c) => '· ' + (c.text || c.action || c.need) + '（置信 ' + Math.round((c.confidence || 0) * 100) + '%）').join('\n')
+            return h('div', { style: { whiteSpace: 'pre-wrap' } },
+              head,
+              cand ? '\n候选：\n' + cand : '',
+              r.stats ? '\n素材 ' + (r.stats.selected ?? r.stats.total ?? '?') + ' 条，驱力 top：' + Object.entries(r.drives || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => DRIVE_LABELS[k] || k).join('、') : '')
+          })()) : null,
+      )
+    }
+
+    // 「桌宠」面板卡：状态、装客户端、专注模式、心跳、表情预览。数据走 /panel/pet/* 代理，模块没装好时给引导。
+    const PET_MOODS = [{ key: 'idle', label: '😐 平常' }, { key: 'happy', label: '😄 开心' }, { key: 'shy', label: '😳 害羞' }, { key: 'sad', label: '😢 委屈' }, { key: 'angry', label: '😠 生气' }, { key: 'sleepy', label: '😴 困了' }, { key: 'think', label: '🤔 想事' }, { key: 'love', label: '🥰 喜欢你' }]
+    function PetPanel({ toast }) {
+      const [pet, setPet] = useState(null)
+      const [purpose, setPurpose] = useState(null)
+      const [loaded, setLoaded] = useState(false)
+      const [busy, setBusy] = useState('')
+      const load = async () => {
+        const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
+        if (pr.ok) setPet(pr.pet)
+        if (pu.ok) setPurpose(pu.purpose)
+        setLoaded(true)
+      }
+      useEffect(() => { load(); const t = setInterval(load, 8000); return () => { clearInterval(t) } }, [])
+      const online = Boolean(pet && (pet.online ?? pet.presence?.online))
+      const installed = Boolean(pet && (pet.installed ?? true))
+      const state = !pet ? '未安装' : online ? '在线' : '离线'
+      const dotCls = !pet ? '' : online ? 'ok' : 'err'
+      const carrier = purpose?.carrier || 'qq'
+      const focus = Boolean(pet && (pet.focus?.enabled ?? pet.focusEnabled))
+      const heart = pet && (pet.lastSeenAt || pet.heartbeatAt || pet.presence?.lastSeenAt)
+      const moods = Array.isArray(pet?.moods) && pet.moods.length ? pet.moods : PET_MOODS
+      const moodLabel = (m) => typeof m === 'string' ? (PET_MOODS.find((x) => x.key === m) || { label: m }).label : (m.label || m.key)
+      return h(Card, { title: '桌宠', desc: '把「大肥鱼」请到桌面上：一个小小的她待在屏幕角落，主动搭话走气泡；你也可以点她聊天。' },
+        h('div', { className: 'ab-flex', style: { marginBottom: 8 } },
+          h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', dotCls) }), state),
+          h('span', { className: 'ab-muted ab-small' }, heart ? '上次心跳 ' + timeAgo(heart) : loaded ? '还没有心跳记录' : '加载中…')),
+        h(Row, { label: '投递载体联动', hint: '在「主动搭话」页的目的机制卡里切换；现在是「' + (carrier === 'pet' ? '桌宠' : 'QQ 私聊') + '」' },
+          h('span', { className: 'ab-muted ab-small' }, carrier === 'pet'
+            ? (online ? '主动搭话正走桌宠气泡' : purpose?.petFallbackToQQ === false ? '桌宠离线，且已关闭回落：现在不会主动搭话' : '桌宠离线，主动搭话会回落到 QQ')
+            : '主动搭话走 QQ 私聊，桌宠只显示气泡不发')),
+        h(Row, { label: '专注模式', hint: '开着时她不弹气泡、也不主动搭话（学习/开会不被打扰）' },
+          h(Switch, { on: focus, onChange: async (v) => { setBusy('focus'); try { const r = await post('/panel/pet/focus', { enabled: v }); if (!r.ok) toast(r.message || '没成功', 'err'); else toast(v ? '专注模式开了' : '专注模式关了', 'ok') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })),
+        h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+          h(Btn, { small: true, disabled: busy === 'dl', onClick: async () => { setBusy('dl'); try { const r = await post('/panel/pet/download'); if (!r.ok) toast(r.message || '没成功', 'err'); else toast('客户端已放到数据目录，按桌宠模块说明启动即可', 'ok') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } }, busy === 'dl' ? '下载中…' : '下载 / 生成客户端'),
+          h('span', { className: 'ab-muted ab-small' }, '放到数据目录 modules-data/pet/app，随插件自动发现')),
+        h(Row, { label: '表情预览', hint: '气泡与心情事件会用到这些表情' },
+          h('div', { style: { flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 } },
+            moods.map((m, i) => h('span', { key: (m.key || m) + i, className: 'ab-pill' }, moodLabel(m))))),
       )
     }
 
     const SOURCE = { tool: '她自己记的', auto: '每日整理', diary: '空间日记', panel: '你加的', event: '她的经历', import: '导入的' }
-
     function Mood({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [mem, setMem] = useState(null)
@@ -2343,10 +2465,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
         overview: Overview, connect: Connect, persona: Persona, access: Access, group: Group, model: Model, voice: Voice,
-        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, mood: Mood, song: Song, bili: Bili, douyin: Douyin, local: LocalApi, modules: Modules, logs: Logs,
+        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, local: LocalApi, modules: Modules, logs: Logs,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], local: ['local'] }
+      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], local: ['local'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }
