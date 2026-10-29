@@ -79,19 +79,49 @@ test('syncHistory：完整读到列表时，把空间里没有的记录判为已
   assert.equal(byTid.gone.deletedSource, 'space-list')
 })
 
-test('syncHistory：列表读不全时只给提示，不改任何记录', async () => {
-  seed([entry('keep'), entry('maybe')])
-  // total 说 250 条，但实际只给了 100 + 10 条就没了 → 不能判定缺失
+test('syncHistory：按 30 一页翻到完整（46 = 30+16），不假设网关按请求页大小给', async () => {
+  seed([entry('keep'), entry('gone')])
   const onebot = mockOnebot([
-    { total: 250, msglist: Array.from({ length: 100 }, (_, i) => ({ tid: 'a' + i })) },
-    { total: 250, msglist: Array.from({ length: 10 }, (_, i) => ({ tid: 'b' + i })) },
+    { total: 46, msglist: Array.from({ length: 30 }, (_, i) => ({ tid: 'a' + i })) },
+    { total: 46, msglist: Array.from({ length: 16 }, (_, i) => ({ tid: 'b' + i })) },
   ])
   const qzone = qzoneWith(onebot)
 
   const result = await qzone.syncHistory()
 
   assert.equal(result.ok, true)
+  assert.equal(result.warning, undefined, '翻到总数后不应再报未完整读取')
+  assert.deepEqual(onebot.calls.map((c) => [c.params.pos, c.params.num]), [[0, 30], [30, 30]], '请求页大小 30、按实际返回条数推进')
+  const saved = readJson(dataDir('diary.json'), () => ({}))
+  const byTid = Object.fromEntries(saved.history.map((d) => [d.tid, d]))
+  assert.ok(byTid.gone.deletedAt, '完整读取后，空间里没有的记录判为已删除')
+})
+
+test('syncHistory：网关把页截得更短（每页只有 10 条）也能翻全', async () => {
+  seed([entry('keep')])
+  const pages = [10, 10, 10, 6].map((n, p) => ({ total: 36, msglist: Array.from({ length: n }, (_, i) => ({ tid: 'p' + p + '-' + i })) }))
+  const onebot = mockOnebot(pages)
+  const qzone = qzoneWith(onebot)
+
+  const result = await qzone.syncHistory()
+
+  assert.equal(result.ok, true)
+  assert.equal(result.warning, undefined)
+  assert.equal(onebot.calls.length, 4, '按实际返回条数推进 pos，不会因为页短就提前停')
+})
+
+test('syncHistory：网关反复返回同一页（没有新 id）时停止，只提示、不改记录', async () => {
+  seed([entry('keep'), entry('maybe')])
+  // 网关忽略 pos、永远返回同样的 30 条（total 说 250）→ 不能判定缺失
+  const same = { total: 250, msglist: Array.from({ length: 30 }, (_, i) => ({ tid: 'a' + i })) }
+  const onebot = mockOnebot(Array.from({ length: 10 }, () => same))
+  const qzone = qzoneWith(onebot)
+
+  const result = await qzone.syncHistory()
+
+  assert.equal(result.ok, true)
   assert.match(result.warning, /未完整读取/)
+  assert.equal(onebot.calls.length, 2, '第二页没有新 id 就停，不会无限翻')
   const saved = readJson(dataDir('diary.json'), () => ({}))
   assert.equal(saved.history[1].deletedAt, undefined, '读不全时绝不标记删除')
 })
@@ -99,8 +129,8 @@ test('syncHistory：列表读不全时只给提示，不改任何记录', async 
 test('syncHistory：分页期间 total 变化时放弃判定', async () => {
   seed([entry('maybe')])
   const onebot = mockOnebot([
-    { total: 150, msglist: Array.from({ length: 100 }, (_, i) => ({ tid: 'a' + i })) },
-    { total: 160, msglist: Array.from({ length: 100 }, (_, i) => ({ tid: 'b' + i })) },
+    { total: 150, msglist: Array.from({ length: 30 }, (_, i) => ({ tid: 'a' + i })) },
+    { total: 160, msglist: Array.from({ length: 30 }, (_, i) => ({ tid: 'b' + i })) },
   ])
   const qzone = qzoneWith(onebot)
 

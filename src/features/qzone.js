@@ -95,17 +95,26 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage })
         const ids = new Set()
         let total = null
         let complete = false
-        for (let pos = 0; pos < 1000; pos += 100) {
-          const page = await onebot.call('get_qzone_msg_list', { pos, num: 100 }, { timeoutMs: 12000 })
+        let pos = 0
+        // #70：SnowLuma 单页上限约 30，请求 num=100 会被网关截断成 10 条（num=200 直接 0 条），
+        // 再按 100 步进 pos 会错位、读不全。现在按 30 一页、按实际返回条数推进，
+        // 并以「没有新 id / 没有新页」作为停止条件，不假设网关一定按请求页大小给。
+        const PAGE = 30
+        for (let pages = 0; pages < 200; pages++) {
+          const page = await onebot.call('get_qzone_msg_list', { pos, num: PAGE }, { timeoutMs: 12000 })
           if (!Array.isArray(page?.msglist) || !Number.isInteger(page.total) || page.total < 0) throw new Error('空间列表格式不完整')
           if (total !== null && total !== page.total) throw new Error('空间列表正在变化，请稍后刷新')
           total = page.total
+          let added = 0
           for (const item of page.msglist) {
             if (!item?.tid) throw new Error('空间列表缺少说说 ID')
-            ids.add(String(item.tid))
+            const tid = String(item.tid)
+            if (!ids.has(tid)) { ids.add(tid); added++ }
           }
           if (ids.size >= total) { complete = true; break }
-          if (page.msglist.length < 100) break
+          // 空页 / 网关反复返回同一页：没有新内容就停，读不完整也不判删除
+          if (!page.msglist.length || added === 0) break
+          pos += page.msglist.length
         }
         const s = state()
         const checkedAt = Date.now()
