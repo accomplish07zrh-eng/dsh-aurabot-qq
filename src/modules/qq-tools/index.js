@@ -1,4 +1,4 @@
-// 内置模块：基础 QQ 工具。翻聊天记录；主人私聊里还能让她主动给别人发消息。
+// 内置模块：基础 QQ 工具。翻聊天记录；主人私聊里还能让她主动给别人发消息、发文件。
 
 import { defineTool, str, int } from '../../tools/tools.js'
 import { parseMessageEvent } from '../../chat/inbound.js'
@@ -7,7 +7,7 @@ export default {
   id: 'qq-tools',
   name: '基础 QQ 工具',
   version: '1.0.0',
-  description: '翻当前聊天的记录（qq_chat_history）；主人私聊里让她主动给白名单里的人和群发消息（qq_send_message）',
+  description: '翻当前聊天的记录（qq_chat_history）；主人私聊里让她主动给白名单里的人和群发消息（qq_send_message）、把本机文件当文件发出去（qq_send_file）',
   setup(api) {
     const { hub, onebot } = api.core
     api.tool(({ chat, level }) => {
@@ -45,6 +45,18 @@ export default {
           if (!okList.includes(String(id))) return { ok: false, message: '不在白名单里，不能发' }
           const r = await hub.deliver(`${kind}:${id}`, String(text || ''))
           return r?.missedAt?.length ? { ok: true, message: `发出去了，但 ${r.missedAt.map((n) => '@' + n).join('、')} 没对上群里的人（群名片和昵称里没有），只是文字、对方收不到提醒。要真 @ 得写 <at:QQ号>，不知道就问主人要他的群名片或 QQ 号` } : { ok: true, message: '发出去了' }
+        },
+      }), defineTool({
+        name: 'qq_send_file',
+        description: '把本机上的一个文件（文档、压缩包、音频、视频、安装包……）当文件发到当前 QQ 聊天。主人让她发东西、把做好的文件给主人看时用。file 要写这台电脑上的绝对路径；name 可选，是对方看到的文件名。',
+        properties: { file: str('本机文件的绝对路径'), name: str('对方看到的文件名，可不填') },
+        required: ['file'],
+        execute: async ({ file, name }) => {
+          const cfg = api.config()
+          const r = await hub.sendFile(chat.chatId, String(file || ''), name ? String(name) : '')
+          if (!r) return { ok: false, message: !cfg.enabled ? '总开关关着，没发' : cfg.dryRun ? '试运行，只记了日志，没真发' : '没发出去' }
+          const label = String(name || '').trim() || String(file || '').split(/[\\/]/).pop()
+          return { ok: true, message: `文件发出去了：${label}` }
         },
       }))
       return tools

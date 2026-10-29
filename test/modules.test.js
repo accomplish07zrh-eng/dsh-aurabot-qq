@@ -39,6 +39,24 @@ export default {
     return { shout: (s) => String(s).toUpperCase() }
   },
 }`
+const senderCode = `
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+export default {
+  id: 'sender', name: '发文件测试', version: '1.0.0', api: 1,
+  setup(api) {
+    const file = join(api.dataDir(), 'a.txt')
+    writeFileSync(file, '模块发的文件')
+    api.route('/file', async () => ({ ok: true, result: await api.sendFile('private:10000001', file, 'a.txt') }))
+    api.route('/file-group', async () => ({ ok: true, result: await api.sendFile('group:777', file, 'a.txt') }))
+    api.route('/voice', async () => {
+      const v = join(api.dataDir(), 'v.ogg')
+      writeFileSync(v, 'OggS-test')
+      await api.sendVoiceFile('private:10000001', v, '[测试语音]')
+      return { ok: true }
+    })
+  },
+}`
 const sentTo = (id) => mock.calls.filter((c) => c.action === 'send_private_msg' && String(c.params.user_id) === String(id)).map((c) => c.params.message.map((s) => s.data.text).join(''))
 const priv = (t) => ({ message_type: 'private', sub_type: 'friend', user_id: Number(OWNER), message_id: Math.floor(Math.random() * 1e6), sender: { user_id: Number(OWNER), nickname: 'xiaoming' }, message: [{ type: 'text', data: { text: t } }] })
 const mod = async (id) => (await fake.call('/modules')).json().list.find((m) => m.id === id)
@@ -67,6 +85,7 @@ before(async () => {
     modules: { bili: { enabled: false } },
   }))
   writeMod('echo', echoCode('pong'))
+  writeMod('sender', senderCode)
   // 替换内置的空间日记
   writeMod('diary', `export default { id: 'diary', name: '我的日记', api: 1, setup(api) {
     api.route('/diary/history', async () => ({ ok: true, items: [], next: 0, mine: true }))
@@ -391,4 +410,26 @@ test('#1 重新连接：等结果再回话，连上了就说连上了', async ()
   assert.equal(r.ok, true, r.message)
   assert.equal(r.message, '连上了')
   assert.equal((await fake.call('/state')).json().onebot.problem, '')
+})
+
+test('#52 模块 API：api.sendFile 发本机文件（私聊 / 群）', async () => {
+  const p = (await fake.call('/ext/sender/file')).json()
+  assert.equal(p.ok, true)
+  const call = mock.sent('upload_private_file').at(-1)
+  assert.ok(call, '走 upload_private_file')
+  assert.equal(call.params.user_id, Number(OWNER))
+  assert.equal(call.params.name, 'a.txt')
+  assert.match(call.params.file, /a\.txt$/)
+
+  const g = (await fake.call('/ext/sender/file-group')).json()
+  assert.equal(g.ok, true)
+  const gcall = mock.sent('upload_group_file').at(-1)
+  assert.ok(gcall, '群聊走 upload_group_file')
+  assert.equal(gcall.params.group_id, 777)
+})
+
+test('#52 模块 API：api.sendVoiceFile 把音频文件当语音条发', async () => {
+  await fake.call('/ext/sender/voice')
+  const call = mock.sent('send_private_msg').filter((c) => c.params.message.some((s) => s.type === 'record' && String(s.data.file).startsWith('base64://'))).at(-1)
+  assert.ok(call, '语音条发出去了')
 })

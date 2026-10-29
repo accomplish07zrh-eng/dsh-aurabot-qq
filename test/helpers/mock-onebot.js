@@ -49,11 +49,17 @@ export async function startMockOneBot({ selfId = '20000002', token = 'mock-token
   let msgSeq = 1000
   const faces = new Map()
   const qzone = new Map()
-  const state = { failRecord: false, roles: {}, favorites: [] } // favorites：机器人号 QQ 收藏表情的地址 // roles: 群号 → 机器人在群里的身份（默认群主）
+  const state = { failRecord: false, failUploadPath: false, roles: {}, favorites: [] } // favorites：机器人号 QQ 收藏表情的地址 // roles: 群号 → 机器人在群里的身份（默认群主）
 
   function handle(action, params) {
     switch (action) {
       case 'get_login_info': return { user_id: Number(selfId), nickname: '大肥鱼' }
+      case 'upload_private_file':
+      case 'upload_group_file':
+        if (!params.file) throw new Error('file 不能空')
+        // 模拟「网关在另一台机器上，看不到本机路径」：只认 base64，路径直接报错（用来测自动改走 base64）
+        if (state.failUploadPath && !String(params.file).startsWith('base64://')) throw new Error('file not found: ' + params.file)
+        return { file_id: 'file-' + ++msgSeq, file_name: params.name || '' }
       case 'send_private_msg':
       case 'send_group_msg':
         if (state.failRecord && params.message?.[0]?.type === 'record') throw new Error('record not supported')

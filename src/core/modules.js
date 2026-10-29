@@ -260,6 +260,10 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       isOwner: (userId) => String(userId) === String(getConfig().ownerQQ),
       sendImage: (chatId, src) => core.hub.sendImage(String(chatId), src),
       sendSegments: (chatId, segs, note) => core.hub.sendSegments(String(chatId), segs, note || `[${id}]`),
+      // 发任意文件（文档 / 压缩包 / 音频 / 视频……）：本机绝对路径，或网关能取到的网址 / base64://
+      sendFile: (chatId, file, name) => core.hub.sendFile(String(chatId), file, name),
+      // 把一个音频文件当语音条发出去（不走念文字）
+      sendVoiceFile: (chatId, file, note) => core.hub.sendVoiceFile(String(chatId), file, note || `[${id}] 语音`),
       ask: (opts) => core.ask(typeof opts === 'string' ? { text: opts } : opts),
       think: (prompt, opts = {}) => core.hub.runSystemTurn(`ext-${id}`, opts.title || def.name || id, String(prompt), opts),
       onebot: (action, params, opts) => core.onebot.call(action, params, opts),

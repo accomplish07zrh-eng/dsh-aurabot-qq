@@ -158,6 +158,10 @@ export interface Api {
   /** 这个 QQ 号是不是主人 */
   isOwner(userId: string | number): boolean
   sendImage(chatId: ChatId | string, src: string): Promise<any>
+  /** 发文件：本机绝对路径，或网关能取到的网址 / base64://（网关看不到本机路径时，小文件会自动改用 base64） */
+  sendFile(chatId: ChatId | string, file: string, name?: string): Promise<any>
+  /** 把本机音频文件当语音条发出去 */
+  sendVoiceFile(chatId: ChatId | string, file: string, note?: string): Promise<any>
   sendSegments(chatId: ChatId | string, segments: Segment[], note?: string): Promise<any>
   onebot(action: string, params?: any, opts?: { timeoutMs?: number }): Promise<any>
 

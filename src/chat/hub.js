@@ -5,8 +5,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { basename, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { parseMessageEvent } from './inbound.js'
@@ -424,6 +424,66 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (r || getConfig().dryRun || !getConfig().enabled) bump('voice')
     if (!r && getConfig().enabled && !getConfig().dryRun) throw new Error('网关没接受这条语音')
     return r
+  }
+
+  // 发文件：网关可能和插件不在同一台机器上（Docker / 远程 OneBot），它看不到本机路径，
+  // 所以按本机路径发失败时，小文件会用 base64 再试一次；超时留长一点，别把大文件上传误判成失败。
+  const FILE_TIMEOUT_MS = 120_000
+  const FILE_BASE64_MAX = 30 * 1024 * 1024
+  const isExternalFile = (s) => /^(https?:\/\/|base64:\/\/)/i.test(s)
+  const fileLabel = (name, src) => String(name || '').trim() || basename(src.split(/[?#]/)[0]) || '文件'
+
+  /** 把一个文件当文件发到 QQ（OneBot upload_private_file / upload_group_file）。file 可以是本机绝对路径、网址或 base64://。 */
+  async function sendFile(chatId, file, name) {
+    const cfg = getConfig()
+    const tgt = targetOf(chatId)
+    if (!tgt) return null
+    const src = String(file ?? '').trim()
+    if (!src) throw new Error('要发哪个文件？')
+    const external = isExternalFile(src)
+    let size = 0
+    if (!external) {
+      if (!isAbsolute(src)) throw new Error('要发本机文件得给绝对路径')
+      if (!existsSync(src)) throw new Error(`找不到这个文件：${src}`)
+      const st = statSync(src)
+      if (!st.isFile()) throw new Error(`这不是文件：${src}`)
+      size = st.size
+    }
+    const label = fileLabel(name, src)
+    // 模拟测试：只记下来，不真发
+    const cap = captureStore.getStore()
+    if (cap) {
+      cap.push({ chatId, note: `[文件] ${label}`, message: [{ type: 'file', data: { file: src, name: label } }] })
+      return { message_id: 'sim-' + cap.length }
+    }
+    if (!cfg.enabled) { log.info(`总开关关着，没发 → ${chatId}：[文件] ${label}`); return null }
+    if (cfg.dryRun) { log.info(`试运行（没真发）→ ${chatId}：[文件] ${label}`); return null }
+    const action = tgt.kind === 'group' ? 'upload_group_file' : 'upload_private_file'
+    const params = tgt.kind === 'group'
+      ? { group_id: Number(tgt.id), file: src, name: label }
+      : { user_id: Number(tgt.id), file: src, name: label }
+    try {
+      const r = await onebot.call(action, params, { timeoutMs: FILE_TIMEOUT_MS })
+      bump('sent')
+      log.info(`${chatId}：发文件「${label}」（${external ? '外部地址' : Math.round(size / 1024) + ' KB'}）`)
+      return r
+    } catch (error) {
+      // 网关看不到本机路径（远程 / 容器）时，小文件改用 base64 再试
+      if (external || size > FILE_BASE64_MAX) {
+        bump('errors')
+        throw new Error(`发文件失败：${error.message}`)
+      }
+      try {
+        const b64 = 'base64://' + readFileSync(src).toString('base64')
+        const r = await onebot.call(action, { ...params, file: b64 }, { timeoutMs: FILE_TIMEOUT_MS })
+        bump('sent')
+        log.info(`${chatId}：发文件「${label}」（网关看不到本机路径，改走 base64）`)
+        return r
+      } catch (error2) {
+        bump('errors')
+        throw new Error(`发文件失败：${error2.message || error.message}`)
+      }
+    }
   }
 
   async function sendSticker(chatId, query, replyId, userId) {
@@ -1235,6 +1295,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     sendText,
     sendVoice,
     sendVoiceFile,
+    sendFile,
     sendSticker,
     sendImage,
     sendSegments,

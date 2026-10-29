@@ -116,6 +116,8 @@ export default {
 | `api.sendText(chatId, text)` | 原样发一条文字 |
 | `api.reply(msg, text)` | **回某一条消息**：群里以「引用回复」发出（大家能看出在回谁），私聊直接发 |
 | `api.sendImage(chatId, 图片路径或网址)` | 发图 |
+| `api.sendFile(chatId, 文件路径或网址, 文件名?)` | 把文件（文档、压缩包、音频、视频……）当文件发过去。本机文件给**绝对路径**；网关在别的机器 / 容器里看不到本机路径时，小文件会自动改用 base64 再试一次 |
+| `api.sendVoiceFile(chatId, 音频文件, 日志备注?)` | 把本机一个音频文件当语音条发出去（不走「念文字」） |
 | `api.sendSegments(chatId, [OneBot 消息段], 日志备注)` | 发任意 OneBot 消息段 |
 | `api.onebot(action, params)` | 直接调 OneBot（SnowLuma）的任意 API，比如 `api.onebot('get_group_member_list', { group_id: 123 })` |
 
@@ -308,7 +310,7 @@ return function Panel({ settings, save, toast }) {
 | `voice` | 语音 | `speak(文字) → { file, engine }` |
 | `mood` | 心情 | `state()` `label()` `nudge(变化量, 原因)` `effects()` `contextLine()` |
 | `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `topicScore(文字)` `profiles()` `consolidate()` …… |
-| `qq-tools` | 基础 QQ 工具 | （只有工具：`qq_chat_history`、`qq_send_message`） |
+| `qq-tools` | 基础 QQ 工具 | （只有工具：`qq_chat_history`、`qq_send_message`、`qq_send_file`） |
 | `group-admin` | 群管 | （只有工具：`qq_group_admin`） |
 | `imagegen` | 生图 | `enabled()` `generate(描述) → Buffer` |
 | `diary` | 空间日记 | `writeDiary()` `post(正文, { images, visibility })` `remove(tid)` `history()` `nextTime()` |
