@@ -9,7 +9,7 @@
 // 全程 AURABOT_DATA_DIR 隔离（R14），fake api 模仿 modules.js 的 makeApi 面，不引入新依赖。
 import { test, before, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +28,7 @@ beforeEach(() => {
 
 // ---------- 假模块环境（对齐 src/core/modules.js 的 makeApi 面） ----------
 
-function startModule({ settings = {} } = {}) {
+function startModule({ settings = {}, hooks } = {}) {
   const s = { carrier: 'pet', modality: 'text', petFallbackToQQ: true, pack: 'default', ...settings }
   const routes = new Map()
   const sentToQQ = []
@@ -37,6 +37,7 @@ function startModule({ settings = {} } = {}) {
     id: 'pet',
     dir: MODULE_DIR,
     version: 'test',
+    __petTestHooks: hooks || {}, // 测试注入 fake spawn/kill：不打真网络、不真启动 Electron
     log: { info() {}, warn() {}, debug() {}, error() {} },
     dataDir: (...parts) => {
       const d = join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet')
@@ -61,8 +62,21 @@ function startModule({ settings = {} } = {}) {
     },
   }
   let moodValue = 75 // happy
-  api.use = (id) => (id === 'mood' ? { current: () => moodValue } : id === 'voice' ? { speak: async () => ({ file: voiceFile, engine: 'fake' }) } : null)
-  api.has = (id) => (id === 'mood') || (id === 'voice' && Boolean(voiceFile))
+  let memItems = []
+  let thinkReply = ''
+  let thinkHold = null // 非空时 think 挂着不返回（测"上一句还在想"的并发闸）
+  const thinkCalls = []
+  api.use = (id) => (id === 'mood' ? { current: () => moodValue }
+    : id === 'voice' ? { speak: async () => ({ file: voiceFile, engine: 'fake' }) }
+      : id === 'memory' ? { list: (q) => (q ? memItems.filter((m) => String(m.text).includes(q)) : memItems.slice()) }
+        : null)
+  api.has = (id) => (id === 'mood') || (id === 'voice' && Boolean(voiceFile)) || (id === 'memory' && memItems.length > 0)
+  // 对齐 modules.js 的 api.think：后台系统回合（工作区里能看到这条会话的思考过程）
+  api.think = async (prompt, opts = {}) => {
+    thinkCalls.push({ prompt, title: opts.title, noTools: opts.noTools })
+    if (thinkHold) await thinkHold
+    return thinkReply
+  }
   const exports = mod.setup(api) ?? {}
   const token = readFileSync(api.dataDir('host-token'), 'utf8').trim()
 
@@ -92,7 +106,12 @@ function startModule({ settings = {} } = {}) {
     const r = await call('/events', { query: { since: String(since ?? first.json.cursor), wait: '0', client: 'pet-test' } })
     return { cursor: first.json.cursor, events: r.json.events }
   }
-  return { api, exports, routes, call, connect, token, sentToQQ, setVoiceFile: (f) => { voiceFile = f }, setMood: (v) => { moodValue = v } }
+  return {
+    api, exports, routes, call, connect, token, sentToQQ,
+    setVoiceFile: (f) => { voiceFile = f }, setMood: (v) => { moodValue = v },
+    setMemory: (list) => { memItems = list }, setThinkReply: (t) => { thinkReply = t },
+    holdThink: (p) => { thinkHold = p }, thinkCalls,
+  }
 }
 
 // ---------- P0：发现文件 / 鉴权 / 端口漂移 ----------
@@ -105,15 +124,38 @@ test('P0：host.json + host-token 落盘；端口从 Host 头学习并重写（R
   assert.equal(h1.version, 1)
   assert.equal(h1.api, '/aurabot/api')
   assert.equal(h1.token, env.token, 'host.json 里的 token 与 host-token 一致')
-  assert.ok(h1.baseUrl.endsWith(':0'), '端口未知时写 :0（客户端探测失败会重读）')
+  assert.equal(h1.baseUrl, null, '端口未注入时写 null（客户端 readHost 对 null 等待，不再写假 :0 造成自举死锁）')
+  assert.equal(env.exports.status().portReady, false, 'status 报「端口未就绪」')
 
   const bad = await env.call('/status', { token: 'deadbeef'.repeat(6) })
   assert.equal(bad.status, 401, '坏令牌 401')
   const ok = await env.call('/status')
   assert.equal(ok.json.ok, true)
+  assert.equal(ok.json.portReady, true, '第一次请求（带 Host 头）后端口即就绪（学习路径）')
 
   const h2 = JSON.parse(readFileSync(hostFile, 'utf8'))
   assert.ok(h2.baseUrl.endsWith(':53210'), `第一次请求后从 Host 头学到真实端口：${h2.baseUrl}`)
+})
+
+test('端口注入：setWebPort 写对 host.json；非法端口拒绝；Host 头学习仍能纠正漂移', async () => {
+  const env = startModule()
+  const hostFile = env.api.dataDir('host.json')
+  assert.equal(JSON.parse(readFileSync(hostFile, 'utf8')).baseUrl, null, '注入前：null')
+
+  assert.equal(env.exports.setWebPort(0), false, '非法端口拒绝')
+  assert.equal(env.exports.setWebPort('abc'), false, '非数字拒绝')
+  assert.equal(JSON.parse(readFileSync(hostFile, 'utf8')).baseUrl, null, '非法注入不写文件')
+
+  assert.equal(env.exports.setWebPort(53211), true)
+  const h = JSON.parse(readFileSync(hostFile, 'utf8'))
+  assert.equal(h.baseUrl, 'http://127.0.0.1:53211', '注入后 host.json 立刻就绪')
+  assert.equal(env.exports.status().portReady, true)
+  assert.equal(env.exports.status().port, 53211)
+
+  // 漂移纠正：宿主重启换了端口（注入的是旧的），客户端带新端口来请求 → Host 学习覆盖
+  await env.call('/status', { headers: { host: '127.0.0.1:53299' } })
+  assert.equal(JSON.parse(readFileSync(hostFile, 'utf8')).baseUrl, 'http://127.0.0.1:53299', 'Host 头学习仍能纠正漂移')
+  assert.equal(env.exports.setWebPort(53211), true, '重复注入同端口幂等')
 })
 
 test('P0：心跳在线判定——连过 /events 即在线；没连过的实例是离线', async () => {
@@ -300,11 +342,147 @@ test('download()：把 pet-client 模板生成到数据目录 app/（含 physics
   const env = startModule()
   const r = await env.exports.download()
   assert.equal(r.ok, true)
-  for (const f of ['main.js', 'preload.js', 'index.html', 'physics.js', 'README.md']) {
+  for (const f of ['main.js', 'preload.js', 'index.html', 'physics.js', 'packmeta.js', 'README.md']) {
     assert.ok(existsSync(join(r.dir, f)), `${f} 已生成`)
   }
   const host = JSON.parse(readFileSync(join(dirname(r.dir), 'host.json'), 'utf8'))
   assert.ok(host.token, 'app 目录上一级的 host.json 已就绪（客户端起来即可发现插件）')
+})
+
+// ---------- Electron 三键（面板「安装 Electron / 启动桌宠 / 停止桌宠」） ----------
+
+const ELECTRON_REL = process.platform === 'win32' ? join('dist', 'electron.exe')
+  : process.platform === 'darwin' ? join('dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
+  : join('dist', 'electron')
+
+/** 假 spawn：记录调用、按脚本制造 exe / 返回退出码，绝不打真网络、不真启动。 */
+function fakeSpawn({ exit = 0, makeExe } = {}) {
+  const calls = []
+  const spawn = (cmd, args, opts = {}) => {
+    const call = { cmd, args, opts, env: opts.env || {} }
+    calls.push(call)
+    if (makeExe) makeExe()
+    return {
+      pid: 42424,
+      stdout: { on() {} }, stderr: { on() {} },
+      on(event, fn) { if (event === 'close') setTimeout(() => fn(exit), 5) },
+      kill() {}, unref() {},
+    }
+  }
+  return { spawn, calls }
+}
+
+test('Electron 安装：走 node + npm-cli.js（不经 shell）、注入 ELECTRON_MIRROR 镜像；已装则跳过', async () => {
+  const env = startModule()
+  const appDir = env.api.dataDir('app')
+  const exe = join(appDir, 'node_modules', 'electron', ELECTRON_REL)
+  await env.exports.download() // 先有 app/main.js
+
+  // 假 npm-cli：不依赖真机 npm 安装位置（钩子可覆盖 npmCli 路径）
+  const fakeCli = join(process.env.AURABOT_DATA_DIR, 'npm-cli.js')
+  writeFileSync(fakeCli, '// fake npm-cli')
+  const { spawn, calls } = fakeSpawn({ exit: 0, makeExe: () => { mkdirSync(dirname(exe), { recursive: true }); writeFileSync(exe, 'fake electron') } })
+  // 换一个带 hooks 的实例（hooks 在 setup 时读）：重新起一个同数据目录的模块实例
+  const env2 = startModule({ hooks: { spawn, npmCli: fakeCli } })
+  const r = await env2.exports.electronInstall()
+  assert.equal(r.ok, true, `安装成功：${r.message}`)
+  assert.equal(calls.length, 1, '只 spawn 了一次 npm')
+  const c = calls[0]
+  assert.equal(c.cmd, process.execPath, '直接用当前 node 跑 npm-cli.js（Windows 上 spawn npm.cmd 无 shell 会被拒）')
+  assert.ok(c.args[0].endsWith('npm-cli.js'), `第一个参数是 npm-cli.js：${c.args[0]}`)
+  assert.deepEqual(c.args.slice(1), ['install', '-D', 'electron'])
+  assert.equal(c.opts.cwd, appDir, '在 app 目录里装')
+  assert.equal(c.env.ELECTRON_MIRROR, 'https://npmmirror.com/mirrors/electron/', '必须注入 npmmirror 镜像（直连 github release 会 fetch failed）')
+  assert.ok(!('shell' in c.opts) || !c.opts.shell, '不经 shell 拼接')
+  assert.ok(existsSync(exe))
+
+  const again = await env2.exports.electronInstall()
+  assert.equal(again.alreadyInstalled, true, '已装（electron.exe 在）则跳过')
+  assert.equal(calls.length, 1, '跳过时不再 spawn')
+})
+
+test('Electron 安装失败路径：npm 非零退出 → ok:false 带原因；没生成客户端先拦', async () => {
+  const fakeCli = join(process.env.AURABOT_DATA_DIR, 'npm-cli.js')
+  writeFileSync(fakeCli, '// fake npm-cli')
+  const env = startModule({ hooks: { spawn: fakeSpawn({ exit: 1 }).spawn, npmCli: fakeCli } })
+  const r0 = await env.exports.electronInstall()
+  assert.equal(r0.ok, false, '还没生成客户端：先拦下，不 spawn')
+  await env.exports.download()
+  const r = await env.exports.electronInstall()
+  assert.equal(r.ok, false)
+  assert.equal(r.exitCode, 1)
+  assert.match(r.message, /npm 安装失败/)
+})
+
+test('启动桌宠：分离进程 + 清 ELECTRON_RUN_AS_NODE；心跳活着提示已在跑；stop 杀记录的 pid', async () => {
+  const killed = []
+  const { spawn, calls } = fakeSpawn()
+  const env = startModule({ hooks: { spawn, kill: (pid) => { killed.push(pid); return true } } })
+  const appDir = env.api.dataDir('app')
+  const exe = join(appDir, 'node_modules', 'electron', ELECTRON_REL)
+  await env.exports.download()
+  mkdirSync(dirname(exe), { recursive: true })
+  writeFileSync(exe, 'fake electron')
+
+  const prevRunAsNode = process.env.ELECTRON_RUN_AS_NODE
+  process.env.ELECTRON_RUN_AS_NODE = '1' // 真机 DSH 环境必带；不清掉 Electron 会以纯 Node 模式启动即崩
+  try {
+    const r = await env.exports.launch()
+    assert.equal(r.ok, true, `启动成功：${r.message}`)
+    assert.equal(r.pid, 42424)
+    assert.equal(calls.length, 1)
+    const c = calls[0]
+    assert.equal(c.cmd, exe, '启动的是 app/node_modules/electron 里的 electron.exe')
+    assert.deepEqual(c.args, ['main.js'])
+    assert.equal(c.opts.cwd, appDir)
+    assert.equal(c.opts.detached, true, '分离进程（插件重启不带走桌宠）')
+    assert.equal(c.opts.env.ELECTRON_RUN_AS_NODE, undefined, '子进程环境必须清掉 ELECTRON_RUN_AS_NODE')
+    const proc = JSON.parse(readFileSync(env.api.dataDir('process.json'), 'utf8'))
+    assert.equal(proc.pid, 42424, 'pid 记进 process.json（stop 用）')
+
+    // 心跳活着 → 提示已在跑，不重复启动
+    await env.connect()
+    const again = await env.exports.launch()
+    assert.equal(again.alreadyRunning, true, '心跳活着提示已在跑')
+    assert.equal(calls.length, 1)
+
+    // 停止：杀记录的 pid、清 process.json
+    const s = await env.exports.stop()
+    assert.equal(s.ok, true)
+    assert.deepEqual(killed, [42424])
+    assert.equal(existsSync(env.api.dataDir('process.json')), false, '记录已清理')
+
+    // 进程本来就不在（ESRCH）：按已停止处理并清记录，不让面板卡「停不掉」
+    mkdirSync(dirname(exe), { recursive: true })
+    const env2 = startModule({ hooks: { spawn, kill: () => { const e = new Error('no such process'); e.code = 'ESRCH'; throw e } } })
+    await env2.exports.download()
+    writeFileSync(exe, 'fake electron')
+    await env2.exports.launch()
+    const s2 = await env2.exports.stop()
+    assert.equal(s2.ok, true, 'ESRCH = 本来就不在，算停止成功')
+    assert.match(s2.message, /已经不在/)
+  } finally {
+    if (prevRunAsNode === undefined) delete process.env.ELECTRON_RUN_AS_NODE
+    else process.env.ELECTRON_RUN_AS_NODE = prevRunAsNode
+  }
+})
+
+test('启动失败路径：Electron 没装 / main.js 不见 → 明确报错不 spawn', async () => {
+  const { spawn, calls } = fakeSpawn()
+  const env = startModule({ hooks: { spawn } })
+  const r1 = await env.exports.launch()
+  assert.equal(r1.ok, false, 'Electron 没装')
+  assert.match(r1.message, /安装/)
+  await env.exports.download()
+  const appDir = env.api.dataDir('app')
+  const exe = join(appDir, 'node_modules', 'electron', ELECTRON_REL)
+  mkdirSync(dirname(exe), { recursive: true })
+  writeFileSync(exe, 'fake electron')
+  unlinkSync(join(appDir, 'main.js'))
+  const r2 = await env.exports.launch()
+  assert.equal(r2.ok, false, 'main.js 不见了')
+  assert.match(r2.message, /main\.js/)
+  assert.equal(calls.length, 0, '两条失败路径都没 spawn')
 })
 
 // ---------- P3：拖拽物理移植（dsh-pet MIT 物理模块的去 TS 单文件版） ----------
@@ -371,4 +549,309 @@ test('P3 物理：抛体落地反弹、atRest 判定、松手初速方向与温�
   const a = P.throwStep({ x: 0, y: 0, vx: 0, vy: 0 }, 0.1, b, half)
   const c = P.throwStep({ x: 0, y: 0, vx: 0, vy: 0 }, 0.1, b, P.DEFAULT_PHYSICS)
   assert.ok(a.y < c.y, 'pack physics.gravity 生效')
+})
+
+test('P3 物理：抛掷边界按可见身体盒算（不再落出屏幕）+ 任意甩法 60fps 必在有限帧内静止', () => {
+  const P = loadPhysics()
+  const W = 1920
+  const H = 1040
+  // 与 index.html 的 #stage 一致：窗口 280×430，1:1 素材身体 240×240，距窗口底 16px
+  const body = { width: 240, height: 240, offsetX: 20, offsetY: 430 - 16 - 240 }
+  const b = P.throwBounds({ W, H, bodyW: body.width, bodyH: body.height, offsetX: body.offsetX, offsetY: body.offsetY, sideAllow: 19 })
+  // 历史 bug：用 宽×9/16 当身体高 → 静止点在屏幕外 183px，桌宠一扔就"消失"
+  assert.equal(b.maxY + body.offsetY + body.height, H, '静止时可见身体底边正好贴屏幕底')
+  assert.ok(b.minY + body.offsetY <= 1, '允许身体顶到屏幕顶')
+  for (const [vx, vy] of [[-1500, -900], [2200, -300], [-2200, 200], [0, 3600], [300, -600]]) {
+    let st = { x: 1200, y: 300, vx, vy }
+    let frames = 0
+    while (!st.atRest && frames < 1200) {
+      st = P.throwStep(st, 1 / 60, b, P.DEFAULT_PHYSICS)
+      frames++
+      assert.ok(Number.isFinite(st.x) && Number.isFinite(st.y), `坐标不能是 NaN（会让 setPosition 抛错、桌宠卡死）：${vx},${vy}`)
+      assert.ok(st.x >= b.minX - 1e-6 && st.x <= b.maxX + 1e-6, `x 不越界：${vx},${vy} 第${frames}帧`)
+      assert.ok(st.y >= b.minY - 1e-6 && st.y <= b.maxY + 1e-6, `y 不越界：${vx},${vy} 第${frames}帧`)
+    }
+    assert.ok(st.atRest, `甩出 (${vx},${vy}) 必须在 20s（1200 帧）内静止，实际 ${frames} 帧`)
+    assert.equal(st.y, b.maxY, '最终落在地面')
+  }
+})
+
+// ---------- 右键「动作」菜单与点播地址表（回归：菜单 106 段只建了 26 个地址 → 点了没反应） ----------
+
+function loadPackMetaLib() {
+  const code = readFileSync(join(MODULE_DIR, 'pet-client', 'packmeta.js'), 'utf8')
+  const m = { exports: {} }
+  new Function('module', 'exports', code)(m, m.exports) // UMD：以 CommonJS 形态求值
+  return m.exports
+}
+
+test('packmeta：knownAnims 合并「三个池 ∪ 包目录里的 webm」（菜单项不能只在池里）', () => {
+  const M = loadPackMetaLib()
+  const pools = { idle: ['anim-001', 'anim-002'], speak: ['anim-003'], click: ['anim-004'] }
+  const files = ['anim-001.webm', 'anim-002.webm', 'anim-003.webm', 'anim-004.webm', 'anim-090.webm', 'notes.txt']
+  const names = M.knownAnims(pools, files)
+  assert.deepEqual(names, ['anim-001', 'anim-002', 'anim-003', 'anim-004', 'anim-090'], '池外的 anim-090 也必须进名单，非 webm 忽略')
+  assert.deepEqual(M.namesFromFiles(['a.webm', 'b.WEBM', 'c.png']), ['a', 'b'])
+  // 地址表：空的 url（端口未知）不能占位，否则渲染页会拿空 src 去 play
+  const map = M.animUrlMap(names, (n) => (n === 'anim-002' ? '' : `http://h/asset/${n}.webm?token=t`))
+  assert.equal(Object.keys(map).length, 4)
+  assert.equal(map['anim-002'], undefined)
+})
+
+test('packmeta：resolveMenu 把配置里的中文原名映射成素材 id，未知项跳过、无 menu 回落三个池', () => {
+  const M = loadPackMetaLib()
+  const manifest = { 三球抛接: 'anim-001', 下五子棋: 'anim-002', 中秋赏月吃月饼: 'anim-004' }
+  const cfg = { menu: [{ label: '才艺', anims: ['三球抛接', '下五子棋', '不存在的动画'] }, { label: '节日', anims: ['中秋赏月吃月饼'] }, { label: '空分类', anims: [] }] }
+  const cats = M.resolveMenu(cfg, manifest, { idle: ['anim-001'], speak: [], click: [] })
+  assert.deepEqual(cats, [
+    { label: '才艺', items: [{ label: '三球抛接', id: 'anim-001' }, { label: '下五子棋', id: 'anim-002' }] },
+    { label: '节日', items: [{ label: '中秋赏月吃月饼', id: 'anim-004' }] },
+  ], '中文原名 → id，未知动画与空分类都过滤')
+  // 配置里直接写 id 也认
+  assert.equal(M.resolveMenu({ menu: [{ label: 'x', anims: ['anim-004'] }] }, manifest, {}).length, 1)
+  // 没有 menu 段：按池回落，标签用原名
+  const fallback = M.resolveMenu({}, manifest, { idle: ['anim-001', 'anim-002'], speak: [], click: ['anim-004'] })
+  assert.deepEqual(fallback, [
+    { label: '待机', items: [{ label: '三球抛接', id: 'anim-001' }, { label: '下五子棋', id: 'anim-002' }] },
+    { label: '互动', items: [{ label: '中秋赏月吃月饼', id: 'anim-004' }] },
+  ])
+})
+
+test('契约：菜单里每一项都能在素材地址表里查到（用户看到的「点菜单没反应」就是这条断了）', () => {
+  const M = loadPackMetaLib()
+  // 仿 default 包的真实形状：106 段素材，只有 26 段在 idle/speak/click 三个池里
+  const files = Array.from({ length: 106 }, (_, i) => `anim-${String(i + 1).padStart(3, '0')}.webm`)
+  const ids = files.map((f) => f.replace('.webm', ''))
+  const pools = { idle: ids.slice(0, 13), speak: ids.slice(13, 18), click: ids.slice(18, 26) }
+  const manifest = {}
+  for (const id of ids) manifest[`动作-${id}`] = id
+  const cfg = { menu: [{ label: '全部', anims: ids.map((id) => `动作-${id}`) }] }
+
+  const view = { name: 'default', animations: pools }
+  const anims = M.animUrlMap(M.knownAnims(view.animations, files), (n) => `http://127.0.0.1:1/api/asset/default/${n}.webm?token=t`)
+  assert.equal(Object.keys(anims).length, 106, '地址表必须覆盖包目录里的全部 106 段，而不是池里的 26 段')
+  for (const cat of M.resolveMenu(cfg, manifest, pools)) {
+    for (const it of cat.items) assert.ok(anims[it.id], `菜单项「${it.label}」必须有素材地址（否则渲染页返回 false，桌宠继续播自己的 idle）`)
+  }
+  // 主进程确实走了这条合并逻辑（不是又退回只遍历三个池的老实现）
+  const mainSrc = readFileSync(join(MODULE_DIR, 'pet-client', 'main.js'), 'utf8')
+  assert.match(mainSrc, /metaApi\.knownAnims\(/, 'pushPackToRenderer 必须用 knownAnims 建地址表')
+  assert.match(mainSrc, /metaApi\.resolveMenu\(/, '右键「动作」菜单必须用 resolveMenu 构建')
+})
+
+// ---------- 碎碎念（桌宠自己的气泡流）：载体是 QQ 也必须照常出现 ----------
+
+/** 写一份碎碎念状态文件（nextAt 设成已到点；count 可指定）。 */
+function seedWhisper(api, patch = {}) {
+  const day = new Date().toDateString()
+  const file = api.dataDir('whisper.json')
+  writeFileSync(file, JSON.stringify({ day, count: 0, nextAt: Date.now() - 1000, lastAt: 0, lastText: '', recent: [], ...patch }))
+  return file
+}
+/** 造一个形象包：webm 用 ASCII id，manifest 把中文原名映射过去（与真实 default 包同形状）。 */
+function seedPack(api, { name = 'default', manifest = {}, extraFiles = [] } = {}) {
+  const dir = api.dataDir('packs', `${name}-animation`)
+  mkdirSync(dir, { recursive: true })
+  for (const f of [...Object.values(manifest).map((id) => `${id}.webm`), ...extraFiles]) writeFileSync(join(dir, f), 'fake-webm')
+  writeFileSync(api.dataDir('packs', `${name}-manifest.json`), JSON.stringify(manifest))
+}
+
+test('碎碎念：载体是 QQ 时照样推桌宠气泡（用户报的「永远不会主动碎碎念」）；且绝不发 QQ', async () => {
+  const env = startModule({ settings: { carrier: 'qq', whisperSource: 'pool' } })
+  env.api.config = () => ({ ownerQQ: OWNER, enabled: true, speakUp: { awakeFrom: 0, awakeTo: 24 } }) // 全天醒着：不受测试运行时段影响
+  seedWhisper(env.api)
+  const { cursor } = await env.connect() // 变成在线
+  const r = await env.exports.whisperNow({ force: false })
+  assert.equal(r.ok, true, '载体=qq 不应拦住碎碎念：' + JSON.stringify(r))
+  assert.equal(r.via, 'pet')
+  assert.ok(String(r.text || '').length > 0, '要有一句话')
+  const ev = await env.call('/events', { query: { since: String(cursor), wait: '0', client: 'pet-test' } })
+  const bubble = (ev.json.events || []).find((e) => e.type === 'proactive')
+  assert.ok(bubble, '必须推到桌宠气泡事件')
+  assert.equal(bubble.purpose, 'whisper', '碎碎念用 purpose=whisper 打标签，不发 QQ')
+  assert.equal(env.sentToQQ.length, 0, '碎碎念永远不发 QQ')
+})
+
+test('碎碎念：载体是桌宠且开启暂停 → 不发（避免和主动搭话两个气泡）', async () => {
+  const env = startModule({ settings: { carrier: 'pet', whisperPauseOnPetCarrier: true } })
+  env.api.config = () => ({ ownerQQ: OWNER, enabled: true, ext: { speakup: { carrier: 'pet' } } })
+  seedWhisper(env.api)
+  await env.connect()
+  const r = await env.exports.whisperNow({ force: false })
+  assert.equal(r.ok, false)
+  assert.equal(r.reason, 'carrier-pet')
+})
+
+test('碎碎念：桌宠离线不发、也不回落 QQ；未到点不发', async () => {
+  const env = startModule({ settings: { carrier: 'qq' } })
+  env.api.config = () => ({ ownerQQ: OWNER, enabled: true, speakUp: { awakeFrom: 0, awakeTo: 24 } })
+  seedWhisper(env.api)
+  const off = await env.exports.whisperNow({ force: false })
+  assert.equal(off.reason, 'pet-offline', '离线时只在桌宠出现，绝不退化成 QQ 消息')
+  await env.connect()
+  seedWhisper(env.api, { nextAt: Date.now() + 30 * 60_000 })
+  const notDue = await env.exports.whisperNow({ force: false })
+  assert.equal(notDue.reason, 'not-due')
+  assert.equal(env.sentToQQ.length, 0)
+})
+
+test('碎碎念：达到每日上限 / 正在干活时都不打断', async () => {
+  const env = startModule({ settings: { carrier: 'qq', whisperMaxPerDay: 2 } })
+  env.api.config = () => ({ ownerQQ: OWNER, enabled: true, speakUp: { awakeFrom: 0, awakeTo: 24 } })
+  await env.connect()
+  seedWhisper(env.api, { count: 2 })
+  const cap = await env.exports.whisperNow({ force: false })
+  assert.equal(cap.reason, 'daily-max')
+  // 干活中：让路（别在思考/写代码时插一句碎碎念）
+  seedWhisper(env.api, { count: 0 })
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'tool/call', data: { name: 'read_file' } })
+  const busy = await env.exports.whisperNow({ force: false })
+  assert.equal(busy.reason, 'busy')
+})
+
+test('碎碎念：文案池可以自定义，手动（force）跳过开关与排程但仍尊重专注模式', async () => {
+  const env = startModule({ settings: { carrier: 'qq', whisperSource: 'pool', whisperLines: '（自己写的碎碎念）' } })
+  env.api.config = () => ({ ownerQQ: OWNER, enabled: true, speakUp: { awakeFrom: 0, awakeTo: 24 } })
+  await env.connect()
+  const r = await env.exports.whisperNow({ force: true })
+  assert.equal(r.text, '（自己写的碎碎念）')
+  // 专注模式：force 也不打扰
+  const focusFile = env.api.dataDir('focus.json')
+  writeFileSync(focusFile, JSON.stringify({ enabled: true }))
+  const f = await env.exports.whisperNow({ force: true })
+  assert.equal(f.ok, false)
+  assert.equal(f.reason, 'focus')
+})
+
+// ---------- 干活状态（DSH 会话事件 → 动画 / 结束提醒） ----------
+
+test('干活状态：turn/start → thinking、tool/call → working、turn/end completed → success + 收尾文案', async () => {
+  const env = startModule({ settings: { carrier: 'pet' } })
+  seedPack(env.api, {
+    manifest: {
+      '工作状态-思考冒泡': 'anim-001', '工作状态-忙碌点按': 'anim-002', '工作状态-清点归档': 'anim-003',
+      '工作状态-原地踱步张望': 'anim-004', '工作状态-雀跃庆祝': 'anim-005', '工作状态-垂头叹气冒汗': 'anim-006',
+      '碎碎念-对屏碎碎念': 'anim-007',
+    },
+  })
+  const { cursor } = await env.connect()
+  // 包视图按中文命名约定自动识别六档（零配置）
+  const cfg = await env.call('/config')
+  assert.deepEqual(cfg.json.pack.workStatus, {
+    thinking: 'anim-001', working: 'anim-002', result: 'anim-003',
+    waiting: 'anim-004', success: 'anim-005', error: 'anim-006',
+  })
+  assert.deepEqual(cfg.json.pack.whisperAnims, ['anim-007'], '碎碎念动画池按「碎碎念」命名自动识别')
+  assert.equal(env.exports.workStatus().state, null, '没活干时是空闲')
+
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/start' })
+  assert.equal(env.exports.workStatus().state, 'thinking')
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'todo/write', data: { todos: [{ status: 'in_progress', content: '改桌宠气泡' }] } })
+  assert.equal(env.exports.workStatus().task, '改桌宠气泡', '清单进度带进快照（面板/气泡都用它）')
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'tool/call', data: { name: 'write_file' } })
+  assert.equal(env.exports.workStatus().state, 'working')
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+  const done = env.exports.workStatus()
+  assert.equal(done.state, 'success')
+  assert.match(done.text, /搞定/, '收尾要有一句能弹气泡/发通知的话')
+
+  const ev = await env.call('/events', { query: { since: String(cursor), wait: '0', client: 'pet-test' } })
+  const workEvents = (ev.json.events || []).filter((e) => e.type === 'work').map((e) => e.state)
+  assert.deepEqual(workEvents, ['thinking', 'working', 'success'], '每次档位变化推一条；todo/write 只改文案不改档位')
+})
+
+test('干活状态：出错/阻塞/中断分别落 error、waiting、回空闲；子代理事件不参与', () => {
+  const env = startModule({ settings: { carrier: 'pet' } })
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/start' })
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', data: { reason: { kind: 'error' } } })
+  assert.equal(env.exports.workStatus().state, 'error')
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/start' })
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', data: { reason: { kind: 'blocked' } } })
+  assert.equal(env.exports.workStatus().state, 'waiting')
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/start' })
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/end', data: { reason: { kind: 'aborted' } } })
+  assert.equal(env.exports.workStatus().state, null, '中断要清回空闲，不能永远卡在干活中')
+  // 子代理：多跑几路不该让桌宠一直闪
+  env.exports.onSessionEvent({ header: { id: 'sub', origin: 'subagent' } }, { type: 'turn/start' })
+  assert.equal(env.exports.workStatus().state, null)
+  env.exports.onSessionEvent({ header: { id: 'sub2', delegationDepth: 2 } }, { type: 'tool/call', data: { name: 'x' } })
+  assert.equal(env.exports.workStatus().state, null)
+})
+
+test('干活状态：ask_user_question 归 waiting；关掉状态动画后事件不再档位化', () => {
+  const env = startModule({ settings: { carrier: 'pet', workStatusEnabled: false } })
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'tool/call', data: { name: 'ask_user_question' } })
+  assert.equal(env.exports.workStatus().state, 'waiting')
+  env.exports.onSessionEvent({ header: { id: 's2' } }, { type: 'turn/start' })
+  assert.equal(env.exports.workStatus().state, 'waiting', '关掉开关不影响已存在的档位展示，只是不再新开档')
+})
+
+// ---------- 碎碎念：跟她「自己」的一个回合（工作区思考窗口 + 记忆），但不是主动搭话 ----------
+
+test('碎碎念：自己想一句时走后台回合（工作区能看到思考），提示词带记忆与 DSH 状态；不选目的、不发 QQ', async () => {
+  const env = startModule({ settings: { carrier: 'qq', whisperSource: 'model' } })
+  env.api.config = () => ({ ownerQQ: OWNER, enabled: true, speakUp: { awakeFrom: 0, awakeTo: 24 } })
+  env.setMemory([
+    { id: 'm1', text: '主人喜欢喝冰美式，不加糖', importance: 0.8, at: Date.now() - 3600_000 },
+    { id: 'm2', text: '说了周末要一起看《海街日记》', importance: 0.6, at: Date.now() - 7200_000 },
+  ])
+  env.setThinkReply('【思考】想起他爱喝冰美式\n（盯着杯子看了一会儿）冰美式…要不要也给自己倒一杯')
+  seedWhisper(env.api)
+  const { cursor } = await env.connect()
+  // 先造一个「正在干活」的状态：提示词里要带上
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'turn/start' })
+  env.exports.onSessionEvent({ header: { id: 's1' } }, { type: 'todo/write', data: { todos: [{ status: 'in_progress', content: '改桌宠气泡' }] } })
+
+  const r = await env.exports.whisperNow({ force: true }) // force：干活中默认会推后，这里要验的是「想」的内容
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(env.thinkCalls.length, 1, '应该走一次后台系统回合（而不是 api.ask 一次性问答）')
+  assert.equal(env.thinkCalls[0].title, '桌宠 · 碎碎念（自己的回合）', '工作区里那条会话的标题')
+  assert.equal(env.thinkCalls[0].noTools, true)
+  const prompt = env.thinkCalls[0].prompt
+  assert.match(prompt, /冰美式/, '记忆要进提示词（结合记忆碎碎念）')
+  assert.match(prompt, /思考中|干活中/, 'DSH 干活状态要进提示词')
+  assert.match(prompt, /改桌宠气泡/, '当前清单步骤也要进提示词')
+  assert.match(prompt, /不是主动搭话|不是在回复消息/, '要跟主动搭话区分开，别让她当成找人聊天')
+  assert.equal(r.text, '（盯着杯子看了一会儿）冰美式…要不要也给自己倒一杯'.slice(0, 60), '备忘段【思考】要被切掉，只留那句话')
+
+  const ev = await env.call('/events', { query: { since: String(cursor), wait: '0', client: 'pet-test' } })
+  const bubble = (ev.json.events || []).find((e) => e.type === 'proactive')
+  assert.ok(bubble, '要想出话并推到桌宠气泡')
+  assert.equal(bubble.purpose, 'whisper')
+  assert.equal(env.sentToQQ.length, 0, '碎碎念永不发 QQ')
+})
+
+test('碎碎念：她这次想说 [沉默] → 回落到文案池，照样只上桌宠；同一时间只跑一个后台回合', async () => {
+  const env = startModule({ settings: { carrier: 'qq', whisperSource: 'model', whisperLines: '（今天有点懒）' } })
+  env.api.config = () => ({ ownerQQ: OWNER, enabled: true, speakUp: { awakeFrom: 0, awakeTo: 24 } })
+  await env.connect()
+  env.setThinkReply('[沉默]')
+  const r = await env.exports.whisperNow({ force: true })
+  assert.equal(r.ok, true)
+  assert.equal(r.text, '（今天有点懒）', '模型沉默时用面板文案池，不硬塞空话')
+
+  // 上一轮还没想完：不并发开第二个后台回合
+  let release
+  env.holdThink(new Promise((resolve) => { release = resolve }))
+  const first = env.exports.whisperNow({ force: true })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  const second = await env.exports.whisperNow({ force: true })
+  assert.equal(second.ok, false)
+  assert.equal(second.reason, 'thinking')
+  release()
+  assert.equal((await first).ok, true)
+  env.holdThink(null)
+})
+
+test('碎碎念：间隔最小 1 分钟、最大 9999 分钟、每天最多 9999 次都认（不再被夹回 5/48）', async () => {
+  const env = startModule({ settings: { whisperMinMinutes: 1, whisperMaxMinutes: 9999, whisperMaxPerDay: 9999 } })
+  const w = env.exports.whisperStatus()
+  assert.equal(w.minMinutes, 1)
+  assert.equal(w.maxMinutes, 9999)
+  assert.equal(w.maxPerDay, 9999)
+  assert.equal(w.thinking, false)
+  assert.equal(w.turnTitle, '桌宠 · 碎碎念（自己的回合）')
+  // 排程确实按 1~9999 分钟抽（不会因为下限被夹高而不动）
+  const st = { day: new Date().toDateString(), count: 0, nextAt: 0, recent: [] }
+  writeFileSync(env.api.dataDir('whisper.json'), JSON.stringify({ ...st }))
 })

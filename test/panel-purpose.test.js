@@ -4,7 +4,7 @@
 // 接口升级后字段能透传聚合」，全部按降级语义断言。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startMockOneBot } from './helpers/mock-onebot.js'
@@ -42,8 +42,11 @@ before(async () => {
     bridge: { dshTools: false, http: true, token: 'a'.repeat(32) },
   }))
   fake = createFakeDsh({ brain })
+  // DSH 的 webServer 服务带真实端口（真机同理）：host.js 靠它给 pet 模块注入端口、破「host.json 写 :0」的自举死锁
+  fake.ctx.webServer.port = 5099
   const host = await import('../src/host.js')
   api = host.apply(fake.ctx)
+  await api.ready.catch(() => {})
   await fake.call('/onebot/reconnect')
 })
 
@@ -119,6 +122,34 @@ test('预览零副作用：/panel/purpose/preview 收素材拼提示词，但不
   assert.equal(sentToOwner().length, before, '预览不得向 QQ 发送任何消息')
 })
 
+test('桌宠端口注入：宿主把 webServer 端口写进 host.json（破自举死锁），status 报 portReady', async () => {
+  const hostFile = join(dataDir, 'modules-data', 'pet', 'host.json')
+  const h = JSON.parse(readFileSync(hostFile, 'utf8'))
+  assert.equal(h.baseUrl, 'http://127.0.0.1:5099', 'baseUrl 来自 ctx.webServer.port 注入，不再是 :0/null')
+  const st = await call('/panel/pet/status')
+  assert.equal(st.pet.portReady, true, 'status 报端口就绪')
+  assert.equal(st.pet.port, 5099)
+  assert.equal(st.pet.electronInstalled, false, '初始状态：Electron 未装')
+  assert.equal(st.pet.pid, null, '初始状态：没有运行中的桌宠进程')
+})
+
+test('Electron 三键代理：未装客户端/未装 Electron/无进程记录时全部降级，不炸也不 spawn', async () => {
+  // 清掉 app/main.js（若前面的 download 用例已生成），保证「还没生成客户端」的前置成立
+  const appMain = join(dataDir, 'modules-data', 'pet', 'app', 'main.js')
+  if (existsSync(appMain)) { try { unlinkSync(appMain) } catch {} }
+  const ei = await call('/panel/pet/electron-install', {})
+  assert.equal(ei.ok, true, '代理通')
+  assert.equal(ei.result.ok, false, '还没生成客户端：electron-install 降级报错')
+  assert.match(ei.result.message, /客户端/)
+  const la = await call('/panel/pet/launch', {})
+  assert.equal(la.ok, true)
+  assert.equal(la.result.ok, false, 'Electron 没装：launch 降级报错')
+  const sp = await call('/panel/pet/stop', {})
+  assert.equal(sp.ok, true)
+  assert.equal(sp.result.ok, false, '没有进程记录：stop 降级报错')
+  assert.ok(!JSON.stringify(ei).includes('a'.repeat(32)), '三键返回也脱敏')
+})
+
 test('桌宠面板代理：pet 已是内置模块，status/download/focus 三个代理都工作（api.use 前缀无关）', async () => {
   const st = await call('/panel/pet/status')
   assert.equal(st.ok, true)
@@ -132,4 +163,40 @@ test('桌宠面板代理：pet 已是内置模块，status/download/focus 三个
   assert.equal(fc.result.enabled, true, 'focus 代理走 pet.setFocus()')
   const st2 = await call('/panel/pet/status')
   assert.equal(st2.pet.focus, true, 'status 回读专注状态')
+})
+
+// ---------- 桌宠页下方的设置（碎碎念 / 干活状态） ----------
+
+test('桌宠面板设置：/panel/pet/config 写 ext.pet.*（碎碎念节奏/文案池/干活提醒），status 能读回', async () => {
+  const before = (await call('/panel/pet/status')).pet
+  assert.ok(before.whisper, 'status 要带碎碎念状态（面板设置卡靠它渲染）')
+  assert.equal(typeof before.whisper.enabled, 'boolean')
+  assert.equal(before.workEnabled, true, '干活状态动画默认开')
+  const r = await call('/panel/pet/config', {
+    whisperEnabled: false, whisperMinMinutes: 10, whisperMaxMinutes: 20, whisperMaxPerDay: 2,
+    whisperLines: '（自己写的）\n（第二句）', whisperPauseOnPetCarrier: false,
+    workStatusEnabled: false, workBubble: false, workNotify: false,
+  })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  const after = r.pet
+  assert.equal(after.whisper.enabled, false)
+  assert.equal(after.whisper.minMinutes, 10)
+  assert.equal(after.whisper.maxMinutes, 20)
+  assert.equal(after.whisper.maxPerDay, 2)
+  assert.match(after.whisper.lines, /自己写的/)
+  assert.equal(after.workEnabled, false)
+  assert.equal(after.workBubble, false)
+  assert.equal(after.workNotify, false, '完工通知开关要落盘')
+  const saved = JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8'))
+  assert.equal(saved.ext.pet.whisperMinMinutes, 10)
+  assert.equal(saved.ext.pet.whisperLines.split('\n').length, 2)
+  // 没有可保存字段：明确拒绝，不静默成功
+  const empty = await call('/panel/pet/config', { foo: 1 })
+  assert.equal(empty.ok, false)
+})
+
+test('桌宠面板：/panel/pet/whisper 在桌宠没跑时明确降级（不抛错、不说发成功）', async () => {
+  const r = await call('/panel/pet/whisper', {})
+  assert.equal(r.ok, false)
+  assert.match(String(r.message || ''), /桌宠|专注|总开关/)
 })

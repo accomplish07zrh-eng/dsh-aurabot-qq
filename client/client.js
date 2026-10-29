@@ -1337,9 +1337,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [purpose, setPurpose] = useState(null)
       const [loaded, setLoaded] = useState(false)
       const [busy, setBusy] = useState('')
+      // 碎碎念 / 干活状态的本地编辑态（数字与文案池要「应用」才提交；开关、下拉即点即存）
+      const [ws, setWs] = useState(null)
       const load = async () => {
         const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
-        if (pr.ok) setPet(pr.pet)
+        if (pr.ok) { setPet(pr.pet); setWs((old) => old || (pr.pet && pr.pet.whisper ? { ...pr.pet.whisper } : null)) }
         if (pu.ok) setPurpose(pu.purpose)
         setLoaded(true)
       }
@@ -1353,7 +1355,39 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const heart = pet && (pet.lastSeenAt || pet.heartbeatAt || pet.presence?.lastSeenAt)
       const moods = Array.isArray(pet?.moods) && pet.moods.length ? pet.moods : PET_MOODS
       const moodLabel = (m) => typeof m === 'string' ? (PET_MOODS.find((x) => x.key === m) || { label: m }).label : (m.label || m.key)
-      return h(Card, { title: '桌宠', desc: '把「大肥鱼」请到桌面上：一个小小的她待在屏幕角落，主动搭话走气泡；你也可以点她聊天。' },
+      // Electron 三键：安装状态看 status.electronInstalled（electron.exe 在不在）；运行状态复用心跳（在线 = 在跑）
+      const electronInstalled = Boolean(pet && (pet.electronInstalled ?? false))
+      const portReady = pet ? pet.portReady !== false : false
+      const act = async (key, path, okMsg) => {
+        setBusy(key)
+        try {
+          const r = await post(path, {})
+          const res = r.result && typeof r.result === 'object' ? r.result : r
+          if (r.ok === false || res.ok === false) toast(res.message || r.message || '没成功', 'err')
+          else toast(res.message || okMsg, 'ok')
+        } catch (e) { toast(e.message) } finally { setBusy(''); load() }
+      }
+      // 桌宠页下方的设置：统一走 /panel/pet/config（写 ext.pet.*）
+      const savePet = async (patch, okMsg) => {
+        setBusy('cfg')
+        try {
+          const r = await post('/panel/pet/config', patch)
+          if (!r.ok) toast(r.message || '没成功', 'err')
+          else { toast(okMsg || '保存好了', 'ok'); if (r.pet && r.pet.whisper) setWs({ ...r.pet.whisper }) }
+        } catch (e) { toast(e.message) } finally { setBusy(''); load() }
+      }
+      const work = (pet && pet.work) || null
+      // 可编辑字段用本地编辑态（改了一半别被轮询冲掉），实时字段（thinking/today/nextAt/上次说了什么）用服务端的
+      const liveW = (pet && pet.whisper) || null
+      const whisper = (liveW || ws) ? {
+        ...(liveW || {}),
+        ...(ws ? { enabled: ws.enabled, source: ws.source, minMinutes: ws.minMinutes, maxMinutes: ws.maxMinutes, maxPerDay: ws.maxPerDay, pauseOnPetCarrier: ws.pauseOnPetCarrier, lines: ws.lines } : {}),
+      } : null
+      const nextIn = whisper && whisper.nextAt ? Math.max(0, Math.round((whisper.nextAt - Date.now()) / 60000)) : null
+      const nextText = nextIn == null ? '' : nextIn <= 0 ? '马上' : nextIn < 60 ? nextIn + ' 分钟后' : nextIn < 1440 ? Math.round(nextIn / 60) + ' 小时后' : (Math.round(nextIn / 144) / 10) + ' 天后'
+      const workEnabled = pet ? pet.workEnabled !== false : true
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '桌宠', desc: '把「大肥鱼」请到桌面上：一个小小的她待在屏幕角落，主动搭话走气泡；你也可以点她聊天。' },
         h('div', { className: 'ab-flex', style: { marginBottom: 8 } },
           h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', dotCls) }), state),
           h('span', { className: 'ab-muted ab-small' }, heart ? '上次心跳 ' + timeAgo(heart) : loaded ? '还没有心跳记录' : '加载中…')),
@@ -1366,9 +1400,78 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-flex', style: { marginTop: 10 } },
           h(Btn, { small: true, disabled: busy === 'dl', onClick: async () => { setBusy('dl'); try { const r = await post('/panel/pet/download'); if (!r.ok) toast(r.message || '没成功', 'err'); else toast('客户端已放到数据目录，按桌宠模块说明启动即可', 'ok') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } }, busy === 'dl' ? '下载中…' : '下载 / 生成客户端'),
           h('span', { className: 'ab-muted ab-small' }, '放到数据目录 modules-data/pet/app，随插件自动发现')),
+        h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+          h(Btn, { small: true, disabled: busy === 'ei', onClick: () => act('ei', '/panel/pet/electron-install', 'Electron 安装完成') }, busy === 'ei' ? '安装中…' : electronInstalled ? '重装 Electron' : '安装 Electron'),
+          h(Btn, { small: true, disabled: busy === 'la', onClick: () => act('la', '/panel/pet/launch', '已启动') }, busy === 'la' ? '启动中…' : '启动桌宠'),
+          h(Btn, { small: true, disabled: busy === 'st', onClick: () => act('st', '/panel/pet/stop', '已停止') }, busy === 'st' ? '停止中…' : '停止桌宠'),
+          h('span', { className: 'ab-muted ab-small' },
+            'Electron ' + (electronInstalled ? '已装' : '未装') + '｜运行 ' + (online ? '在跑' : '没在跑') + (pet?.pid ? '（pid ' + pet.pid + '）' : '') + (portReady ? '' : '｜端口未就绪（等宿主注入）'))),
         h(Row, { label: '表情预览', hint: '气泡与心情事件会用到这些表情' },
           h('div', { style: { flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 } },
             moods.map((m, i) => h('span', { key: (m.key || m) + i, className: 'ab-pill' }, moodLabel(m))))),
+        ),
+        // ---------- 碎碎念：桌宠自己的气泡流（载体选 QQ 也照常生效，永不发 QQ） ----------
+        whisper ? h(Card, { title: '碎碎念', desc: '她自己在桌面上嘟囔的小气泡：跟「主动搭话」完全分开，载体选 QQ 时也照常出现；只上桌宠气泡，不会发到 QQ。到了点她会带着记忆自己想一句——工作区里会像「主动搭话（目的回合）」那样开一条「' + (whisper.turnTitle || '桌宠 · 碎碎念（自己的回合）') + '」的会话，能当场看到她的思考过程。间隔与时段跟着「主动搭话」那边的醒着时间。' },
+          h(Row, { label: '开启碎碎念', hint: whisper.thinking ? '她正在工作区那条会话里想这一句…' : whisper.carrier === 'pet' && whisper.pauseOnPetCarrier !== false ? '当前载体是桌宠，按下面的开关暂停中' : '到点她会自己冒一句话' },
+            h(Switch, { on: whisper.enabled !== false, onChange: (v) => savePet({ whisperEnabled: v }, v ? '碎碎念开了' : '碎碎念关了') })),
+          h(Row, { label: '说什么', hint: '「她自己想一句」会走后台回合：先用记忆 + 当下的干活状态想，工作区能看到思考；失败自动回落文案池' },
+            h(Select, {
+              value: whisper.source || 'model',
+              options: [{ value: 'model', label: '她自己想一句（推荐）' }, { value: 'pool', label: '用现成文案' }],
+              onChange: (v) => savePet({ whisperSource: v }),
+            })),
+          h(Row, { label: '两次之间隔', hint: '在这个范围里随机（1~9999 分钟）；刚弹过「主动搭话」的气泡会让一让' },
+            h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 9999, value: whisper.minMinutes ?? '', onChange: (e) => setWs({ ...whisper, minMinutes: e.target.value }) }),
+            h('span', { className: 'ab-muted' }, '到'),
+            h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 9999, value: whisper.maxMinutes ?? '', onChange: (e) => setWs({ ...whisper, maxMinutes: e.target.value }) }),
+            h('span', { className: 'ab-muted' }, '分钟'),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => savePet({ whisperMinMinutes: Number(whisper.minMinutes), whisperMaxMinutes: Number(whisper.maxMinutes) }) }, '应用')),
+          h(Row, { label: '每天最多' },
+            h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 9999, value: whisper.maxPerDay ?? '', onChange: (e) => setWs({ ...whisper, maxPerDay: e.target.value }) }),
+            h('span', { className: 'ab-muted' }, '次'),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => savePet({ whisperMaxPerDay: Number(whisper.maxPerDay) }) }, '应用')),
+          h(Row, { label: '载体是桌宠时暂停', hint: '主动搭话已经走桌宠气泡时，别同时冒两个气泡' },
+            h(Switch, { on: whisper.pauseOnPetCarrier !== false, onChange: (v) => savePet({ whisperPauseOnPetCarrier: v }) })),
+          h('div', { style: { marginTop: 6 } },
+            h('div', { className: 'ab-muted ab-small', style: { marginBottom: 4 } }, '自定义文案（一行一句；留空用内置文案。模型失败时也从这里抽）'),
+            h('textarea', {
+              className: 'ab-textarea', style: { minHeight: 78 },
+              value: whisper.lines || '',
+              placeholder: '（趴在屏幕边上发呆）\n今天也一起加油吧…',
+              onChange: (e) => setWs({ ...whisper, lines: e.target.value }),
+            }),
+            h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => savePet({ whisperLines: whisper.lines || '' }) }, '保存文案'),
+              h('div', { className: 'ab-spacer' }),
+              h(Btn, { small: true, kind: 'primary', disabled: busy === 'wh', onClick: async () => {
+                setBusy('wh')
+                try { const r = await post('/panel/pet/whisper', {}); toast(r.message || (r.ok ? '她嘟囔了一句' : '没说出来'), r.ok ? 'ok' : 'err') }
+                catch (e) { toast(e.message) } finally { setBusy(''); load() }
+              } }, busy === 'wh' ? '她想呢…' : '现在碎碎念一句'))),
+          h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } },
+            '今天已碎碎念 ' + (whisper.today || 0) + '/' + (whisper.maxPerDay ?? '?') + ' 次'
+            + (whisper.lastAt ? ' · 上次 ' + timeAgo(whisper.lastAt) : '')
+            + (whisper.thinking ? ' · 正在想这一句…' : nextIn != null ? ' · 下次约 ' + nextText : '')
+            + (whisper.lastText ? ' · 「' + whisper.lastText + '」' : '')),
+        ) : null,
+        // ---------- 干活状态：DSH 会话事件 → 动画 + 结束提醒 ----------
+        h(Card, { title: '干活状态与提醒', desc: '她在桌面上跟着 DSH 的进度演：思考时托腮想事，干活时忙碌，等你确认时张望，完成后雀跃一下——顺手弹一句、发个系统通知。' },
+          h(Row, { label: '状态动画', hint: '思考 / 干活 / 等确认 / 完成 / 出错 跟着会话自动切' },
+            h(Switch, { on: workEnabled, onChange: (v) => savePet({ workStatusEnabled: v }) })),
+          h(Row, { label: '现在的状态' },
+            h('span', { className: 'ab-muted ab-small' }, work && work.state
+              ? (work.label || work.state) + (work.task ? '：' + work.task : '') + '（' + timeAgo(work.at) + '）'
+              : '空闲（她自己在玩）')),
+          h(Row, { label: '完工弹一句气泡' }, h(Switch, { on: pet && pet.workBubble === false ? false : true, onChange: (v) => savePet({ workBubble: v }) })),
+          h(Row, { label: '完工发系统通知', hint: 'Windows 右下角通知；不喜欢可以关掉只留气泡' }, h(Switch, { on: pet && pet.workNotify === false ? false : true, onChange: (v) => savePet({ workNotify: v }) })),
+          h(Row, { label: '动画对应', hint: '按形象包里的「工作状态-*」自动对；可在 <包名>-config.json 的 events.workStatus 覆盖' },
+            h('span', { className: 'ab-muted ab-small' }, (() => {
+              const map = pet && pet.workAnimMap
+              if (!map) return '当前形象包没读到工作状态动画，会退回说话/待机动作'
+              const names = { thinking: '思考', working: '干活', result: '出结果', waiting: '等确认', success: '完成', error: '出错' }
+              return Object.keys(names).map((k) => names[k] + '→' + (map[k] ? '有' : '缺')).join('　')
+            })())),
+        ),
       )
     }
 
