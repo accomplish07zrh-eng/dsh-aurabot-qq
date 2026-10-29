@@ -481,10 +481,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const params = tgt.kind === 'group'
       ? { group_id: Number(tgt.id), file: src, name: label }
       : { user_id: Number(tgt.id), file: src, name: label }
+    const srcLabel = external ? (src.startsWith('base64://') ? 'base64' : '外部地址') : size < 1024 ? size + ' B' : Math.round(size / 1024) + ' KB'
     try {
       const r = await onebot.call(action, params, { timeoutMs: FILE_TIMEOUT_MS })
       bump('sent')
-      log.info(`${chatId}：发文件「${label}」（${external ? '外部地址' : Math.round(size / 1024) + ' KB'}）`)
+      log.info(`${chatId}：发文件「${label}」（${srcLabel}）`)
       return r
     } catch (error) {
       // 网关看不到本机路径（远程 / 容器）时，小文件改用 base64 再试
