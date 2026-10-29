@@ -29,6 +29,7 @@ import { parseCommand, runCommand, createMutes, commandList } from './chat/comma
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
 import { createBridge } from './core/bridge.js'
+import { createDangerGuard } from './security/danger.js'
 import { BUILTINS } from './modules/index.js'
 
 export const name = 'aurabot'
@@ -72,7 +73,13 @@ export function apply(ctx) {
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
   variable('aurabot_persona', () => rewrite('persona', currentPersonaText(cfg.persona.current)))
-  variable('aurabot_rules_private', () => rewrite('rules', rulesText('private', cfg, rulesOpts('private')), 'private'))
+  variable('aurabot_rules_private', () => {
+    const base = rewrite('rules', rulesText('private', cfg, rulesOpts('private')), 'private')
+    // 危险命令确认开着时补一句：被拦下要如实告诉主人，别绕着写
+    return base + (cfg.security && cfg.security.dangerConfirm
+      ? '\n【危险命令】终端命令如果被安全策略拦下（删根目录/格式化/关机/下载后直接执行等），把命令原文和原因如实告诉主人，等主人回复「确认」后再重试；不要换一种写法绕过。'
+      : '')
+  })
   variable('aurabot_rules_social', () => rewrite('rules', rulesText('social', cfg, rulesOpts('social')), 'social'))
 
   // ---------- QQ 网关 ----------
@@ -102,6 +109,7 @@ export function apply(ctx) {
   let verifying = false
   let pendingEvents = []
   let hub = null
+  let dangerGuard = null // 危险命令确认（security.dangerConfirm 开着才生效）
   async function checkLogin() {
     verifying = true
     pendingEvents = []
@@ -141,7 +149,16 @@ export function apply(ctx) {
     // 模块能看到所有原始事件（加群、撤回、好友申请……），只看不拦
     mods?.emit('onebot', ev)
     if (ev.post_type === 'message' || ev.post_type === 'message_sent') {
-      if (ev.post_type === 'message') hub.onMessage(ev).catch((error) => log.error('处理消息出错：', error.message))
+      if (ev.post_type === 'message') {
+        // 危险命令确认：主人的「确认 / 取消」回复先在这里截住，不交给聊天中枢
+        if (dangerGuard && ev.message_type === 'private') {
+          const text = Array.isArray(ev.message)
+            ? ev.message.filter((seg) => seg && seg.type === 'text').map((seg) => String(seg.data?.text || '')).join('')
+            : ''
+          if (dangerGuard.handleReply(`private:${ev.user_id}`, ev.user_id, text)) return
+        }
+        hub.onMessage(ev).catch((error) => log.error('处理消息出错：', error.message))
+      }
     } else if (ev.post_type === 'notice' && ev.notice_type === 'notify' && ev.sub_type === 'poke') {
       hub.onPoke(ev).catch((error) => log.error('处理戳一戳出错：', error.message))
     }
@@ -315,6 +332,21 @@ export function apply(ctx) {
   bridge = createBridge({ ctx, getConfig, setConfig, hub, mods, log: logger.child('bridge'), version: VERSION, apiVersion: API_VERSION, overview: () => overview() })
   core.bridge = bridge
   core.modules = mods
+  // 危险命令确认（可选保护）：DSH 在真正执行终端工具前会走 tools/pre-execute；
+  // 这里只拦 bash / pwsh 的危险命令，其它工具和普通命令原样放行。
+  dangerGuard = createDangerGuard({
+    getConfig,
+    log: logger.child('危险命令'),
+    deliver: (chatId, text) => hub.sendText(chatId, text),
+    chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    ownerQQ: () => cfg.ownerQQ,
+  })
+  core.dangerGuard = dangerGuard
+  ctx.effect(() => {
+    let off = null
+    try { off = ctx.on('tools/pre-execute', (exec, next) => dangerGuard.preExecute(exec, next)) } catch (error) { log.debug('挂危险命令确认失败：', error.message) }
+    return () => { try { if (typeof off === 'function') off() } catch (error) {} }
+  }, 'aurabot: 危险命令确认')
   const booted = mods.boot()
   booted.then(() => bridge.refresh())
 
