@@ -33,6 +33,33 @@ export default {
           return { ok: true, message: lines.join('\n') }
         },
       })]
+      // 发文件：只给主人私聊（full）挂，群里/别人没有本机文件能力；面板「聊天」页可以关掉
+      if (level === 'full' && api.config().files?.enabled) tools.push(defineTool({
+        name: 'qq_send_file',
+        description: '把本机上的一个文件（文档、压缩包、音频、视频、安装包……）当文件发到 QQ。默认发到当前聊天；主人让你发给别的私聊或群时，target 写 private:QQ号 或 group:群号（只能发白名单里的人和群）。file 要写这台电脑上的绝对路径，而且必须在允许发送的目录里（QQ 工作区，或主人在面板里加的目录）；name 可选，是对方看到的文件名。',
+        properties: {
+          file: str('本机文件的绝对路径（必须在允许发送的目录里）'),
+          name: str('对方看到的文件名，可不填'),
+          target: str('可选。private:QQ号 或 group:群号；省略 = 当前聊天'),
+        },
+        required: ['file'],
+        execute: async ({ file, name, target }) => {
+          const cfg = api.config()
+          let chatId = chat.chatId
+          const t = String(target || '').trim()
+          if (t) {
+            const [kind, id] = t.split(':')
+            const okList = kind === 'group' ? cfg.allow.groups : kind === 'private' ? [cfg.ownerQQ, ...cfg.allow.private] : []
+            if (!okList.includes(String(id))) return { ok: false, message: '不在白名单里，不能发' }
+            chatId = `${kind}:${id}`
+          }
+          const r = await hub.sendFile(chatId, String(file || ''), name ? String(name) : '')
+          if (!r) return { ok: false, message: !cfg.enabled ? '总开关关着，没发' : cfg.dryRun ? '试运行，只记了日志，没真发' : '没发出去' }
+          const label = String(name || '').trim() || String(file || '').split(/[\\/]/).pop()
+          return { ok: true, message: `文件发出去了：${label}` }
+        },
+      }))
+
       if (level === 'full') tools.push(defineTool({
         name: 'qq_send_message',
         description: '主动给某个 QQ 好友或群发一条消息（不是回复当前聊天时用）。target 写 private:QQ号 或 group:群号；只能发给白名单里的人和群。',
@@ -45,18 +72,6 @@ export default {
           if (!okList.includes(String(id))) return { ok: false, message: '不在白名单里，不能发' }
           const r = await hub.deliver(`${kind}:${id}`, String(text || ''))
           return r?.missedAt?.length ? { ok: true, message: `发出去了，但 ${r.missedAt.map((n) => '@' + n).join('、')} 没对上群里的人（群名片和昵称里没有），只是文字、对方收不到提醒。要真 @ 得写 <at:QQ号>，不知道就问主人要他的群名片或 QQ 号` } : { ok: true, message: '发出去了' }
-        },
-      }), defineTool({
-        name: 'qq_send_file',
-        description: '把本机上的一个文件（文档、压缩包、音频、视频、安装包……）当文件发到当前 QQ 聊天。主人让她发东西、把做好的文件给主人看时用。file 要写这台电脑上的绝对路径；name 可选，是对方看到的文件名。',
-        properties: { file: str('本机文件的绝对路径'), name: str('对方看到的文件名，可不填') },
-        required: ['file'],
-        execute: async ({ file, name }) => {
-          const cfg = api.config()
-          const r = await hub.sendFile(chat.chatId, String(file || ''), name ? String(name) : '')
-          if (!r) return { ok: false, message: !cfg.enabled ? '总开关关着，没发' : cfg.dryRun ? '试运行，只记了日志，没真发' : '没发出去' }
-          const label = String(name || '').trim() || String(file || '').split(/[\\/]/).pop()
-          return { ok: true, message: `文件发出去了：${label}` }
         },
       }))
       return tools

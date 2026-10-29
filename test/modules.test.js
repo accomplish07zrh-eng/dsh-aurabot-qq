@@ -83,6 +83,7 @@ before(async () => {
     merge: { waitSec: 0.2, maxSec: 2 },
     bili: { enabled: true },
     modules: { bili: { enabled: false } },
+    files: { enabled: true, maxMB: 5, dirs: [dataDir] },
   }))
   writeMod('echo', echoCode('pong'))
   writeMod('sender', senderCode)

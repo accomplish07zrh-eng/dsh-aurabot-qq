@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
-import { basename, isAbsolute, join } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { parseMessageEvent } from './inbound.js'
@@ -428,19 +428,35 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   // 发文件：网关可能和插件不在同一台机器上（Docker / 远程 OneBot），它看不到本机路径，
   // 所以按本机路径发失败时，小文件会用 base64 再试一次；超时留长一点，别把大文件上传误判成失败。
+  // 安全默认（#52）：功能默认关；只允许发 QQ 工作区（她平时写文件的地方）和面板里额外加的目录里的文件；
+  // 单个文件有大小上限；只在主人私聊里能触发；发了什么会写进日志。
   const FILE_TIMEOUT_MS = 120_000
   const FILE_BASE64_MAX = 30 * 1024 * 1024
   const isExternalFile = (s) => /^(https?:\/\/|base64:\/\/)/i.test(s)
   const fileLabel = (name, src) => String(name || '').trim() || basename(src.split(/[?#]/)[0]) || '文件'
+  const fileRootsOf = (cfg) => [workspaceDirOf(cfg), ...(Array.isArray(cfg?.files?.dirs) ? cfg.files.dirs : [])]
+    .filter(Boolean)
+    .map((d) => { try { return resolve(String(d)) } catch (error) { return '' } })
+    .filter(Boolean)
+  const insideRoots = (file, roots) => {
+    let p
+    try { p = resolve(file) } catch (error) { return false }
+    return roots.some((root) => {
+      const rel = relative(root, p)
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    })
+  }
 
   /** 把一个文件当文件发到 QQ（OneBot upload_private_file / upload_group_file）。file 可以是本机绝对路径、网址或 base64://。 */
   async function sendFile(chatId, file, name) {
     const cfg = getConfig()
     const tgt = targetOf(chatId)
     if (!tgt) return null
+    if (!cfg.files?.enabled) throw new Error('发文件没打开（面板「聊天」页 → 发文件），打开后才能发')
     const src = String(file ?? '').trim()
     if (!src) throw new Error('要发哪个文件？')
     const external = isExternalFile(src)
+    const maxBytes = Math.max(1, Number(cfg.files.maxMB) || 50) * 1024 * 1024
     let size = 0
     if (!external) {
       if (!isAbsolute(src)) throw new Error('要发本机文件得给绝对路径')
@@ -448,6 +464,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const st = statSync(src)
       if (!st.isFile()) throw new Error(`这不是文件：${src}`)
       size = st.size
+      const roots = fileRootsOf(cfg)
+      if (roots.length && !insideRoots(src, roots)) throw new Error('这个文件不在允许发送的目录里（面板「聊天」页 → 发文件 可以加目录）')
+      if (size > maxBytes) throw new Error(`文件太大（${(size / 1024 / 1024).toFixed(1)} MB），上限 ${Math.round(maxBytes / 1024 / 1024)} MB`)
     }
     const label = fileLabel(name, src)
     // 模拟测试：只记下来，不真发
@@ -469,7 +488,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       return r
     } catch (error) {
       // 网关看不到本机路径（远程 / 容器）时，小文件改用 base64 再试
-      if (external || size > FILE_BASE64_MAX) {
+      const canRetryBase64 = !external && size <= Math.min(FILE_BASE64_MAX, maxBytes)
+      if (!canRetryBase64) {
         bump('errors')
         throw new Error(`发文件失败：${error.message}`)
       }
