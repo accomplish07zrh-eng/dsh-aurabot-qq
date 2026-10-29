@@ -635,12 +635,19 @@ test('生图工具结果：能看图时带 image 块，纯文本模型只给文�
   assert.equal(withImg.image.type, 'image')
   assert.ok(withImg.image.attachment?.attachmentId, '要登记成附件块')
   assert.equal(withImg.image.data, undefined, '不要裸 base64')
+  // #59：能看图的模型要拿到本地保存路径，方便她收录表情包 / 存素材
+  assert.ok(withImg.path && /\.png$/.test(withImg.path), '能看图时要返回本地路径：' + JSON.stringify(withImg.path))
+  assert.match(withImg.message || '', /已保存到本机：/, '路径写进工具结果文字里')
+  const { existsSync } = await import('node:fs')
+  assert.equal(existsSync(withImg.path), true, '路径对应的文件真的存在')
+  assert.equal(withImg.prompt, '一只蓝色小鲸鱼', '带上原始提示词')
+  assert.ok(Number(withImg.bytes) > 0 && Number(withImg.elapsedMs) >= 0, '带字节数和耗时')
 
   // 声明「不支持」：纯文本模型，绝不能塞 image 块
   const noImg = await draw('off')
   assert.equal(noImg.image, undefined, '纯文本模型不应该拿到 image 块')
   assert.match(noImg.message || '', /没能把图片交给你看/, '看不了图时要如实说，别让她编画面')
-  assert.doesNotMatch(noImg.message || '', /存在\s*[A-Za-z]:[\\\\/]|\.png/, '不能给文件路径')
+  assert.doesNotMatch(noImg.message || '', /存在\s*[A-Za-z]:[\\\\/]|\.png|已保存到本机/, '看不了图的模型不给文件路径')
 
   // 恢复默认
   await fake.call('/save', { model: { vision: 'auto' } })
@@ -833,4 +840,29 @@ test('主人私聊可以查询最新 QQ 资料，关闭资料模块后查询工�
   } finally {
     await fake.call('/save', { modules: { profile: { enabled: true } } })
   }
+})
+
+test('#58 在 DSH 会话窗口里直接打字：这一轮按主人说的算（重开会话后也一样）', async () => {
+  // 先重新开始所有 QQ 会话，模拟用户点「重新开始所有 QQ 会话」
+  await fake.call('/sessions/reset')
+  // 从 QQ 发一条消息，建立新的 QQ 会话
+  const n = fake.turns.length
+  mock.push(priv(OWNER, text('在吗')))
+  await until(() => fake.turns.length > n)
+  const sid = fake.workspaces[0].sessionIds.at(-1)
+  assert.ok(sid, '新会话建出来了')
+  // 模拟主人在 DSH 会话窗口里直接打字（DSH 会发 user/message，source.kind = 'user'）
+  api.hub.onSessionEvent({ id: sid }, { type: 'user/message', data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '帮我把 B 站头像改一下' }] } })
+  assert.equal(api.hub.turnSendersAllOwner(sid), true, '面板里直接打字也算主人')
+  assert.equal(api.hub.turnHasOwner(sid), true)
+  // 权限真的通了：改昵称工具（默认仅主人）能执行
+  const agent = fake.agents.get(sid)
+  const tool = agent && agent.tools.get('qq_set_nickname')
+  assert.ok(tool, '会话里有改资料工具')
+  const r = await tool.execute({ name: '小鲸鱼' }, { agent })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  // 从 QQ 转进来的消息（source.kind = 'aurabot'）不会误标成「面板里直接打字」
+  api.hub.onSessionEvent({ id: sid }, { type: 'turn/end', data: { turn: 999999, reason: { kind: 'completed' } } })
+  api.hub.onSessionEvent({ id: sid }, { type: 'user/message', data: { role: 'user', source: { kind: 'aurabot' }, content: [{ type: 'text', text: 'x' }] } })
+  assert.equal(api.hub.turnSendersAllOwner(sid), false, 'QQ 转进来的不标成主人直输')
 })

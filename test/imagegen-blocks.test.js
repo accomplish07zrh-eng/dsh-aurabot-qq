@@ -25,7 +25,7 @@ test('drawResultBlocks：有图时文字 + image 块，没图时只有文字', (
   assert.deepEqual(bad, [{ type: 'text', text: '✗ 生图服务没配' }])
 })
 
-test('drawToolMessage：看不了图时如实说，且不带路径', () => {
+test('drawToolMessage：看不了图时如实说；这个函数本身不带路径（路径由模块按能否看图决定）', () => {
   assert.equal(drawToolMessage({ visual: true }), '画好发出去了')
   const blind = drawToolMessage({ visual: false })
   assert.match(blind, /没能把图片交给你看/)

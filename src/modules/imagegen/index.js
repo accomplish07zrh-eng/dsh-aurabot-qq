@@ -46,6 +46,7 @@ export default {
       render: drawResultBlocks,
       execute: async ({ prompt }) => {
         if (api.config().imageGen.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '画图只给主人画哦' }
+        const startedAt = Date.now()
         const buf = await gen.generate(String(prompt || ''))
         const sent = await hub.sendSegments(chat.chatId, [{ type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[生图] ${String(prompt).slice(0, 30)}`)
         if (!sent) return { ok: false, message: '画好了，但没有发到 QQ（请检查试运行和网关）' }
@@ -53,19 +54,30 @@ export default {
         if (saved) api.log.debug(`生图已存盘：${saved}`)
         try { memory.addEvent?.({ text: `按提示词画了一张图（不一定等于实际画面）：${String(prompt).slice(0, 120)}`, about: chat.kind === 'private' ? chat.userId : '', tags: ['画画'], importance: 0.4 }) }
         catch (error) { api.log.warn('生图已发送，但经历没记下来：', error.message) }
-        const visual = (await hub.canSeeImages(chat)) === true
-        const out = { ok: true, message: drawToolMessage({ visual }) }
+        let visual = (await hub.canSeeImages(chat)) === true
         // 只有明确能看图的模型才把图交给它；纯文本模型只拿文字，不会崩。
         // 图要先缩、再登记成 DSH 附件块 —— 直接塞 base64 会让下一轮请求整轮失败（实测）
+        let img = null
         if (visual) {
-          const img = await imageToolBlock(api.dsh, buf, { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
-          if (img) out.image = img
-          else {
+          img = await imageToolBlock(api.dsh, buf, { ffmpegPath: api.config().bili && api.config().bili.ffmpegPath })
+          if (!img) {
             // 图没给成：如实说看不了，别让她照着提示词编画面细节
-            out.message = drawToolMessage({ visual: false })
+            visual = false
             api.log.debug('这次生图没把图交给模型（缩图/登记失败），只给文字')
           }
         }
+        const out = {
+          ok: true,
+          message: drawToolMessage({ visual }),
+          prompt: String(prompt || ''),
+          bytes: buf.length,
+          elapsedMs: Date.now() - startedAt,
+          ...(saved ? { path: saved } : {}),
+        }
+        if (img) out.image = img
+        // 能看图的模型才把本地路径告诉她（#59）：收录表情包 / 存素材 / 之后 qq_add_sticker 用；
+        // 看不了图的模型不给路径，免得她知道路径就去读图，绕开「不给看」的判断。
+        if (visual && saved) out.message += `\n已保存到本机：${saved}（要收录表情包、存素材时可以用这个路径）`
         return out
       },
     }) : []))
