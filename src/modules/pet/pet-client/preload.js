@@ -11,4 +11,10 @@ contextBridge.exposeInMainWorld('petBridge', {
   screenInfo: () => ipcRenderer.invoke('pet:screen'),
   /** 停住主进程的抛掷循环（例如用户在飞行中又按住）。 */
   stopThrow: () => ipcRenderer.send('pet:throw-stop'),
+  /** 命中检测上报：true=悬停在宠物/气泡上（窗口恢复交互），false=在透明区（点击穿透）。 */
+  setHit: (hit) => ipcRenderer.send('pet:hit', Boolean(hit)),
+  /** 右键菜单：渲染页 contextmenu → 主进程弹原生菜单（仿 dsh-pet 的右键菜单）。 */
+  showMenu: () => ipcRenderer.send('pet:menu'),
+  /** 主动连上插件问一次配置/状态（菜单项「换个动作」等需要确认在线时用，可选）。 */
+  ping: () => ipcRenderer.send('pet:ping'),
 })

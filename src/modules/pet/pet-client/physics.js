@@ -1,5 +1,5 @@
 // Aurabot 桌宠拖拽物理（纯逻辑，零依赖）—— 从 dsh-pet（MIT License，
-// https://github.com/nicepkg/dsh-pet 的 src/shared/physics/{spring,throw,release,squash,constants}.ts）
+// https://github.com/PC2005-cloud/dsh-pet 的 src/shared/physics/{spring,throw,release,squash,constants}.ts）
 // 去 TypeScript 化移植的单文件版；只保留单屏场景用得上的部分：
 //   · springStep / softClampSpeed   跟手弹簧与软钳速
 //   · throwBounds / throwStep       抛掷边界与「重力积分 + 地面/侧壁反弹」单步积分
@@ -8,6 +8,7 @@
 // 本文件是模板/生成物（由 pet 模块 POST /client/install 拷进数据目录）。
 // UMD：Electron 主进程 require('./physics.js')、渲染页 <script> 与 node:test 都能用。
 // 形象/动画素材的许可与代码无关（dsh-pet 代码 MIT；宠物形象素材 CC BY-NC-SA 4.0，用户自备）。
+// 完整第三方署名见仓库根 THIRD-PARTY-NOTICES.md。
 ;(function (global) {
   'use strict'
 
@@ -57,10 +58,24 @@
   }
 
   // ---- throw.ts ----
-  /** 由窗口宽高与宠物包围盒尺寸算抛掷边界（包围盒左上角允许范围）。 */
+  /** 由屏幕区尺寸与宠物包围盒算抛掷边界（返回的是**窗口左上角**允许范围）。
+   *  o: { W, H, size?, bodyW?, bodyH?, offsetX?, offsetY?, sideAllow? }
+   *  · 只给 size 时按旧的 16:9 身体、贴窗口左上角（兼容老调用与单测）。
+   *  · 真实场景要传 bodyW/bodyH（可见身体尺寸）与 offsetX/offsetY（身体左上角相对窗口左上角的偏移）：
+   *    窗口是 280×340，宠物画在窗口底部，用窗口高当身体高会让静止点掉到屏幕外 183px。
+   */
   function throwBounds(o) {
-    var h = (o.size * 9) / 16
-    return { minX: -o.sideAllow, minY: 0, maxX: o.W - o.size + o.sideAllow, maxY: o.H - h }
+    var bodyW = o.bodyW == null ? o.size : o.bodyW
+    var bodyH = o.bodyH == null ? (o.size * 9) / 16 : o.bodyH
+    var offX = o.offsetX || 0
+    var offY = o.offsetY || 0
+    var allow = o.sideAllow || 0
+    return {
+      minX: -offX - allow,
+      minY: -offY,
+      maxX: o.W - offX - bodyW + allow,
+      maxY: o.H - offY - bodyH,
+    }
   }
   /** 抛体单步积分与边界反弹。返回 {x,y,vx,vy,bounced,atRest}。 */
   function throwStep(s, dtRaw, b, physics) {
@@ -82,9 +97,13 @@
       else vy = -Math.abs(vy) * ph.restitution
       bounced = true
     }
-    var speed = Math.hypot(vx, vy)
-    var atRest = (y >= b.maxY - 1 && Math.abs(vy) < 1 && Math.abs(vx) < REST_VX) ||
-      (bounced && speed < REST_VY && Math.abs(vy) < 1)
+    // 静止判定只认「贴近地面」：旧实现里 `bounced && speed < REST_VY && |vy| < 1` 会在半空成立
+    // （刚蹭了侧壁 + 正好在抛物线顶点 vy≈0）→ 桌宠停在半空（悬空卡死不动的直接原因）。
+    // 另外判定成立时把位置吸附到地面、速度清零：不吸附会留下 <1px 的浮空偏差（视觉看不出来，
+    // 但这正是「落地不精确」类回归的来源），也让「最终落在地面」成为确定行为。
+    var nearGround = y >= b.maxY - 1
+    var atRest = nearGround && Math.abs(vy) < 1 && Math.abs(vx) < REST_VX
+    if (atRest) { y = b.maxY; vx = 0; vy = 0 }
     return { x: x, y: y, vx: vx, vy: vy, bounced: bounced, atRest: atRest }
   }
   /** 一帧该积几步（整数 ≥ 1）：位移超过 SUBSTEP_PX 就拆步，防跳过落地/反弹帧。 */
