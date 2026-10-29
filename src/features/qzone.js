@@ -26,7 +26,7 @@ export function planDiaryTimes({ timesPerDay, windowStart, windowEnd, minGapMinu
   return Array.from({ length: n }, (_, i) => a + Math.floor((span / n) * (i + 0.5)))
 }
 
-export function createQzone({ getConfig, onebot, hub, log, onDiary }) {
+export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage }) {
   const file = () => dataDir('diary.json')
   const state = () => readJson(file(), () => ({ plan: { day: '', times: [], done: [] }, history: [] }))
   const save = (s) => writeJson(file(), s)
@@ -151,7 +151,22 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary }) {
       text = String(text || '').replace(/\|\|\|/g, ' ').replace(/<[^>]+>/g, '').replace(/^["「“]|["」”]$/g, '').trim()
       if (text.length > cfg.maxChars + 20) text = text.slice(0, cfg.maxChars + 20)
       if (!text || text === '[沉默]') return { ok: false, message: '她这次没写出来' }
-      const r = await post(text, { visibility })
+      // 配图：面板「日记配图」开着时，从今天画的图 / 今天收的表情包里挑一张；挑不到就只发文字
+      const images = []
+      if (cfg.attachImage !== false) {
+        try {
+          const img = await pickImage?.()
+          if (img) images.push(img)
+        } catch (error) { log.warn('日记配图没挑成：', error.message) }
+      }
+      if (images.length) log.info(`日记配图：${images[0]}`)
+      let r = await post(text, { visibility, images })
+      // 配图发不出去（比如空间不认这张图）不能把整篇日记憋回去：退回只发文字，日记照发
+      if (!r.ok && images.length) {
+        log.warn('日记配图没发成，改成只发文字：', r.message)
+        images.length = 0
+        r = await post(text, { visibility })
+      }
       const s = state()
       s.history.unshift({ at: Date.now(), text, ok: r.ok, tid: r.tid || '', dryRun: Boolean(r.dryRun), visibility: r.visibility || visibility || cfg.visibility, target_uins: r.target_uins || [], error: r.ok ? '' : r.message })
       s.history = s.history.slice(0, 100)
@@ -159,7 +174,7 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary }) {
       if (r.ok && !r.dryRun) {
         try { onDiary?.(text) } catch (error) {}
       }
-      return { ...r, text }
+      return { ...r, text, images: images.length }
     } catch (error) {
       log.warn('写日记失败：', error.message)
       return { ok: false, message: error.message }

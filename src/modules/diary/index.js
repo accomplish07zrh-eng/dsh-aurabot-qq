@@ -3,6 +3,7 @@
 
 import { createQzone } from '../../features/qzone.js'
 import { resolveAudience } from '../../features/qzone-audience.js'
+import { pickDiaryImage } from '../../features/diary-image.js'
 import { defineTool, str } from '../../tools/tools.js'
 
 export default {
@@ -11,12 +12,13 @@ export default {
   version: '1.0.0',
   description: '每天自己写几条 QQ 空间说说；主人私聊里能让她发说说（qq_send_qzone）',
   tab: 'diary',
-  files: ['features/qzone.js', 'features/qzone-audience.js'],
+  files: ['features/qzone.js', 'features/qzone-audience.js', 'features/diary-image.js'],
   setup(api) {
     const { hub, onebot, http } = api.core
     const memory = api.lazy('memory')
     const qzone = createQzone({
       getConfig: api.config, onebot, hub, log: api.log,
+      pickImage: () => pickDiaryImage(),
       // 写过的空间日记也进记忆库：以后聊到相关的事，她会想起自己那天写过什么
       onDiary: (text) => memory.add?.({ text: `我在 QQ 空间写过：${text}`, importance: 0.55, tags: ['空间日记'], source: 'diary' }),
     })

@@ -87,6 +87,7 @@ export const DEFAULTS = {
     windowStart: '10:00',
     windowEnd: '23:30',
     minGapMinutes: 180,
+    attachImage: true, // 写日记时配一张图（优先今天她画的，其次今天收的表情包）
     minChars: 60,
     maxChars: 140,
     visibility: 'all', // all | friends | selected | self | excluded，和 QQ 空间自身的可见范围一致
@@ -260,6 +261,7 @@ export function normalize(raw) {
   c.diary.windowStart = hhmm(c.diary.windowStart, '10:00')
   c.diary.windowEnd = hhmm(c.diary.windowEnd, '23:30')
   c.diary.minGapMinutes = num(c.diary.minGapMinutes, 180, 0, 1440)
+  c.diary.attachImage = bool(c.diary.attachImage, true)
   c.diary.minChars = num(c.diary.minChars, 60, 10, 500)
   c.diary.maxChars = num(c.diary.maxChars, 140, 20, 1000)
   c.diary.visibility = DIARY_AUDIENCES.includes(c.diary.visibility) ? c.diary.visibility : 'all'

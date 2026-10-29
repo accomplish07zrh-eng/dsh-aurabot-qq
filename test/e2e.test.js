@@ -474,19 +474,52 @@ test('听语音：收到语音先转文字再交给她', async () => {
   await until(() => fake.turns.at(-1)?.userText.includes('[语音] 今天想吃白米饭'))
 })
 
-test('空间日记：手动写一篇（仅自己可见），不往聊天里发，然后删除', async () => {
+test('空间日记：手动写一篇（仅自己可见），配今天画的图，不往聊天里发，然后删除', async () => {
+  const { savePainting } = await import('../src/features/paintings.js')
+  const { unlinkSync } = await import('node:fs')
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+  const painting = savePainting(png, '日记配图测试', { now: new Date() })
   // 只统计这次调用里产生的投递：前一条消息的回复可能还在异步发送，
   // 用「调用前后全局条数」判断会偶发失败（就是那个 27 !== 26 的老毛病）
   const { result, sent } = await api.hub.capture(() => fake.call('/diary/run', { visibility: 'self' }))
   const r = result.json()
   assert.equal(r.ok, true, r.message)
+  assert.equal(r.images, 1, '今天画了图，日记应该配一张')
   const q = mock.sent('send_qzone_msg')[0]
   assert.equal(q.params.ugc_right, 64)
   assert.match(q.params.content, /白米饭/)
+  assert.equal(q.params.images.length, 1, '说说带了一张图')
+  assert.match(q.params.images[0], /^base64:\/\//)
   assert.deepEqual(sent, [], '日记那一轮没转发到聊天里')
   const d = (await fake.call('/qzone/delete', { tid: r.tid })).json()
   assert.equal(d.ok, true)
   assert.equal(mock.qzone.size, 0)
+
+  // 面板关掉「日记配图」：只发文字
+  await fake.call('/save', { diary: { attachImage: false } })
+  const r2 = (await api.hub.capture(() => fake.call('/diary/run', { visibility: 'self' }))).result.json()
+  assert.equal(r2.ok, true, r2.message)
+  assert.equal(r2.images, 0)
+  const q2 = mock.sent('send_qzone_msg')[1]
+  assert.equal(q2.params.images, undefined, '关掉后不带图')
+  await fake.call('/qzone/delete', { tid: r2.tid })
+
+  // 配图发不出去（空间不认这张图）：不能憋住整篇日记，退回只发文字
+  const painting2 = savePainting(png, '日记配图失败测试', { now: new Date() })
+  mock.state.failQzoneImage = true
+  try {
+    const r3 = (await api.hub.capture(() => fake.call('/diary/run', { visibility: 'self' }))).result.json()
+    assert.equal(r3.ok, true, '配图失败也要把日记发出去')
+    assert.equal(r3.images, 0, '最后没配成图')
+    const q3 = mock.sent('send_qzone_msg')[2]
+    assert.equal(q3.params.images, undefined, '退回只发文字的说说')
+    await fake.call('/qzone/delete', { tid: r3.tid })
+  } finally {
+    mock.state.failQzoneImage = false
+    await fake.call('/save', { diary: { attachImage: true } })
+  }
+  try { unlinkSync(painting2) } catch (error) {}
+  try { unlinkSync(painting) } catch (error) {}
 })
 
 test('面板接口：概览、人格切换', async () => {

@@ -49,7 +49,7 @@ export async function startMockOneBot({ selfId = '20000002', token = 'mock-token
   let msgSeq = 1000
   const faces = new Map()
   const qzone = new Map()
-  const state = { failRecord: false, failUploadPath: false, roles: {}, favorites: [], selfProfile: { nickname: '大肥鱼', long_nick: '爱吃白米饭' } } // favorites：机器人号 QQ 收藏表情的地址 // roles: 群号 → 机器人在群里的身份（默认群主）
+  const state = { failRecord: false, failUploadPath: false, failQzoneImage: false, roles: {}, favorites: [], selfProfile: { nickname: '大肥鱼', long_nick: '爱吃白米饭' } } // favorites：机器人号 QQ 收藏表情的地址 // roles: 群号 → 机器人在群里的身份（默认群主）
 
   function handle(action, params) {
     switch (action) {
@@ -78,6 +78,8 @@ export async function startMockOneBot({ selfId = '20000002', token = 'mock-token
       case 'modify_custom_face': faces.set(params.emoji_id, params.desc); return null
       case 'delete_custom_face': faces.delete(params.emoji_id); return null
       case 'send_qzone_msg': {
+        // 模拟空间不认配图（图太大 / 格式不对）：带图发说说直接失败，用来测「退回只发文字」
+        if (state.failQzoneImage && params.images && params.images.length) throw new Error('第 1 张图片上传失败: 上传图片失败:响应缺少必要字段')
         const tid = 'tid-' + (qzone.size + 1)
         qzone.set(tid, params)
         return { tid }
