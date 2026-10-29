@@ -156,9 +156,12 @@ export async function lookWithVision({ dsh, api, info, getConfig, log, deps = {}
       log?.debug('看画面跳过：拿不到可抽帧的流地址')
       return empty
     }
+    // durl 有时只覆盖前面一段（常见：一段 MP4 十几分钟），在这一段里均匀抽，别把时间点丢到没覆盖的地方。
+    const covered = windows.length ? windows[windows.length - 1].endMs : Infinity
+    const span = Number.isFinite(covered) ? Math.min(Number(info.duration) || 0, covered / 1000) : Number(info.duration)
     // 整段抽帧最多 60 秒，避免坏流按帧数倍增等待时间。
     const deadline = Date.now() + 60_000
-    for (const t of frameTimes(info.duration, c.visionFrames)) {
+    for (const t of frameTimes(span > 0 ? span : info.duration, c.visionFrames)) {
       const remaining = deadline - Date.now()
       if (remaining <= 0) break
       let url = stream && stream.baseUrl

@@ -175,6 +175,20 @@ test('progressiveWindows / windowAt：durl 分段按 length 拼成全片，选�
   assert.deepEqual(progressiveWindows([]), [])
 })
 
+test('看画面：durl 只覆盖前面一段时，时间点收在这段里', async () => {
+  const calls = []
+  const { args } = pipeline({
+    assertPublicUrl: async () => {},
+    grabFrame: async (_exe, url, at) => { calls.push({ url, at }); return Buffer.from('frame') },
+  })
+  args.api.playurl = async () => ({ video: [], durl: [{ url: 'https://cdn.example/only.mp4', length: 60_000 }] })
+  args.info.duration = 600 // 接口说 10 分钟，但 durl 只有前 60 秒
+  const r = await lookWithVision(args)
+  assert.equal(r.frames.length, 12)
+  assert.ok(calls.every((c) => c.url === 'https://cdn.example/only.mp4' && c.at <= 60), '抽帧时间点都落在已覆盖的 60 秒内')
+  assert.ok(calls.some((c) => c.at >= 50), '铺到这段的末尾附近')
+})
+
 test('看画面：只有 durl（渐进式 MP4）时也能抽帧，按段定位', async () => {
   const calls = []
   const { args } = pipeline({
