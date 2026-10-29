@@ -21,27 +21,32 @@ test('WBI 签名和文档里的例子一致', () => {
   assert.equal(q, 'bar=514&foo=114&wts=1702204169&zab=1919810&w_rid=8f6f2b5b3d485fe1886cec6a0be8c5d4')
 })
 
-test('playurl：WBI 签名请求 DASH，兼容两种地址字段并过滤空流', async () => {
+test('playurl：WBI 签名一次要全格式，DASH 和 durl 都带出来', async () => {
   let request
   const client = api.createBiliApi({ getCookie: () => 'buvid3=test', fetchImpl: async (url) => {
     if (url.includes('/nav')) return { json: async () => ({ data: { wbi_img: {
       img_url: 'https://i.example/7cd084941338484aae1ad9425b84077c.png', sub_url: 'https://i.example/4932caff0ff746eab6f01bf08b70ac45.png',
     } } }) }
     request = new URL(url)
-    return { json: async () => ({ code: 0, data: { dash: {
-      video: [{ base_url: 'https://cdn.example/1', codecs: 'avc1', height: 480 }, { baseUrl: 'https://cdn.example/2' }, {}],
-      audio: [{ baseUrl: 'https://cdn.example/audio' }],
-    } } }) }
+    return { json: async () => ({ code: 0, data: {
+      dash: {
+        video: [{ base_url: 'https://cdn.example/1', codecs: 'avc1', height: 480 }, { baseUrl: 'https://cdn.example/2' }, {}],
+        audio: [{ baseUrl: 'https://cdn.example/audio' }],
+      },
+      durl: [{ order: 1, url: 'https://cdn.example/p1.mp4', length: 60000, size: 123 }, { order: 2, url: '' }],
+    } }) }
   } })
   const r = await client.playurl({ bvid: 'BV1aaaaaaaaa', cid: 9 })
   assert.equal(request.pathname, '/x/player/wbi/playurl')
-  assert.equal(request.searchParams.get('fnval'), '16')
+  assert.equal(request.searchParams.get('fnval'), '4048', '要全格式，不然拿不到 DASH')
+  assert.equal(request.searchParams.get('fourk'), '1')
   assert.equal(request.searchParams.get('cid'), '9')
   assert.equal(request.searchParams.get('bvid'), 'BV1aaaaaaaaa')
   assert.match(request.searchParams.get('w_rid'), /^[a-f0-9]{32}$/)
   assert.equal(r.video.length, 2)
   assert.equal(r.video[0].baseUrl, 'https://cdn.example/1')
   assert.equal(r.audio.length, 1)
+  assert.deepEqual(r.durl, [{ order: 1, url: 'https://cdn.example/p1.mp4', length: 60000, size: 123 }], 'durl 作为没有 DASH 时的回退，空地址过滤掉')
 })
 
 test('解析：Cookie 只取有用的、认出视频号和短链、QQ 分享卡片', async () => {

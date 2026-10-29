@@ -1,6 +1,6 @@
 {
   "name": "dsh-aurabot-qq",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "description": "Aurabot：住在 QQ 里的 AI 伙伴「大肥鱼」—— DeepSeek Harness 插件（经 SnowLuma / OneBot v11 接 QQ）",
   "license": "MIT",
   "private": true,

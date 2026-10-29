@@ -138,16 +138,22 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
     }
   }
 
-  /** DASH 音视频流地址，视频流供 ffmpeg 定位抽帧。 */
+  /** DASH / 渐进式音视频流地址，视频流供 ffmpeg 定位抽帧。 */
   async function playurl({ bvid, aid, cid, qn = 64 }) {
     await ensureBuvid()
+    // fnval 4048 = DASH + HDR + 4K + 杜比等全要；很多账号 / 视频现在只回 durl（渐进式 MP4），所以两种都带出去。
     const d = await req(await signed('https://api.bilibili.com/x/player/wbi/playurl', {
-      ...(bvid ? { bvid } : { aid }), cid, qn, fnval: 16, fnver: 0, fourk: 0,
+      ...(bvid ? { bvid } : { aid }), cid, qn, fnval: 4048, fnver: 0, fourk: 1,
     }))
     const one = (x) => (x ? { id: x.id, width: x.width, height: x.height, codecs: x.codecs || '', bandwidth: x.bandwidth || 0, baseUrl: x.baseUrl || x.base_url || '' } : null)
+    // 没有 DASH 时退回 durl：每段是渐进式 MP4，length 是这一段的毫秒数（按顺序拼起来是全片）。
+    const durl = (d.durl || [])
+      .map((x) => ({ order: Number(x.order) || 0, url: x.url || '', length: Number(x.length) || 0, size: Number(x.size) || 0 }))
+      .filter((x) => x.url)
     return {
       video: (d.dash?.video || []).map(one).filter((v) => v && v.baseUrl),
       audio: (d.dash?.audio || []).map(one).filter((v) => v && v.baseUrl),
+      durl,
     }
   }
 

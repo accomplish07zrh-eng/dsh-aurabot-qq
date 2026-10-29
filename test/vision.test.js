@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { frameTimes, pickVideoStream, findFfmpeg, visionState, lookWithVision, describeFrames } from '../src/bili/vision.js'
+import { frameTimes, pickVideoStream, findFfmpeg, visionState, lookWithVision, describeFrames, progressiveWindows, windowAt } from '../src/bili/vision.js'
 import { digestOf } from '../src/bili/duty.js'
 
 test('frameTimes：跳过首尾 5%，均匀铺开，不重复', () => {
@@ -44,7 +44,7 @@ test('findFfmpeg：配置的路径优先，都找不到返回空串', () => {
   const fake = join('C:\\tools', 'ffmpeg.exe')
   assert.equal(findFfmpeg(fake, { exists: (p) => p === fake }), fake, '配置里填的直接用')
   const exe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
-  const dir = join('D:\\bin')
+  const dir = process.platform === 'win32' ? 'D:\\bin' : '/opt/bin'
   const inPath = join(dir, exe)
   assert.equal(findFfmpeg('', { pathEnv: dir, exists: (p) => p === inPath }), inPath, '从 PATH 里找')
 })
@@ -155,6 +155,47 @@ test('看画面：真实地址检查拒绝本机和 file 协议，未知视觉�
   const { args } = pipeline({ canSeeImages: async () => null })
   assert.ok((await lookWithVision(args)).text)
   assert.deepEqual(frameTimes(Infinity, 6), [])
+})
+
+test('progressiveWindows / windowAt：durl 分段按 length 拼成全片，选段和段内时间', () => {
+  const ws = progressiveWindows([
+    { url: 'https://cdn/1.mp4', length: 60_000 },
+    { url: 'https://cdn/2.mp4', length: 30_000 },
+    { url: 'https://cdn/3.mp4', length: 0 },
+  ])
+  assert.deepEqual(ws.map((w) => [w.url, w.startMs, w.endMs]), [
+    ['https://cdn/1.mp4', 0, 60_000],
+    ['https://cdn/2.mp4', 60_000, 90_000],
+    ['https://cdn/3.mp4', 90_000, Infinity],
+  ])
+  assert.equal(windowAt(ws, 10).url, 'https://cdn/1.mp4')
+  assert.equal(windowAt(ws, 60).url, 'https://cdn/2.mp4')
+  assert.equal(windowAt(ws, 120).url, 'https://cdn/3.mp4')
+  assert.equal(windowAt([], 5), null)
+  assert.deepEqual(progressiveWindows([]), [])
+})
+
+test('看画面：只有 durl（渐进式 MP4）时也能抽帧，按段定位', async () => {
+  const calls = []
+  const { args } = pipeline({
+    assertPublicUrl: async () => {},
+    grabFrame: async (_exe, url, at) => { calls.push({ url, at }); return Buffer.from('frame') },
+  })
+  args.api.playurl = async () => ({
+    video: [],
+    durl: [
+      { url: 'https://cdn.example/part1.mp4', length: 120_000 },
+      { url: 'https://cdn.example/part2.mp4', length: 300_000 },
+    ],
+  })
+  args.info.duration = 400
+  const r = await lookWithVision(args)
+  assert.equal(r.frames.length, 12)
+  assert.ok(calls.some((c) => c.url === 'https://cdn.example/part1.mp4'), '第一段被用到')
+  assert.ok(calls.some((c) => c.url === 'https://cdn.example/part2.mp4'), '第二段被用到')
+  const part2 = calls.find((c) => c.url.endsWith('part2.mp4'))
+  assert.ok(part2 && part2.at < 300, '第二段用段内相对时间（实际 ' + part2.at + '）')
+  assert.match(r.text, /猫/)
 })
 
 test('视觉描述：图片经附件服务登记后送入配置模型', async () => {

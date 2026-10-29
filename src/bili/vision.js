@@ -100,6 +100,30 @@ export function visionState(biliCfg) {
 }
 
 /**
+ * 没有 DASH 时用渐进式 MP4（durl）的几段来抽帧：每段带 length（毫秒），按顺序拼起来是全片。
+ * 返回 [{ url, startMs, endMs }]；length 未知时这一段算到结尾。
+ */
+export function progressiveWindows(list = []) {
+  let start = 0
+  const out = []
+  for (const x of list || []) {
+    if (!x || !x.url) continue
+    const lenMs = Number(x.length) || 0
+    out.push({ url: x.url, startMs: start, endMs: lenMs > 0 ? start + lenMs : Infinity })
+    if (!(lenMs > 0)) break
+    start += lenMs
+  }
+  return out
+}
+
+/** 第 sec 秒落在哪一段 durl 里。 */
+export function windowAt(windows, sec) {
+  const ms = Math.max(0, Number(sec) || 0) * 1000
+  if (!windows || !windows.length) return null
+  return windows.find((w) => ms >= w.startMs && ms < w.endMs) || windows[windows.length - 1]
+}
+
+/**
  * 看画面主流程：取流 → 抽帧 → 视觉描述。
  * 返回 { text, frames }：text 是画面描述（不可用时为空串），frames 是 [{sec, buf}] 抽到的帧
  * （调用方可以存下来当截图用；关掉看画面时两个都为空）。
@@ -115,6 +139,7 @@ export async function lookWithVision({ dsh, api, info, getConfig, log, deps = {}
     log?.debug('看画面跳过：没找到 ffmpeg')
     return empty
   }
+  const assertUrl = deps.assertPublicUrl || assertPublicUrl
   const frames = []
   try {
     if (await (deps.canSeeImages || canSeeImages)(dsh, full) === false) {
@@ -122,18 +147,30 @@ export async function lookWithVision({ dsh, api, info, getConfig, log, deps = {}
       return empty
     }
     const pu = await api.playurl({ bvid: info.bvid, aid: info.aid, cid: info.cid })
+    // 优先 DASH；很多账号 / 视频只回 durl（渐进式 MP4），这时按段落定位照样能抽帧。
     const stream = pickVideoStream(pu && pu.video)
-    if (!stream) {
+    const windows = stream ? [] : progressiveWindows(pu && pu.durl)
+    if (stream) await assertUrl(stream.baseUrl)
+    else if (windows.length) await assertUrl(windows[0].url)
+    else {
       log?.debug('看画面跳过：拿不到可抽帧的流地址')
       return empty
     }
-    await (deps.assertPublicUrl || assertPublicUrl)(stream.baseUrl)
     // 整段抽帧最多 60 秒，避免坏流按帧数倍增等待时间。
     const deadline = Date.now() + 60_000
     for (const t of frameTimes(info.duration, c.visionFrames)) {
       const remaining = deadline - Date.now()
       if (remaining <= 0) break
-      const buf = await (deps.grabFrame || grabFrame)(ffmpeg, stream.baseUrl, t, { timeoutMs: Math.min(15000, remaining) })
+      let url = stream && stream.baseUrl
+      let at = t
+      if (!url) {
+        const win = windowAt(windows, t)
+        if (!win) continue
+        url = win.url
+        at = Math.max(0, t - win.startMs / 1000) // 段内相对时间
+        await assertUrl(url)
+      }
+      const buf = await (deps.grabFrame || grabFrame)(ffmpeg, url, at, { timeoutMs: Math.min(15000, remaining) })
       if (buf) frames.push({ sec: t, buf })
     }
     if (!frames.length) {
