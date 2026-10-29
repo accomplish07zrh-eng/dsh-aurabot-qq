@@ -72,12 +72,34 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-pill{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;font-size:12px;background:var(--ab-card-2);border:1px solid var(--ab-line);color:var(--ab-sub)}
 .ab-dot{width:7px;height:7px;border-radius:50%;background:var(--ab-dim)}
 .ab-dot.ok{background:var(--ab-ok)}.ab-dot.warn{background:var(--ab-warn)}.ab-dot.err{background:var(--ab-err)}
-.ab-tabs{display:flex;gap:2px;margin:18px 0 16px;padding:4px 4px 2px;border-radius:12px;background:var(--ab-card-2);border:1px solid var(--ab-line);overflow-x:auto;scrollbar-width:thin;scrollbar-color:var(--ab-line) transparent;position:sticky;top:0;z-index:5}
-.ab-tabs::-webkit-scrollbar{height:6px}.ab-tabs::-webkit-scrollbar-thumb{background:var(--ab-line);border-radius:3px}.ab-tabs:hover::-webkit-scrollbar-thumb{background:var(--ab-dim)}
-.ab-tab{flex:none;border:0;background:transparent;color:var(--ab-sub);padding:6px 12px;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
-.ab-tab:hover{background:var(--ab-hover);color:var(--ab-text)}
-.ab-tab.on{background:var(--ab-card);color:var(--ab-deep);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08),0 0 0 1px var(--ab-line)}
+.ab-nav{position:sticky;top:0;z-index:5;margin:var(--dsh-frame-top-clearance,24px) 0 16px;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);background:color-mix(in srgb,var(--ab-card) 88%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.ab-nav:before{content:"";position:absolute;left:-28px;right:-28px;bottom:calc(100% + 1px);height:var(--dsh-frame-top-clearance,24px);background:var(--ab-bg);pointer-events:none}
+.ab-nav-top{display:flex;align-items:center;gap:6px;padding:6px}
+.ab-nav-groups{display:flex;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
+.ab-nav-groups::-webkit-scrollbar,.ab-nav-sub::-webkit-scrollbar{display:none}
+.ab-grp{flex:none;position:relative;display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border:0;border-radius:10px;background:transparent;color:var(--ab-sub);font:inherit;font-size:13px;cursor:pointer;transition:background .15s,color .15s}
+.ab-grp svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.ab-grp:hover{background:var(--ab-hover);color:var(--ab-text)}
+.ab-grp.on{background:var(--ab-foam-2);color:var(--ab-deep);font-weight:600}
+.ab-grp .dirty{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;background:var(--ab-warn)}
+.ab-find-btn{flex:none;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 8px 0 10px;border:1px solid var(--ab-line);border-radius:9px;background:var(--ab-card-2);color:var(--ab-dim);font:inherit;font-size:12px;cursor:pointer;transition:color .15s,border-color .15s}
+.ab-find-btn:hover{color:var(--ab-text);border-color:var(--ab-line-2)}
+.ab-find-btn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+.ab-nav-sub{display:flex;gap:2px;padding:0 8px;border-top:1px solid var(--ab-line);overflow-x:auto;scrollbar-width:none}
+.ab-tab{flex:none;position:relative;border:0;background:transparent;color:var(--ab-sub);padding:9px 12px 10px;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;transition:color .15s}
+.ab-tab:hover{color:var(--ab-text)}
+.ab-tab:after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;border-radius:2px;background:transparent;transition:background .15s}
+.ab-tab.on{color:var(--ab-deep);font-weight:600}
+.ab-tab.on:after{background:var(--ab-sea)}
 .ab-tab .ab-dot{width:6px;height:6px}
+.ab-finder{position:absolute;right:6px;top:calc(100% + 6px);width:340px;max-width:calc(100% - 12px);padding:8px;border:1px solid var(--ab-line-2);border-radius:12px;background:var(--ab-card);box-shadow:0 14px 36px rgba(0,0,0,.16);z-index:20}
+.ab-finder .ab-input{width:100%}
+.ab-finder-list{margin-top:6px;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:1px}
+.ab-finder-item{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:transparent;border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;color:var(--ab-text);cursor:pointer}
+.ab-finder-item small{margin-left:auto;color:var(--ab-dim);font-size:11.5px}
+.ab-finder-item.on,.ab-finder-item:hover{background:var(--ab-foam)}
+.ab-finder-empty{padding:12px 10px;color:var(--ab-dim);font-size:12px}
+@media (max-width:640px){.ab-grp{padding:0 10px;gap:5px}.ab-find-btn .t,.ab-find-btn .ab-kbd{display:none}.ab-finder{left:6px;right:6px;width:auto;max-width:none}}
 .ab-grid{display:grid;gap:12px}
 .ab-g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 .ab-g4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
@@ -163,6 +185,36 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-pitem .nm{font-weight:600;display:flex;align-items:center;gap:6px}
 .ab-pitem .tg{color:var(--ab-dim);font-size:11.5px;margin-top:2px}
 .ab-badge{font-size:10.5px;padding:0 6px;border-radius:999px;background:var(--ab-sea);color:#fff;font-weight:500}
+.ab-psecs{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.ab-psec{border:1px solid var(--ab-line);border-radius:12px;background:var(--ab-card);transition:border-color .12s,box-shadow .12s}
+.ab-psec:focus-within{border-color:var(--ab-sky);box-shadow:0 0 0 3px var(--ab-foam)}
+.ab-psec.lead{background:linear-gradient(120deg,var(--ab-foam),transparent 60%),var(--ab-card)}
+.ab-psec-head{display:flex;align-items:center;gap:4px;padding:8px 8px 0 14px}
+.ab-psec-title{flex:1;min-width:0;border:0;background:transparent;font:inherit;font-weight:620;font-size:13.5px;color:var(--ab-text);padding:4px 0;outline:none}
+.ab-psec-title::placeholder{color:var(--ab-dim);font-weight:400}
+.ab-psec-fixed{flex:1;min-width:0;font-weight:620;font-size:13.5px;padding:4px 0}
+.ab-psec-fixed small{font-weight:400;color:var(--ab-dim);margin-left:8px;font-size:11.5px}
+.ab-psec-n{font-size:11px;color:var(--ab-dim);font-variant-numeric:tabular-nums;margin-right:4px}
+.ab-psec-act{display:flex;align-items:center;gap:2px;opacity:.5;transition:opacity .12s}
+.ab-psec:hover .ab-psec-act,.ab-psec:focus-within .ab-psec-act{opacity:1}
+.ab-ibtn{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:7px;background:transparent;color:var(--ab-sub);cursor:pointer;padding:0}
+.ab-ibtn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ab-ibtn:hover{background:var(--ab-hover);color:var(--ab-text)}
+.ab-ibtn.danger:hover{color:var(--ab-err)}
+.ab-ibtn:disabled{opacity:.3;cursor:default;background:transparent}
+.ab-aibtn{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;margin-left:2px;border:0;border-radius:7px;background:var(--ab-foam);color:var(--ab-deep);font:inherit;font-size:12px;cursor:pointer;transition:background .12s}
+.ab-aibtn:hover,.ab-aibtn.on{background:var(--ab-foam-2)}
+.ab-aibtn svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ab-psec textarea{display:block;width:100%;box-sizing:border-box;border:0;background:transparent;resize:vertical;outline:none;padding:6px 14px 12px;font:inherit;font-size:13px;line-height:1.75;color:var(--ab-text)}
+.ab-psec textarea::placeholder{color:var(--ab-dim)}
+.ab-psec.cmp{border-color:var(--ab-sea);box-shadow:0 0 0 3px var(--ab-foam)}
+.ab-psec.cmp textarea{cursor:default}
+.ab-compare{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 12px 12px;padding:8px 8px 8px 12px;border-radius:10px;background:var(--ab-foam)}
+.ab-compare-tag{font-size:11.5px;font-weight:600;color:var(--ab-deep);padding:1px 8px;border-radius:999px;background:var(--ab-card);border:1px solid var(--ab-foam-2)}
+.ab-psec-add{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:12px}
+.ab-chip{border:1px dashed var(--ab-line-2);background:transparent;color:var(--ab-sub);border-radius:999px;padding:3px 12px;font:inherit;font-size:12px;cursor:pointer;transition:border-color .12s,color .12s,background .12s}
+.ab-chip:hover{border-color:var(--ab-sea);color:var(--ab-deep);background:var(--ab-foam)}
+.ab-chip.solid{border-style:solid}
 .ab-mood{height:10px;border-radius:999px;background:var(--ab-card-2);overflow:hidden;border:1px solid var(--ab-line)}
 .ab-mood > i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--ab-sky),var(--ab-sea))}
 .ab-savebar{position:sticky;bottom:12px;margin-top:16px;display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:12px;background:var(--ab-card);border:1px solid var(--ab-sea);box-shadow:0 6px 24px rgba(0,0,0,.12);z-index:6}
@@ -249,7 +301,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 .ab-input:hover,.ab-textarea:hover{border-color:var(--ab-sky)}
 .ab-textarea{font-family:inherit;font-size:13px}
 .ab-btn{border-radius:10px;transition:background .12s,border-color .12s,box-shadow .12s,filter .12s}
-.ab-btn:focus-visible,.ab-tab:focus-visible,.ab-switch:focus-visible,.ab-choice:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ab-foam-2)}
+.ab-btn:focus-visible,.ab-tab:focus-visible,.ab-switch:focus-visible,.ab-choice:focus-visible,.ab-grp:focus-visible,.ab-find-btn:focus-visible,.ab-ibtn:focus-visible,.ab-aibtn:focus-visible,.ab-chip:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ab-foam-2)}
 .ab-btn.primary{box-shadow:0 2px 8px color-mix(in srgb,var(--ab-sea) 30%,transparent)}
 .ab-btn.danger:hover{background:rgba(207,34,46,.07);border-color:rgba(207,34,46,.3)}
 .ab-switch{width:40px;height:23px}.ab-switch:after{width:17px;height:17px}.ab-switch.on:after{left:20px}
@@ -465,6 +517,89 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
     const TAB_MODS = { voice: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup'], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'] }
     const modOn = (st, id) => (st.modules || []).some((m) => m.id === id && m.running)
+
+    // 两层导航：上面一排是分组，下面一排是这组里的页面；每组记住上次看的那页，Alt+K 查找功能
+    // （分组导航的思路来自社区贡献的「导航布局」扩展，这里改成面板自己实现）
+    const NAV_GROUPS = [
+      { id: 'home', label: '概览', icon: 'M3 10.5 12 3l9 7.5M5.5 9v11.5h13V9M10 20.5v-6h4v6', tabs: ['overview'] },
+      { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['persona', 'group', 'speakup', 'mood'] },
+      { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'stickers', 'imagegen', 'song'] },
+      { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin'] },
+      { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'local', 'modules', 'logs'] },
+    ]
+    // 自己写的模块：名字像逛平台的放「平台」，其余放「系统」（排在「日志」前面）
+    const PLATFORM_EXT = /逛|刷|B站|抖音|小红书|闲鱼|淘宝|微博|知乎|贴吧|快手|触站/
+    const navGroupOf = (t) => NAV_GROUPS.find((g) => g.tabs.includes(t.id)) || (t.ext && PLATFORM_EXT.test(t.label) ? NAV_GROUPS[3] : NAV_GROUPS[4])
+    const navOrder = (g, t) => { const i = g.tabs.indexOf(t.id); return i >= 0 ? i : g.tabs.length - (g.tabs.includes('logs') ? 1.5 : 0) }
+    const NAV_ALIAS = {
+      overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', persona: '人设 性格 设定 头像', access: '主人 白名单 权限 群管 改资料',
+      group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', stickers: '表情 小黄脸 gif 商城表情',
+      imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
+      bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', local: '本地 接口 sd sovits', modules: '扩展 模块 插件', logs: '日志 报错',
+    }
+    const navIcon = (d) => h('svg', { viewBox: '0 0 24 24', 'aria-hidden': true }, h('path', { d }))
+
+    function NavBar({ tabs, cur, go, mark, dirtyOf, subRef }) {
+      const [last, setLast] = useState(() => { try { return JSON.parse(localStorage.getItem('aurabot.navlast') || '{}') || {} } catch (e) { return {} } })
+      const [find, setFind] = useState(null) // null = 没开；字符串 = 正在搜的字
+      const [hi, setHi] = useState(0)
+      const box = useRef(null)
+      const groups = NAV_GROUPS
+        .map((g) => ({ ...g, list: tabs.filter((t) => navGroupOf(t).id === g.id).sort((a, b) => navOrder(g, a) - navOrder(g, b)) }))
+        .filter((g) => g.list.length)
+      const curGroup = groups.find((g) => g.list.some((t) => t.id === cur.id)) || groups[0]
+      // 记住每组最后看的那页：点分组时回到那页
+      useEffect(() => {
+        if (!curGroup || last[curGroup.id] === cur.id) return
+        const next = { ...last, [curGroup.id]: cur.id }
+        setLast(next)
+        try { localStorage.setItem('aurabot.navlast', JSON.stringify(next)) } catch (e) {}
+      }, [cur.id])
+      const openGroup = (g) => go((g.list.find((t) => t.id === last[g.id]) || g.list[0]).id)
+      const toggleFind = () => { setFind((f) => (f === null ? '' : null)); setHi(0) }
+      useEffect(() => {
+        const onKey = (e) => {
+          if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'k') { e.preventDefault(); toggleFind() }
+          else if (e.key === 'Escape') setFind(null)
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+      }, [])
+      // 点到查找框外面就收起
+      useEffect(() => {
+        if (find === null) return
+        const onDown = (e) => { if (box.current && !box.current.contains(e.target)) setFind(null) }
+        document.addEventListener('mousedown', onDown)
+        return () => document.removeEventListener('mousedown', onDown)
+      }, [find === null])
+      const q = (find || '').trim().toLowerCase()
+      const hits = find === null ? [] : groups.flatMap((g) => g.list.map((t) => ({ t, g })))
+        .filter(({ t, g }) => !q || [t.label, g.label, NAV_ALIAS[t.id] || '', t.id].join(' ').toLowerCase().includes(q))
+      const pick = (t) => { setFind(null); go(t.id) }
+      const tabBtn = (t) => h('button', { key: t.id, type: 'button', role: 'tab', 'aria-selected': cur.id === t.id, className: cx('ab-tab', cur.id === t.id && 'on'), onClick: () => go(t.id) }, t.label, mark(t))
+      return h('nav', { className: 'ab-nav', ref: box, 'aria-label': 'Aurabot 功能' },
+        h('div', { className: 'ab-nav-top' },
+          h('div', { className: 'ab-nav-groups', role: 'tablist', 'aria-label': '功能分组' }, groups.map((g) => h('button', {
+            key: g.id, type: 'button', role: 'tab', 'aria-selected': g.id === curGroup.id, className: cx('ab-grp', g.id === curGroup.id && 'on'),
+            title: g.list.map((t) => t.label).join(' · '), onClick: () => openGroup(g),
+          }, navIcon(g.icon), h('span', null, g.label), g.list.some((t) => dirtyOf(t.id)) ? h('i', { className: 'dirty', title: '这组里有没保存的改动' }) : null))),
+          h('button', { type: 'button', className: 'ab-find-btn', 'aria-expanded': find !== null, title: '查找功能（Alt+K）', onClick: toggleFind },
+            navIcon('M11 4.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM20 20l-4.2-4.2'), h('span', { className: 't' }, '查找'), h('span', { className: 'ab-kbd' }, 'Alt K'))),
+        curGroup && curGroup.list.length > 1 ? h('div', { className: 'ab-nav-sub', role: 'tablist', 'aria-label': curGroup.label, ref: subRef }, curGroup.list.map(tabBtn)) : null,
+        find !== null ? h('div', { className: 'ab-finder' },
+          h('input', {
+            className: 'ab-input', autoFocus: true, placeholder: '找功能：语音、抖音、白名单…', value: find,
+            onChange: (e) => { setFind(e.target.value); setHi(0) },
+            onKeyDown: (e) => {
+              if (e.key === 'ArrowDown') { e.preventDefault(); setHi(Math.min(hi + 1, hits.length - 1)) }
+              else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(Math.max(hi - 1, 0)) }
+              else if (e.key === 'Enter' && hits[hi]) { e.preventDefault(); pick(hits[hi].t) }
+            },
+          }),
+          h('div', { className: 'ab-finder-list', role: 'listbox' }, hits.length
+            ? hits.map(({ t, g }, i) => h('button', { key: t.id, type: 'button', role: 'option', 'aria-selected': i === hi, className: cx('ab-finder-item', i === hi && 'on'), onMouseEnter: () => setHi(i), onClick: () => pick(t) }, t.label, h('small', null, g.label)))
+            : h('div', { className: 'ab-finder-empty' }, '没找到，换个说法试试：语音、抖音、白名单'))) : null)
+    }
     function ModOff({ name }) {
       return h(Card, { title: name }, h('div', { className: 'ab-muted ab-small' }, '「' + name + '」模块关着，这部分用不了。要用的话去「扩展」页把它打开。'))
     }
@@ -741,40 +876,144 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '这是面板里显示的头像；点「同步成 QQ 头像」才会改机器人号在 QQ 上的头像。'))
     }
 
+    // 人格按【标题】分节：面板里拆开逐节编辑，保存时按原来的写法拼回一整段（文件格式不变）
+    const PSEC_HEAD = /^【([^】\n]{1,30})】\s*$/
+    const PSEC_SUGGEST = ['你的样子', '性格', '打字习惯', '情绪是活的', '你的生活', '和主人的关系', '绝对禁止']
+    let psecSeq = 0
+    const psec = (title, text) => ({ k: ++psecSeq, title, text })
+    const splitPersona = (body) => {
+      const out = [psec(null, '')]
+      let cur = out[0]
+      let buf = []
+      const flush = () => { cur.text = buf.join('\n').replace(/^\n+/, '').replace(/\s+$/, ''); buf = [] }
+      for (const line of String(body || '').replace(/\r\n/g, '\n').split('\n')) {
+        // 复制粘贴来的人设常带看不见的零宽字符（行首一个 U+200B），认标题时不算它
+        const m = PSEC_HEAD.exec(line.replace(/[​-‍﻿]/g, '').trim())
+        if (m) { flush(); cur = psec(m[1].trim(), ''); out.push(cur) } else buf.push(line)
+      }
+      flush()
+      return out
+    }
+    const joinPersona = (secs) => secs
+      .map((s) => (s.title === null ? s.text.trim() : '【' + (s.title.trim() || '未命名') + '】\n' + s.text.replace(/\s+$/, '')))
+      .filter(Boolean).join('\n\n')
+    const autoRows = (text) => Math.min(22, Math.max(3, String(text || '').split('\n').length + 1))
+
+    /** 一节设定：标题、正文、上下移、删除、AI 润色。润色后原版和润色版只显示一个，按钮来回切，选定一个另一个就丢掉。 */
+    function PersonaSection({ sec, lead, first, last, onChange, onMove, onDelete, onPolish, pending, onPick, onFlip }) {
+      const showing = pending ? (pending.view === 'new' ? pending.text : sec.text) : sec.text
+      return h('div', { className: cx('ab-psec', lead && 'lead', pending && 'cmp') },
+        h('div', { className: 'ab-psec-head' },
+          lead
+            ? h('div', { className: 'ab-psec-fixed' }, '开场', h('small', null, '她是谁，一两段话'))
+            : h('input', { className: 'ab-psec-title', value: sec.title, placeholder: '这一节叫什么', maxLength: 30, onChange: (e) => onChange({ title: e.target.value.replace(/[【】\n]/g, '') }) }),
+          h('span', { className: 'ab-psec-n' }, showing.length + ' 字'),
+          h('div', { className: 'ab-psec-act' },
+            lead ? null : h('button', { type: 'button', className: 'ab-ibtn', title: '往上移', disabled: first || !!pending, onClick: () => onMove(-1) }, navIcon('M12 19V5M6 11l6-6 6 6')),
+            lead ? null : h('button', { type: 'button', className: 'ab-ibtn', title: '往下移', disabled: last || !!pending, onClick: () => onMove(1) }, navIcon('M12 5v14M6 13l6 6 6-6')),
+            lead ? null : h('button', { type: 'button', className: 'ab-ibtn danger', title: '删掉这一节', disabled: !!pending, onClick: onDelete }, navIcon('M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12'))),
+          pending
+            ? null
+            : h(AiButton, { onClick: onPolish, empty: !sec.text.trim() })),
+        h('textarea', {
+          value: showing, rows: autoRows(showing), readOnly: !!pending,
+          placeholder: lead ? '你是「…」，一个真实存在的人，正在用手机 QQ 和对面聊天。' : '- 一条一行，短句就好',
+          onChange: (e) => onChange({ text: e.target.value }),
+        }),
+        pending ? h('div', { className: 'ab-compare' },
+          h('span', { className: 'ab-compare-tag' }, pending.view === 'new' ? 'AI 润色版' : '原版'),
+          h('span', { className: 'ab-muted ab-small' }, pending.view === 'new' ? '和原版比：' + (pending.text.length - sec.text.length >= 0 ? '多 ' : '少 ') + Math.abs(pending.text.length - sec.text.length) + ' 字' : '还没改过的样子'),
+          h('div', { className: 'ab-spacer' }),
+          h('button', { type: 'button', className: 'ab-chip solid', onClick: onFlip }, pending.view === 'new' ? '看原版' : '看润色版'),
+          h(Btn, { small: true, kind: 'primary', onClick: () => onPick(pending.view) }, pending.view === 'new' ? '用润色版' : '保留原版')) : null)
+    }
+    function AiButton({ onClick, empty }) {
+      const [busy, setBusy] = useState(false)
+      return h('button', {
+        type: 'button', className: 'ab-aibtn', disabled: busy, title: empty ? '让 AI 按这一节的标题先写一版' : '让 AI 把这一节改得更具体、更像真人',
+        onClick: async () => { setBusy(true); try { await onClick() } finally { setBusy(false) } },
+      },
+      busy ? h('i', { className: 'ab-spin' }) : navIcon('M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z'),
+      h('span', null, busy ? '润色中' : empty ? 'AI 写一版' : 'AI 润色'))
+    }
+
     function Persona({ st, toast, reload }) {
       const [list, setList] = useState(st.personas)
       const [current, setCurrent] = useState(st.config.persona.current)
       const [sel, setSel] = useState(st.config.persona.current)
-      const [edit, setEdit] = useState(null)
+      const [edit, setEdit] = useState(null) // { id, name, tags, secs }
       const [dirty, setDirty] = useState(false)
+      const [pending, setPending] = useState({}) // 节的 k → { text, view: 'new' | 'old' } AI 润色还没选定的
+      const [whole, setWhole] = useState(() => { try { return localStorage.getItem('aurabot.persona.whole') === '1' } catch (e) { return false } })
       const load = async (id) => {
         const r = await get('/persona/get?id=' + encodeURIComponent(id))
-        if (r.ok) { setEdit({ id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), body: r.persona.body }); setDirty(false) }
+        if (r.ok) { setEdit({ id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), secs: splitPersona(r.persona.body) }); setDirty(false); setPending({}) }
       }
       useEffect(() => { load(sel) }, [sel])
       const refresh = async () => { const r = await get('/personas'); if (r.ok) { setList(r.list); setCurrent(r.current) } }
+      const body = edit ? joinPersona(edit.secs) : ''
+      const waiting = Object.keys(pending).length
       const save = async () => {
-        const r = await post('/persona/save', { id: edit.id, name: edit.name, tags: edit.tags.split(/[,，\s]+/).filter(Boolean), body: edit.body })
+        const r = await post('/persona/save', { id: edit.id, name: edit.name, tags: edit.tags.split(/[,，\s]+/).filter(Boolean), body })
         toast(r.message || (r.ok ? '保存好了' : '没保存成功'))
         if (r.ok) { setDirty(false); refresh() }
       }
-      const upd = (k) => (e) => { setEdit({ ...edit, [k]: e.target.value }); setDirty(true) }
+      const patch = (p) => { setEdit({ ...edit, ...p }); setDirty(true) }
+      const setSecs = (secs) => patch({ secs })
+      const updSec = (k, p) => setSecs(edit.secs.map((s) => (s.k === k ? { ...s, ...p } : s)))
+      const moveSec = (i, d) => { const n = edit.secs.slice(); const [x] = n.splice(i, 1); n.splice(i + d, 0, x); setSecs(n) }
+      const delSec = (s) => { if (s.text.trim() && !confirm('删掉「' + (s.title || '未命名') + '」这一节？')) return; setSecs(edit.secs.filter((x) => x.k !== s.k)) }
+      const addSec = (title) => setSecs([...edit.secs, psec(title, '')])
+      const polish = async (s) => {
+        const r = await post('/persona/polish', { name: edit.name, title: s.title === null ? '' : s.title, text: s.text, others: edit.secs.filter((x) => x.k !== s.k).map((x) => (x.title === null ? '开场' : x.title)) })
+        if (!r.ok) { toast(r.message || '润色没成功', 'err'); return }
+        if (!s.text.trim()) { updSec(s.k, { text: r.text }); toast('写好了，不满意就接着改', 'ok'); return }
+        setPending({ ...pending, [s.k]: { text: r.text, view: 'new' } })
+      }
+      const pick = (s, view) => {
+        const next = { ...pending }
+        delete next[s.k]
+        setPending(next)
+        if (view === 'new') updSec(s.k, { text: pending[s.k].text })
+      }
+      const flip = (s) => setPending({ ...pending, [s.k]: { ...pending[s.k], view: pending[s.k].view === 'new' ? 'old' : 'new' } })
+      const setMode = (w) => { if (w && waiting) { toast('先把 AI 润色的那几节选定一版', 'err'); return } setWhole(w); try { localStorage.setItem('aurabot.persona.whole', w ? '1' : '0') } catch (e) {} }
+      const titles = edit ? edit.secs.map((s) => s.title) : []
+      const suggest = PSEC_SUGGEST.filter((t) => !titles.includes(t))
       return h('div', { className: 'ab-persona' },
         h('div', { className: 'ab-plist' },
           list.map((p) => h('button', { key: p.id, type: 'button', className: cx('ab-pitem', sel === p.id && 'on'), onClick: () => setSel(p.id) },
             h('div', { className: 'nm' }, p.name, p.id === current ? h('span', { className: 'ab-badge' }, '正在用') : null),
             h('div', { className: 'tg' }, (p.tags || []).join(' · ') || p.id + ' · ' + p.chars + ' 字'))),
-          h(Btn, { kind: 'ghost', onClick: () => { const id = 'persona-' + Date.now().toString(36); setEdit({ id, name: '新人格', tags: '', body: '你是……\n\n【说话方式】\n- 短句、口语，一次只说一两句。' }); setSel(id); setDirty(true) } }, '＋ 新建人格'),
+          h(Btn, { kind: 'ghost', onClick: () => { const id = 'persona-' + Date.now().toString(36); setEdit({ id, name: '新人格', tags: '', secs: splitPersona('你是……\n\n【打字习惯】\n- 短句、口语，一次只说一两句。') }); setSel(id); setDirty(true); setPending({}) } }, '＋ 新建人格'),
           h(AvatarCard, { st, toast, reload }),
         ),
-        edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面。保存后，大肥鱼下一轮回复起就按新的来。',
+        edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面，按节写更好改。保存后，大肥鱼下一轮回复起就按新的来。',
           right: h('div', { className: 'ab-flex' },
             edit.id !== current ? h(Btn, { small: true, onClick: async () => { const r = await post('/persona/use', { id: edit.id }); toast(r.message); refresh(); reload() } }, '设为当前') : null,
             edit.id !== current ? h(Btn, { small: true, kind: 'danger', onClick: async () => { if (!confirm('删掉这个人格？')) return; const r = await post('/persona/delete', { id: edit.id }); if (r.ok) { setList(r.list); setSel(current) } else toast(r.message) } }, '删除') : null) },
-          h(Row, { label: '名字' }, h('input', { className: 'ab-input', value: edit.name, onChange: upd('name') })),
-          h(Row, { label: '标签', hint: '用逗号隔开' }, h('input', { className: 'ab-input', value: edit.tags, onChange: upd('tags') })),
-          h('div', { style: { marginTop: 8 } }, h('textarea', { className: 'ab-textarea', style: { minHeight: 380 }, value: edit.body, onChange: upd('body') })),
-          h('div', { className: 'ab-flex', style: { marginTop: 10 } }, h('span', { className: 'ab-muted ab-small' }, edit.body.length + ' 字'), h('div', { className: 'ab-spacer' }), h(Btn, { kind: 'primary', disabled: !dirty, onClick: save }, dirty ? '保存人格' : '已保存')),
+          h(Row, { label: '名字' }, h('input', { className: 'ab-input', value: edit.name, onChange: (e) => patch({ name: e.target.value }) })),
+          h(Row, { label: '标签', hint: '用逗号隔开' }, h('input', { className: 'ab-input', value: edit.tags, onChange: (e) => patch({ tags: e.target.value }) })),
+          h('div', { className: 'ab-flex', style: { marginTop: 14 } },
+            h(Seg, { value: whole ? 'whole' : 'secs', onChange: (v) => setMode(v === 'whole'), options: [{ value: 'secs', label: '分节' }, { value: 'whole', label: '整段' }] }),
+            h('div', { className: 'ab-spacer' }),
+            h('span', { className: 'ab-muted ab-small' }, (edit.secs.length - 1) + ' 节 · ' + body.length + ' 字')),
+          whole
+            ? h('textarea', { className: 'ab-textarea', style: { minHeight: 380, marginTop: 12 }, value: body, onChange: (e) => setSecs(splitPersona(e.target.value)) })
+            : h('div', { className: 'ab-psecs' },
+              edit.secs.map((s, i) => h(PersonaSection, {
+                key: s.k, sec: s, lead: s.title === null, first: i <= 1, last: i === edit.secs.length - 1, pending: pending[s.k],
+                onChange: (p) => updSec(s.k, p), onMove: (d) => moveSec(i, d), onDelete: () => delSec(s),
+                onPolish: () => polish(s), onPick: (v) => pick(s, v), onFlip: () => flip(s),
+              })),
+              h('div', { className: 'ab-psec-add' },
+                h('span', { className: 'ab-muted ab-small' }, '加一节：'),
+                suggest.map((t) => h('button', { key: t, type: 'button', className: 'ab-chip', onClick: () => addSec(t) }, t)),
+                h('button', { type: 'button', className: 'ab-chip solid', onClick: () => addSec('') }, '＋ 自己起名'))),
+          h('div', { className: 'ab-flex', style: { marginTop: 14 } },
+            waiting ? h('span', { className: 'ab-muted ab-small' }, '还有 ' + waiting + ' 节 AI 润色没选定，选好再保存') : null,
+            h('div', { className: 'ab-spacer' }),
+            h(Btn, { kind: 'primary', disabled: !dirty || !!waiting, onClick: save }, dirty ? '保存人格' : '已保存')),
         ) : h(Card, null, h(Empty, { icon: '⏳', text: '加载中…' })),
       )
     }
@@ -2368,12 +2607,15 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
               h('div', { className: 'ab-switch-row' }, h('span', null, '总开关'), h(Switch, { on: cfg.enabled, onChange: (v) => quickToggle('enabled', v) })),
               h('div', { className: 'ab-switch-row' }, h('span', { className: 'ab-muted' }, '试运行'), h(Switch, { on: cfg.dryRun, onChange: (v) => quickToggle('dryRun', v), title: '开着时只写日志，不真的发到 QQ' })))),
           showWizard ? h(Wizard, { st, draft, setDraft: setD, save, toast, reload, onClose: () => setWizardOpen(false) }) : null,
-          showWizard ? null : h('div', { className: 'ab-tabs', role: 'tablist', ref: tabsRef }, tabs.map((t) => {
-            const flag = t.flag === 'group' ? cfg.allow.groups.length > 0 : t.flag ? getPath(cfg, t.flag) : null
-            return h('button', { key: t.id, type: 'button', role: 'tab', 'aria-selected': curTab.id === t.id, className: cx('ab-tab', curTab.id === t.id && 'on'), onClick: () => go(t.id) },
-              t.label,
-              tabDirty(t.id) ? h('i', { className: 'dirty', title: '有没保存的改动' }) : t.flag ? h('i', { className: cx('ab-dot', flag && 'ok'), title: flag ? '开着' : '关着' }) : null)
-          })),
+          showWizard ? null : h(NavBar, {
+            tabs, cur: curTab, go, dirtyOf: tabDirty, subRef: tabsRef,
+            mark: (t) => {
+              if (tabDirty(t.id)) return h('i', { className: 'dirty', title: '有没保存的改动' })
+              if (!t.flag) return null
+              const flag = t.flag === 'group' ? cfg.allow.groups.length > 0 : getPath(cfg, t.flag)
+              return h('i', { className: cx('ab-dot', flag && 'ok'), title: flag ? '开着' : '关着' })
+            },
+          }),
           showWizard ? null : h(TabBoundary, { key: curTab.id, onHome: () => go('overview') }, h(body, { ...props, mod: curTab.ext })),
           showWizard || curTab.ext ? null : mods.filter((m) => hasUi(m) && m.tab === curTab.id).map((m) => h('div', { key: 'embed-' + m.id, style: { marginTop: 14 } }, h(ExtPage, { ...props, mod: m.id, embedded: true }))),
           dirty && !showWizard ? h('div', { className: 'ab-savebar' }, h('span', { className: 'msg' }, '有改动还没保存'),

@@ -592,6 +592,31 @@ export function apply(ctx) {
     log.info(`切换人格 → ${b.id}`)
     return { ok: true, current: b.id, message: '切换好了，下一轮回复起生效' }
   })
+  // 人格页「AI 润色」：只改面板上这一节的文字，不保存；用不用由主人在面板里选
+  route('/persona/polish', async (req) => {
+    const b = await readBody(req)
+    const title = String(b.title || '').slice(0, 30) || '开场（她是谁）'
+    const text = String(b.text || '').slice(0, 4000)
+    const others = (Array.isArray(b.others) ? b.others : []).map((x) => String(x).slice(0, 30)).slice(0, 20)
+    const system = '你在帮人改一个 QQ 聊天角色的人设。人设按【标题】分节，你一次只改其中一节。' +
+      '只输出这一节改好后的正文：不要写标题，不要加粗、不要 Markdown 标题，不要任何解释。原来是「- 」开头的条目就继续用条目，一条一行、短句。'
+    const ask = [
+      `角色：${String(b.name || '她').slice(0, 30)}`,
+      `要改的这一节：${title}`,
+      `人设里另外几节：${others.join('、') || '无'}（只是让你知道还有哪些，别把它们的内容写进这一节）`,
+      text.trim()
+        ? '要求：保留原来的设定和事实，不编新的身份信息；说得更具体、更像真人；删掉重复和空话；长度别超过原来的 1.5 倍。'
+        : '要求：这一节还是空的，按这个角色和这一节的标题写 4 到 8 条。',
+      text.trim() ? `原文：\n${text}` : '',
+    ].filter(Boolean).join('\n')
+    try {
+      const out = String(await askModel(ctx, { cfg: getConfig(), system, text: ask, maxTokens: 1500, temperature: 0.6 }) || '')
+        .replace(/^```[a-z]*\n?|\n?```$/g, '').replace(new RegExp('^【' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '】\\s*'), '').trim()
+      return out ? { ok: true, text: out } : { ok: false, message: '模型没给出内容，再试一次' }
+    } catch (error) {
+      return { ok: false, message: '润色没成功：' + error.message }
+    }
+  })
 
   // 本地接口
   const openFolder = (dir) => {
