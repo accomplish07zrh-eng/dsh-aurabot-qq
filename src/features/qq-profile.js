@@ -60,6 +60,8 @@ export function createQqProfile({ getConfig, onebot, dsh, fetchAvatar = fetchIma
       checkAccount(info, qq)
       nickname = textField(info, ['nickname'])
       signature = textField(info, ['long_nick', 'longNick'])
+      // 全是空格的签名当作未设置（真机上见过网关返回一个空格），别在私聊里显示一行空白
+      if (signature !== null) signature = signature.trim()
     } catch (error) {
       current(qq)
       if (error.code === 'QQ_PROFILE_ACCOUNT_MISMATCH') throw error
