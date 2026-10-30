@@ -40,6 +40,7 @@ const hub = {
   lastTextOf: () => hubState.text,
   speakersOf: () => hubState.speakers,
   prevTextOf: () => hubState.prev || '',
+  groupNames: new Map([['777', '测试群']]),
 }
 const line = (text, who = '小明') => ({ chatId: 'private:10000001', who, text })
 const day = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -244,4 +245,60 @@ test('相关记忆提示有长度上限（#79：上下文增长优化）', () =>
   for (let i = 0; i < 20; i++) mem.add({ text: '测试记忆第' + i + '条，内容是阿花喜欢的东西和周末计划', about: '30000003', aboutName: '阿花', importance: 0.5, source: 'tool' })
   const hint = mem.recallHint({ kind: 'group', groupId: '555', chatId: 'group:555' }, '阿花喜欢什么 周末计划')
   assert.ok(hint.length > 0 && hint.length <= 350, 'hint 长度 ' + hint.length)
+})
+
+const groupLog = (gid, who, text, t) => ({ chatId: 'group:' + gid, who, text, t })
+
+test('主人私聊群聊摘要：默认关，不会把群聊流水补进私聊', () => {
+  logs.clear()
+  logs.set(day(new Date()), [groupLog('777', '小明', '今晚开黑打本', Date.now() - 60_000)])
+  cfg.ownerQQ = '10000001'
+  cfg.group.ownerBrief.enabled = false
+  assert.equal(normalize({}).group.ownerBrief.enabled, false, '配置默认关')
+  const hint = mem.recallHint({ kind: 'private', userId: '10000001', chatId: 'private:10000001' }, '群里今晚在聊什么')
+  assert.doesNotMatch(hint, /群「测试群」/)
+})
+
+test('主人私聊群聊摘要：开启后只在主人问群相关时补最近群聊', () => {
+  logs.clear()
+  const t0 = Date.now()
+  logs.set(day(new Date()), [
+    groupLog('777', '小明', '今晚开黑打本', t0 - 60_000),
+    groupLog('777', '阿花', '我晚点到', t0 - 30_000),
+  ])
+  cfg.ownerQQ = '10000001'
+  cfg.group.ownerBrief.enabled = true
+  cfg.group.ownerBrief.lines = 12
+  cfg.group.ownerBrief.groups = []
+  const chat = { kind: 'private', userId: '10000001', chatId: 'private:10000001' }
+  const hint = mem.recallHint(chat, '群里今晚在聊什么')
+  assert.match(hint, /群「测试群」（777）/)
+  assert.match(hint, /小明：今晚开黑打本/)
+  assert.match(hint, /不是主人发给你的消息/)
+  assert.doesNotMatch(mem.recallHint(chat, '今天晚饭吃什么'), /群「测试群」/, '没提群就不补')
+  assert.doesNotMatch(mem.recallHint({ kind: 'group', groupId: '777', chatId: 'group:777' }, '群里在聊什么'), /群「测试群」/, '群聊里不补')
+  assert.doesNotMatch(mem.recallHint({ kind: 'private', userId: '30000003', chatId: 'private:30000003' }, '群里在聊什么'), /群「测试群」/, '非主人不补')
+})
+
+test('主人私聊群聊摘要：群白名单与每个群条数限制生效', () => {
+  logs.clear()
+  const t0 = Date.now()
+  logs.set(day(new Date()), [
+    groupLog('777', '小明', '777-1', t0 - 50_000),
+    groupLog('777', '小明', '777-2', t0 - 40_000),
+    groupLog('777', '小明', '777-3', t0 - 30_000),
+    groupLog('888', '阿花', '888-1', t0 - 20_000),
+  ])
+  cfg.ownerQQ = '10000001'
+  cfg.group.ownerBrief.enabled = true
+  cfg.group.ownerBrief.lines = 2
+  cfg.group.ownerBrief.groups = ['777']
+  const hint = mem.recallHint({ kind: 'private', userId: '10000001', chatId: 'private:10000001' }, '群里在聊什么')
+  assert.match(hint, /777/)
+  assert.doesNotMatch(hint, /777-1/, '每个群只取最后 2 条')
+  assert.match(hint, /777-2/)
+  assert.match(hint, /777-3/)
+  assert.doesNotMatch(hint, /888-1/, '只取白名单里的群')
+  cfg.group.ownerBrief.enabled = false
+  cfg.group.ownerBrief.groups = []
 })

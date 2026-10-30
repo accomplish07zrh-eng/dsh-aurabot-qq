@@ -61,7 +61,8 @@ export const DEFAULTS = {
     codex: { model: 'gpt-image-2', quality: 'auto', background: 'auto' },
   },
   persona: { current: 'dafeiyu' },
-  group: { ...DEFAULT_GROUP_POLICY, overrides: {} },
+  // 主人私聊里问起群里的事：把最近 24 小时的群聊流水补进这一轮（默认关，开启前先把群加进白名单）
+  group: { ...DEFAULT_GROUP_POLICY, overrides: {}, ownerBrief: { enabled: false, lines: 12, groups: [] } },
   // 按群头衔不回：勾选的群里，专属头衔正好是 title 的成员（一般是别的机器人）说话、戳她都不理。没勾群就不起作用
   titleFilter: { enabled: true, groups: [], title: '大肥鱼' },
   voice: {
@@ -278,6 +279,10 @@ export function normalize(raw) {
   if (!Array.isArray(g.quietHours) || g.quietHours.length !== 2) g.quietHours = DEFAULT_GROUP_POLICY.quietHours
   g.quietHours = g.quietHours.map((h) => num(h, 0, 0, 23))
   if (!isObj(g.overrides)) g.overrides = {}
+  if (!isObj(g.ownerBrief)) g.ownerBrief = { enabled: false, lines: 12, groups: [] }
+  g.ownerBrief.enabled = bool(g.ownerBrief.enabled, false)
+  g.ownerBrief.lines = num(g.ownerBrief.lines, 12, 1, 30)
+  g.ownerBrief.groups = qqList(g.ownerBrief.groups)
   c.voice.autoChance = num(c.voice.autoChance, 0.15, 0, 1)
   c.voice.autoMaxChars = num(c.voice.autoMaxChars, 80, 1, 500)
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)

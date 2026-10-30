@@ -1158,6 +1158,30 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '查不到某人的头衔时（网关抽风），那条先不回，过几秒再查；成员改了头衔一分钟内生效。'))
     }
 
+    /** 主人私聊里问起群里的事：把最近群聊流水补进当轮上下文（默认关）。 */
+    function OwnerBrief({ draft, setDraft }) {
+      const f = useField(draft, setDraft)
+      const ob = draft.group.ownerBrief || { enabled: false, lines: 12, groups: [] }
+      const groups = (draft.allow.groups || []).map(String)
+      const [info, setInfo] = useState(null)
+      useEffect(() => { get('/groups/titles').then((r) => { if (r.ok) setInfo(r) }).catch(() => {}) }, [])
+      const nameOf = (gid) => {
+        const g = ((info && info.groups) || []).find((x) => x.groupId === gid)
+        return g && g.name && g.name !== gid ? g.name : ''
+      }
+      const on = (gid) => (ob.groups || []).includes(gid)
+      const toggle = (gid) => setDraft(setPath(draft, 'group.ownerBrief.groups', on(gid) ? (ob.groups || []).filter((x) => x !== gid) : [...(ob.groups || []), gid]))
+      return h(Card, { title: '主人私聊：群聊摘要', right: f.sw('group.ownerBrief.enabled'),
+        desc: '主人在私聊里问起群里的事时，把最近 24 小时的群聊流水当成「她自己的见闻」补进这一轮上下文。只在「主人私聊 + 这句话提到群相关」时触发，不常驻、不写进记忆；默认关。开启前先在「权限」页把群加进白名单。' },
+        h(Row, { label: '每个群给几条', hint: '越少越省上下文；最多 30 条' }, f.range('group.ownerBrief.lines', 1, 30, 1, (v) => v + ' 条')),
+        h(Row, { label: '只取哪些群', hint: '没勾 = 所有白名单群；只列白名单里的群' },
+          groups.length
+            ? h('div', { className: 'ab-flex' }, groups.map((gid) => h('button', { key: gid, type: 'button', className: cx('ab-chip', on(gid) && 'on'), onClick: () => toggle(gid) },
+              (on(gid) ? '✓ ' : '') + (nameOf(gid) || '群'), h('span', { className: 'n' }, gid))))
+            : h('span', { className: 'ab-muted ab-small' }, '群白名单是空的，先在「权限」页加群。')),
+        h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '她只会当成自己最近在群里看到的，不会把群聊原文说成是主人发的。'))
+    }
+
     function Group({ draft, setDraft }) {
       const f = useField(draft, setDraft)
       const overrides = draft.group.overrides || {}
@@ -1170,6 +1194,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '群里最多等多久' }, f.range('merge.groupMaxSec', 3, 60, 1, (v) => v + ' 秒')),
         ),
         h(TitleFilter, { draft, setDraft }),
+        h(OwnerBrief, { draft, setDraft }),
         h(Card, { title: '发文件', right: f.sw('files.enabled'), desc: '打开后，你在私聊里可以让她把本机文件当文件发到 QQ，也能按你说的发给白名单里的人或群。她只能发 QQ 工作区和下面目录里的文件；单个文件有大小上限；发过什么会记在日志里。' },
           h(Row, { label: '单个文件最大' }, f.num('files.maxMB', { min: 1, max: 2048 }), h('span', { className: 'ab-muted' }, ' MB')),
           h(Row, { label: '额外允许的目录', hint: '一行一个完整路径。QQ 工作区里的文件一直允许，不用写；留空 = 只能发工作区里的' }, f.list('files.dirs', { placeholder: 'D:\\Aurabot\\要发的文件' })),
