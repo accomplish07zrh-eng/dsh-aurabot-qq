@@ -658,9 +658,16 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
         }
         const s = load()
         s.processed = s.processed || {}
+        // keepChatlogDays：0 = 上游现状（整理完就删）、-1 = 永久保留、N = 留 N 天
+        const keepDays = Number(getConfig().memory.keepChatlogDays)
         if (day < today) {
-          hub.deleteChatLog(day) // 整理完清空（今天的留着，写日记还要用）
-          delete s.processed[day]
+          const expire = keepDays >= 0 && day < dayKey(new Date(Date.now() - keepDays * 86400_000))
+          if (keepDays === 0 || expire) {
+            hub.deleteChatLog(day) // 整理完清空（今天的留着，写日记还要用）
+            delete s.processed[day]
+          } else {
+            s.processed[day] = all.length
+          }
         } else {
           s.processed[day] = all.length
         }
@@ -720,8 +727,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   async function tick() {
     const cfg = getConfig().memory
     if (!cfg.enabled || !cfg.dailyConsolidate) {
-      const cutoff = dayKey(new Date(Date.now() - 14 * 86400_000))
-      for (const day of hub.chatLogDays?.() || []) if (day < cutoff) hub.deleteChatLog(day)
+      // 没开每日整理时也按 keepChatlogDays 清理：-1 不清、0 沿用原来的 14 天、N 按 N 天
+      const keepDays = Number(getConfig().memory.keepChatlogDays)
+      if (keepDays !== -1) {
+        const days = keepDays > 0 ? keepDays : 14
+        const cutoff = dayKey(new Date(Date.now() - days * 86400_000))
+        for (const day of hub.chatLogDays?.() || []) if (day < cutoff) hub.deleteChatLog(day)
+      }
       return
     }
     const s = load()
