@@ -1,0 +1,16 @@
+import test from'node:test'
+import assert from'node:assert/strict'
+import{mkdtempSync,mkdirSync,readFileSync,existsSync,rmSync}from'node:fs'
+import{join,resolve,dirname,sep}from'node:path'
+import{fileURLToPath}from'node:url'
+import{createArchive,dateKey}from'../modules/daily-images/archive.mjs'
+import{localPictures}from'../modules/diary-rich/sources.mjs'
+import{withCredits}from'../modules/diary-rich/engine.mjs'
+const parent=dirname(fileURLToPath(import.meta.url)),at=Date.parse('2026-10-29T01:00:00Z'),png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS4EAAAAASUVORK5CYII=','base64')
+function fixture(t){const root=mkdtempSync(join(parent,'.daily-images-')),folder=join(root,'日常图片');mkdirSync(folder);t.after(()=>{assert.ok(resolve(root).startsWith(resolve(parent)+sep));rmSync(root,{recursive:true,force:true})});const conf={enabled:true,dryRun:false,ext:{'diary-rich':{folder}}},settings={enabled:true,perRun:8},pool=[{id:'browse:1',kind:'browsing',src:'https://image.example/a.png',title:'天空',author:'画师',platform:'触站',url:'https://www.huashi6.com/draw/12345',at}];let downloads=0,fail=false;const off=[];const api={settings:()=>settings,config:()=>conf,dataDir:()=>join(root,'state.json'),use:id=>id==='diary-rich'?{browsingSources:()=>pool,invalidate(){}}:null,onDispose:fn=>off.push(fn)};const assets={materialize:async()=>{downloads++;if(fail)throw Error('404');return{id:'abc.png'}},read:()=>png};return{api,conf,settings,pool,folder,root,off,assets,count:()=>downloads,fail:()=>fail=true,archive:createArchive(api,{assets,now:()=>at})}}
+test('日期以北京时间归档，跨 UTC 午夜仍按当天',()=>{assert.equal(dateKey(Date.parse('2026-10-28T17:00:00Z')),'20261029')})
+test('浏览图保存到日期目录，附来源和署名；日记读本地图仍带来源',async t=>{const f=fixture(t),r=await f.archive.run();assert.equal(r.added,1);const images=localPictures(f.folder);assert.equal(images.length,1);assert.match(images[0].src,/20261029/);assert.equal(images[0].sourceKind,'browsing');assert.equal(images[0].author,'画师');assert.match(withCredits('日记',images),/huashi6.com\/draw\/12345/);const meta=JSON.parse(readFileSync(images[0].src+'.json'));assert.equal(meta.collectedAt,at)})
+test('相同来源及相同图片内容去重，重新启动后也不重存',async t=>{const f=fixture(t);await f.archive.run();await f.archive.run();assert.equal(f.count(),1);f.pool.push({...f.pool[0],id:'browse:2'});await f.archive.run();assert.equal(localPictures(f.folder).length,1);const again=createArchive(f.api,{assets:f.assets,now:()=>at});await again.run();assert.equal(f.count(),2)})
+test('不收集表情、未来或过期素材；开关和试运行可阻止自动任务',async t=>{const f=fixture(t);f.pool[0].at=at-49*3600000;assert.equal((await f.archive.run()).added,0);f.pool[0].at=at;f.conf.dryRun=true;await f.archive.run();assert.equal(f.count(),0);f.conf.dryRun=false;f.settings.enabled=false;await f.archive.run();assert.equal(f.count(),0)})
+test('图片读取失败保留错误，冷却期内不反复请求，也不制造空图',async t=>{const f=fixture(t);f.fail();assert.equal((await f.archive.run()).failed,1);await f.archive.run();assert.equal(f.count(),1);assert.equal(localPictures(f.folder).length,0);assert.match(f.archive.state().lastError,/404/)})
+test('停用时不再保存请求途中的图片',async t=>{const f=fixture(t);let finish;f.assets.materialize=()=>new Promise(r=>{finish=()=>r({id:'abc.png'})});const p=f.archive.run();f.off.forEach(fn=>fn());finish();await p;assert.equal(localPictures(f.folder).length,0)})

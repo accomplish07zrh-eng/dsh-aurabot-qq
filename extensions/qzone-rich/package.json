@@ -1,0 +1,12 @@
+{
+  "name": "aurabot-qzone-rich-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "install:module": "node install.mjs"
+  },
+  "engines": { "node": ">=22.13.0" }
+}

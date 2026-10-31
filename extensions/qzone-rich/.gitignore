@@ -1,0 +1,6 @@
+node_modules/
+.aurabot-cache/
+test/.diary-rich-*/
+test/.daily-images-*/
+test/.install-*/
+*.tmp
