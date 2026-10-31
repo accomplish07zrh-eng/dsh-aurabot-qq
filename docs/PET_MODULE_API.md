@@ -48,7 +48,7 @@
 | GET | `/asset/<包>/<文件>.webm?token=` | 形象包素材（P1）。**严格隔离**：只服务该包 `-animation/` 目录里的文件；缺文件/越包访问/路径穿越一律 404，**绝不回落 default**。`Cache-Control: private` |
 | GET | `/audio/<sha1>.wav?token=` | 语音文件；`Cache-Control: private`；不存在 404 |
 | POST | `/client/install` | 把模块自带 `pet-client/` 生成到 `app/`，返回 `{ok, dir, files, message}` |
-| POST | `/electron-install` | 两档自动安装（已装则跳过并提示）：① 环境里有 npm-cli.js → 在 `app/` 下 `npm i -D electron`（**必须注入 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`**，真机直连 github release 会 fetch failed；不走 shell）；② 没有 npm（DSH 自带运行时不带 npm-cli、目标电脑可能没装 Node）→ **zip 直装**：从 npmmirror 下载 electron 官方 zip（版本取 `app/package.json`），Node 自带 zlib 纯 JS 解压到 `app/node_modules/electron/`，零环境依赖。返回进度摘要 |
+| POST | `/electron-install` | 两档自动安装（已装则跳过并提示）：① 环境里有 npm-cli.js → 在 `app/` 下 `npm i -D electron`（**必须注入 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`**，真机直连 github release 会 fetch failed；不走 shell）；② 没有 npm（DSH 自带运行时不带 npm-cli、目标电脑可能没装 Node）→ **zip 直装**：从 npmmirror 下载 electron 官方 zip（版本取 `app/package.json`），Node 自带 zlib 纯 JS 解压到 `app/node_modules/electron/dist/`（官方 zip 是扁平包，先解到临时目录认出 payload 根再搬进 `dist/`，与 npm 布局一致），零环境依赖。返回进度摘要 |
 | POST | `/launch` | 分离进程启动 `electron.exe main.js`。**启动前必须清掉子进程环境的 `ELECTRON_RUN_AS_NODE`**（宿主环境必带，不清则 Electron 以纯 Node 模式启动即崩）。已在跑（心跳活着）则提示；pid 记进 `process.json` |
 | POST | `/stop` | 杀 `process.json` 记录的 pid 并清记录；进程已不在（ESRCH）按已停止处理 |
 
@@ -308,7 +308,9 @@ Electron 运行时**不是本插件的依赖**，也**不会在启动/更新时�
      不走 shell（当前 node 直接跑 npm-cli.js），安装前清掉子进程的 `ELECTRON_RUN_AS_NODE`。
    - **没有 npm**（DSH 自带运行时不带 npm-cli，裸机也常见）→ **zip 直装**：从 npmmirror
      下载 electron 官方 zip（版本取 `app/package.json`，兜底 45.1.0），用 Node 自带 zlib
-     纯 JS 解压到 `app/node_modules/electron/`（带 zip-slip 防护，unix 恢复可执行位），
+     纯 JS 解压到 `app/node_modules/electron/dist/`（官方 zip 是扁平包：`electron.exe` 在压缩包根，
+     这里先解到临时目录、认出 payload 根再搬进 `dist/`，与 npm 包布局一致；同时写 `path.txt`；
+     带 zip-slip 防护，unix 恢复可执行位），
      不需要 npm、不需要 shell、不需要系统里装任何东西。
    已装（`electron.exe` 存在）则跳过。两档都只装 `app/package.json` 固定的版本，不拉 `latest`。
 3. **启动 / 停止**（面板「启动桌宠 / 退出」）：仅启动用户已确认安装的本地 Electron，

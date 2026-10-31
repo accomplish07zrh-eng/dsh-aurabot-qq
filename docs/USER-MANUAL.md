@@ -198,11 +198,13 @@ SnowLuma 的协议不允许别的程序替你下载安装，所以这一步要�
 1. 用浏览器打开这个地址（整行复制）：
    `https://npmmirror.com/mirrors/electron/45.1.0/electron-v45.1.0-win32-x64.zip`
    （如果你的电脑是 ARM 芯片，把 `x64` 换成 `arm64`。）
-2. 下载得到一个 zip 文件，**右键 → 全部解压**，解压到任意位置。
+2. 下载得到一个 zip 文件，**右键 → 全部解压**，解压到任意位置（解开后能直接看到 `electron.exe` 就对）。
 3. 打开文件夹：按 `Win + R`，输入
    `%USERPROFILE%\.dsh\plugins-data\aurabot\modules-data\pet\app` 回车。
-4. 在里面进入 `node_modules` 文件夹（没有就新建一个，名字原样），把解压出来的文件夹
-   改名为 `electron`，整个拖进去。
+4. 进去后建两级文件夹 `node_modules\electron\dist`（已有就沿用），把第 2 步解压出来的**全部内容**
+   （`electron.exe`、`resources`、`locales` 以及各种 `.dll`/`.pak`）**放进 `dist` 里**——
+   最终是这个样子：`app\node_modules\electron\dist\electron.exe`。
+   （跟 npm 装出来的布局一致，插件就是按这个路径找的，别把 `electron.exe` 直接放 `electron` 文件夹下。）
 5. 回面板点「启动桌宠」。
 
 > 前提：第 2 步的「下载 / 生成客户端」至少点过一次（`app` 文件夹才存在）。

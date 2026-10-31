@@ -20,7 +20,7 @@
 //   · api.use('pet').dispatch({ text, modality?, purpose?, force?, anim? }) → { ok, via:'pet'|'qq', ... }
 //   · focus.json 开着时自动轮次一律不发（也不回落）；force=true（面板手动测试）可绕过
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, renameSync, copyFileSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, renameSync, copyFileSync, cpSync, rmSync } from 'node:fs'
 import { join, dirname, sep, basename, extname } from 'node:path'
 import { spawn as nodeSpawn } from 'node:child_process'
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
@@ -652,12 +652,15 @@ export default {
     // 安装走 npmmirror 镜像（真机直连 github release 会 fetch failed）；启动前必须清掉
     // 子进程环境的 ELECTRON_RUN_AS_NODE（宿主环境必带，不清则 Electron 以纯 Node 模式启动即崩）。
     const appDir = () => api.dataDir('app')
-    const electronExe = () => {
-      const rel = process.platform === 'win32' ? join('dist', 'electron.exe')
-        : process.platform === 'darwin' ? join('dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
-        : join('dist', 'electron')
-      return join(appDir(), 'node_modules', 'electron', rel)
-    }
+    // Electron 可执行文件相对 node_modules/electron 的路径（npm 包布局：二进制在 dist/ 下）。
+    const electronRelExe = () => process.platform === 'win32' ? join('dist', 'electron.exe')
+      : process.platform === 'darwin' ? join('dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
+      : join('dist', 'electron')
+    // npm 包靠 path.txt 告诉 require('electron') 二进制在哪（本模块直接按路径 spawn，写它只为兼容别人 require）
+    const electronPathTxt = () => process.platform === 'win32' ? 'electron.exe'
+      : process.platform === 'darwin' ? join('Electron.app', 'Contents', 'MacOS', 'Electron')
+      : 'electron'
+    const electronExe = () => join(appDir(), 'node_modules', 'electron', electronRelExe())
     // 不经 shell 拼接：找 npm-cli.js 直接跑（Windows 上 spawn 'npm.cmd' 无 shell 会被拒）；都找不到就返回空串，
     // 由 electronInstall 走「zip 直装」兜底（目标电脑可能根本没有 Node/npm 环境）。
     // npmCli 也可被测试钩子覆盖（petHooks.npmCli = 一个真实存在的假 cli 路径）。
@@ -729,7 +732,11 @@ export default {
         const name = zip.toString('utf8', ptr + 46, ptr + 46 + nameLen)
         ptr += 46 + nameLen + extraLen + commentLen
         if (name.endsWith('/')) { mkdirSync(join(destDir, name), { recursive: true }); continue }
-        if (externAttr >>> 31) continue // 符号链接条目：安全起见直接跳过
+        // 符号链接条目直接跳过（安全）。判据必须看 st_mode 的类型位：Unix 的 externalAttr 高 16 位是 st_mode，
+        // S_IFLNK=0o120000 才是符号链接。别用 externAttr>>>31——普通文件 0o100644 的最高位同样是 1，
+        // 那样会把官方 zip 里**所有**文件都当符号链接跳过（解压完目录是空的，报「没找到可执行文件」）。
+        // Windows 打的 zip externalAttr 是 DOS 属性（如 0x20），高 16 位为 0，天然不受影响。
+        if (((externAttr >>> 16) & 0o170000) === 0o120000) continue
         const target = join(destDir, name)
         if (target !== destDir && !target.startsWith(destDir + sep)) throw new Error(`zip 里的可疑路径：${name}`) // 防 zip-slip
         if (u32(localOff) !== 0x04034b50) throw new Error(`zip 局部头损坏：${name}`)
@@ -841,19 +848,71 @@ export default {
       api.every(PACK_CHECK_MS, () => { if (defaultPackMissing()) ensureDefaultPack().catch(() => {}) }, '素材包自动落位')
     }
 
+    // 官方 electron zip 是「扁平包」：electron.exe / electron 直接在压缩包根目录，没有 dist/ 前缀
+    // （macOS 是 Electron.app 目录）；而 npm 包的布局是 node_modules/electron/dist/…。部分镜像还会
+    // 在外面再套一层目录（electron-v45-win32-x64/）。所以这里先解到临时目录、认出 payload 根，
+    // 再整体搬进 dist/——让 electronExe() 只需认 dist/，npm 装与 zip 直装共用一套路径判断。
+    function findPayloadRoot(dir, depth = 0) {
+      if (depth > 4) return ''
+      let items = []
+      try { items = readdirSync(dir, { withFileTypes: true }) } catch { return '' }
+      // ① 本层就是 payload 根（标准扁平包）
+      for (const it of items) {
+        if (it.isFile() && it.name === 'electron.exe' && process.platform === 'win32') return dir
+        if (it.isFile() && it.name === 'electron' && process.platform !== 'win32') return dir
+        if (it.isDirectory() && it.name === 'Electron.app') return dir
+      }
+      // ② 外层套了目录时往下找（locales/resources 是 payload 内部目录，别白跑）
+      for (const it of items) {
+        if (!it.isDirectory() || it.name === 'locales' || it.name === 'resources') continue
+        const hit = findPayloadRoot(join(dir, it.name), depth + 1)
+        if (hit) return hit
+      }
+      return ''
+    }
+
+    /** 把 src 里的条目整体搬进 dest（同盘 rename；跨盘/被占用时回退「复制 + 删源」）。 */
+    function moveInto(src, dest) {
+      mkdirSync(dest, { recursive: true })
+      for (const name of readdirSync(src)) {
+        const from = join(src, name)
+        const to = join(dest, name)
+        try { renameSync(from, to) } catch {
+          cpSync(from, to, { recursive: true })
+          rmSync(from, { recursive: true, force: true })
+        }
+      }
+    }
+
     async function electronInstallZip(exe) {
       const { ver, url } = electronZipUrl()
       const zipFile = join(appDir(), 'electron.zip')
+      const pkgRoot = join(appDir(), 'node_modules', 'electron')
+      const stage = join(pkgRoot, '.unzip')
       try {
         const zip = await fetchZipTo(url, zipFile)
-        mkdirSync(join(appDir(), 'node_modules'), { recursive: true })
-        unzipTo(zip, join(appDir(), 'node_modules', 'electron'))
-        if (!existsSync(exe)) throw new Error('解压完成但没找到可执行文件（版本/平台可能不匹配）')
+        // 能走到这里说明 pkgRoot 里本来就没有可用安装：清空重装。顺手清掉旧版本留下的垃圾
+        // （旧版把扁平 zip 直接解到 pkgRoot，留下 electron.exe + 一百多 MB 散文件）和 npm 的半成品。
+        try { rmSync(pkgRoot, { recursive: true, force: true }) } catch (error) {
+          throw new Error(`旧的 electron 目录删不掉（${String(error?.code || error?.message || error)}）：先点「停止桌宠」再装`)
+        }
+        mkdirSync(stage, { recursive: true })
+        unzipTo(zip, stage) // 纯 JS 解压到临时目录
+        const root = findPayloadRoot(stage)
+        if (!root) {
+          let peek = ''
+          try { peek = readdirSync(stage).slice(0, 6).join('、') } catch {}
+          throw new Error(`解压完成但包里没有 ${basename(exe)}（解出来的东西：${peek || '空'}）`)
+        }
+        moveInto(root, join(pkgRoot, 'dist')) // 最终布局对齐 npm：node_modules/electron/dist/…
+        try { writeFileSync(join(pkgRoot, 'path.txt'), electronPathTxt()) } catch {} // 给 require('electron') 用
+        if (!existsSync(exe)) throw new Error(`解压完成但没找到 ${basename(exe)}（${process.platform}-${process.arch}）`)
         return { ok: true, installed: true, exe, message: `Electron v${ver} 安装完成（npmmirror 直下 zip，无需 npm）` }
       } catch (error) {
         return { ok: false, message: `zip 直装失败：${String(error?.message || error).slice(0, 240)}（可换个网络再点一次，或看 USER-MANUAL 的手动安装教程）` }
       } finally {
         try { unlinkSync(zipFile) } catch {}
+        try { rmSync(stage, { recursive: true, force: true }) } catch {}
       }
     }
 

@@ -13,6 +13,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, unlink
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { deflateRawSync } from 'node:zlib'
 
 let mod
 const OWNER = '10000001'
@@ -504,6 +505,10 @@ test('/status：带 client 对账字段（面板「桌宠」卡据此提示）',
 const ELECTRON_REL = process.platform === 'win32' ? join('dist', 'electron.exe')
   : process.platform === 'darwin' ? join('dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
   : join('dist', 'electron')
+// 官方 zip 里 payload 相对**压缩包根**的位置（没有 dist/ 前缀；macOS 是 Electron.app 目录）
+const ZIP_EXE_REL = process.platform === 'win32' ? 'electron.exe'
+  : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron'
+  : 'electron'
 
 /** 假 spawn：记录调用、按脚本制造 exe / 返回退出码，绝不打真网络、不真启动。 */
 function fakeSpawn({ exit = 0, makeExe } = {}) {
@@ -564,31 +569,43 @@ test('Electron 安装失败路径：npm 非零退出 → ok:false 带原因；�
   assert.match(r.message, /npm 安装失败/)
 })
 
-/** 手工拼一个最小合法 zip（存储法、无压缩）：顺带走真解压器，不引第三方依赖。 */
+/**
+ * 手工拼一个最小合法 zip：顺带走真解压器，不引第三方依赖。
+ * entries: `[name, data]` 或 `[name, data, { method, mode }]`
+ *   · method：0=存储（默认）/ 8=deflate（官方 electron zip 用的就是 deflate）
+ *   · mode：Unix st_mode，写进 externalAttr 高 16 位（0o100644 普通文件、0o120777 符号链接）。
+ *     **不传就是 0**——那是 DOS 属性，不是真实 zip 的长相；关键用例要显式给 mode，
+ *     否则「把普通文件误判成符号链接」这类 bug 测不出来（历史上就漏过一次）。
+ */
 function tinyZip(entries) {
   const chunks = []
   const central = []
   let off = 0
-  for (const [name, data] of entries) {
+  for (const [name, raw, opts = {}] of entries) {
     const nameBuf = Buffer.from(name)
+    const method = opts.method || 0
+    const data = Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
+    const body = method === 8 ? deflateRawSync(data) : data
     const local = Buffer.alloc(30)
     local.writeUInt32LE(0x04034b50, 0)
     local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(method, 8)
+    local.writeUInt32LE(body.length, 18) // csize（压缩后）
+    local.writeUInt32LE(data.length, 22) // usize（原始）
     local.writeUInt16LE(nameBuf.length, 26)
-    local.writeUInt32LE(data.length, 18) // csize（存储法 = 原大小）
-    local.writeUInt32LE(data.length, 22) // usize
-    chunks.push(local, nameBuf, data)
+    chunks.push(local, nameBuf, body)
     const cd = Buffer.alloc(46)
     cd.writeUInt32LE(0x02014b50, 0)
     cd.writeUInt16LE(20, 4)
     cd.writeUInt16LE(20, 6)
-    cd.writeUInt16LE(0, 10) // method 0 = 存储
-    cd.writeUInt32LE(data.length, 20) // csize
+    cd.writeUInt16LE(method, 10)
+    cd.writeUInt32LE(body.length, 20) // csize
     cd.writeUInt32LE(data.length, 24) // usize
     cd.writeUInt16LE(nameBuf.length, 28)
+    if (opts.mode) cd.writeUInt32LE((opts.mode << 16) >>> 0, 38) // externalAttr 高 16 位 = Unix st_mode
     cd.writeUInt32LE(off, 42) // 局部头偏移
     central.push(cd, nameBuf)
-    off += 30 + nameBuf.length + data.length
+    off += 30 + nameBuf.length + body.length
   }
   const cdBuf = Buffer.concat(central)
   const eocd = Buffer.alloc(22)
@@ -599,20 +616,25 @@ function tinyZip(entries) {
   return Buffer.concat([...chunks, cdBuf, eocd])
 }
 
-test('Electron 兜底直装：没有 npm-cli（DSH 运行时/裸机）→ npmmirror zip 直下 + 纯 JS 解压，零 npm 依赖', async () => {
+/** 官方 electron zip 的样子：payload 直接在压缩包根（没有 dist/ 前缀），deflate 压缩，带 Unix 权限位。 */
+function officialZipEntries(exeRelNoDist = ZIP_EXE_REL, prefix = '') {
+  return [
+    [prefix + exeRelNoDist, Buffer.from('fake electron'), { method: 8, mode: 0o100755 }],
+    [prefix + 'resources/default_app.asar', Buffer.from('asar'), { method: 8, mode: 0o100644 }],
+    [prefix + 'locales/zh-CN.pak', Buffer.from('pak'), { method: 8, mode: 0o100644 }],
+    [prefix + 'vk_swiftshader.dll', Buffer.from('dll'), { method: 8, mode: 0o100644 }],
+  ]
+}
+
+test('Electron 兜底直装：没有 npm-cli（DSH 运行时/裸机）→ 镜像直下官方 zip + 纯 JS 解压，落到 electron/dist/', async () => {
   const env = startModule()
   const appDir = env.api.dataDir('app')
-  await env.exports.download() // 先有 app/main.js + package.json
+  await env.exports.download() // 先有 app/main.js
+  const pkgRoot = join(appDir, 'node_modules', 'electron')
   const exe = join(appDir, 'node_modules', 'electron', ELECTRON_REL)
-  const exeZipPath = ELECTRON_REL.split('\\').join('/')
 
   let requestedUrl = ''
-  const fakeZip = tinyZip([
-    ['dist/', Buffer.alloc(0)],
-    [exeZipPath, Buffer.from('fake electron')],
-    ['package.json', Buffer.from('{"name":"electron","version":"45.1.0"}')],
-    ['index.js', Buffer.from('module.exports = "fake"')],
-  ])
+  const fakeZip = tinyZip(officialZipEntries())
   // 换一个带 hooks 的实例（hooks 在 setup 时读）；npmCli: '' = 强制没有 npm（逼出 zip 直装路径），
   // fetchZip 钩子替代真下载，不打真网络。
   const env2 = startModule({
@@ -628,13 +650,74 @@ test('Electron 兜底直装：没有 npm-cli（DSH 运行时/裸机）→ npmmir
   assert.equal(r.ok, true, `zip 直装应成功：${r.message}`)
   assert.match(requestedUrl, /^https:\/\/npmmirror\.com\/mirrors\/electron\//, '下载必须走 npmmirror 镜像')
   assert.match(requestedUrl, /electron-v\d+\.\d+\.\d+-/, 'URL 带具体版本号（来自 app/package.json）')
-  assert.ok(existsSync(exe), '解压后 electron.exe 在位')
-  assert.equal(readFileSync(exe, 'utf8'), 'fake electron', '解压内容正确')
+  // 官方 zip 的 payload 在压缩包根，必须落到 node_modules/electron/dist/（electronExe() 只认这个布局）
+  assert.ok(existsSync(exe), '解压后 electron.exe 在 node_modules/electron/dist/ 下')
+  assert.equal(readFileSync(exe, 'utf8'), 'fake electron', 'deflate 条目解压内容正确')
+  assert.ok(existsSync(join(pkgRoot, 'dist', 'resources', 'default_app.asar')), '整包一起进 dist/，不是只挑 exe')
+  assert.ok(!existsSync(join(pkgRoot, 'resources')), '别再把扁平内容摊在 electron/ 根目录')
+  assert.equal(readFileSync(join(pkgRoot, 'path.txt'), 'utf8').trim(), ZIP_EXE_REL, 'path.txt 与 npm 包约定一致')
+  assert.ok(!existsSync(join(pkgRoot, '.unzip')), '临时解压目录清理干净')
   assert.ok(!existsSync(join(appDir, 'electron.zip')), '装完清理临时 zip')
   assert.match(r.message, /无需 npm/)
 
   const again = await env2.exports.electronInstall()
   assert.equal(again.alreadyInstalled, true, '已装则跳过')
+})
+
+test('Electron 兜底直装：镜像 zip 外面套了一层目录（electron-v45-win32-x64/…）也能认出 payload', async () => {
+  const env = startModule()
+  const appDir = env.api.dataDir('app')
+  await env.exports.download()
+  const exe = join(appDir, 'node_modules', 'electron', ELECTRON_REL)
+  const fakeZip = tinyZip(officialZipEntries(ZIP_EXE_REL, `electron-v45.1.0-${process.platform}-${process.arch}/`))
+  const env2 = startModule({
+    hooks: {
+      npmCli: '',
+      fetchZip: async () => ({ ok: true, arrayBuffer: async () => fakeZip.buffer.slice(fakeZip.byteOffset, fakeZip.byteOffset + fakeZip.byteLength) }),
+    },
+  })
+  const r = await env2.exports.electronInstall()
+  assert.equal(r.ok, true, `套了一层目录也要能装：${r.message}`)
+  assert.ok(existsSync(exe), '依然落在 electron/dist/ 下')
+})
+
+test('zip 解压：Unix 普通文件不因权限位被误判成符号链接（0o100644 最高位也是 1）；真符号链接条目仍跳过', async () => {
+  const env = startModule()
+  const appDir = env.api.dataDir('app')
+  await env.exports.download()
+  const pkgRoot = join(appDir, 'node_modules', 'electron')
+  const exe = join(appDir, 'node_modules', 'electron', ELECTRON_REL)
+  const entries = officialZipEntries() // 普通文件带 0o100644/0o100755 权限位
+  entries.push(['link-to-exe', Buffer.from(ZIP_EXE_REL), { method: 0, mode: 0o120777 }]) // S_IFLNK 符号链接
+  const fakeZip = tinyZip(entries)
+  const env2 = startModule({
+    hooks: {
+      npmCli: '',
+      fetchZip: async () => ({ ok: true, arrayBuffer: async () => fakeZip.buffer.slice(fakeZip.byteOffset, fakeZip.byteOffset + fakeZip.byteLength) }),
+    },
+  })
+  const r = await env2.exports.electronInstall()
+  assert.equal(r.ok, true, `应装成功：${r.message}`)
+  assert.ok(existsSync(exe), 'electron.exe 解出来了')
+  assert.ok(existsSync(join(pkgRoot, 'dist', 'resources', 'default_app.asar')), '普通文件（0o100644）必须照常解出来，不能被当符号链接跳过')
+  assert.ok(existsSync(join(pkgRoot, 'dist', 'locales', 'zh-CN.pak')), '普通文件同样照常解出')
+  assert.ok(!existsSync(join(pkgRoot, 'dist', 'link-to-exe')), '符号链接条目跳过（不落地成普通文件）')
+})
+
+test('Electron 兜底直装失败：镜像给的不是 zip（HTML 错误页/断流）→ 报「不是有效的 zip」，不误报平台不匹配', async () => {
+  const env = startModule()
+  await env.exports.download()
+  const html = Buffer.from('<html><body>502 Bad Gateway</body></html>')
+  const env2 = startModule({
+    hooks: {
+      npmCli: '',
+      fetchZip: async () => ({ ok: true, arrayBuffer: async () => html.buffer.slice(html.byteOffset, html.byteOffset + html.byteLength) }),
+    },
+  })
+  const r = await env2.exports.electronInstall()
+  assert.equal(r.ok, false)
+  assert.match(r.message, /不是有效的 zip/)
+  assert.doesNotMatch(r.message, /平台/)
 })
 
 test('Electron 兜底直装失败：下载炸了 → ok:false 带原因（不再出现「找不到 npm-cli.js」死路提示）', async () => {
