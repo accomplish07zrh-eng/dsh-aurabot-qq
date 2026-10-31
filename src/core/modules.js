@@ -168,6 +168,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   let generation = 0
   let userSeen = new Map() // id → { dir, file, stamp }
   let watching = null
+  let disposed = false
 
   const modCfg = (id) => getConfig().modules?.[id] || {}
   const isEnabled = (id) => modCfg(id).enabled !== false
@@ -176,7 +177,9 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   // ---------- 给模块的 api ----------
   function makeApi(id, source, rec) {
     const mlog = logger.child(id)
+    const active = () => !disposed && !rec.stopped && live.get(id) === rec
     const guard = (label, fn) => (...args) => {
+      if (!active()) return
       try {
         const r = fn(...args)
         if (r && typeof r.then === 'function') return r.catch((error) => { note(id, label, error); throw error })
@@ -186,7 +189,13 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         throw error
       }
     }
-    const track = (off) => { if (typeof off === 'function') rec.offs.push(off); return off }
+    const track = (off) => {
+      if (typeof off === 'function') {
+        if (active()) rec.offs.push(off)
+        else cleanup(off)
+      }
+      return off
+    }
     // 内置模块和替换它的版本用原来的路径（内置的面板页照常能用）；新模块放在 /ext/模块id/ 下
     const prefix = builtinDefs.has(id) ? '' : `/ext/${id}`
     const def = rec.def
@@ -237,21 +246,26 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       },
       emit: (event, ...args) => emit(event, ...args),
       every: (ms, fn, label = '定时任务') => {
-        const t = setInterval(() => { Promise.resolve().then(fn).catch((error) => note(id, label, error)) }, Math.max(1000, Number(ms) || 60_000))
+        const t = setInterval(() => {
+          if (!active()) return
+          Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, label, error))
+        }, Math.max(1000, Number(ms) || 60_000))
         t.unref?.()
         return track(() => clearInterval(t))
       },
       later: (ms, fn) => {
-        const t = setTimeout(() => { Promise.resolve().then(fn).catch((error) => note(id, '延时任务', error)) }, Math.max(0, Number(ms) || 0))
+        const t = setTimeout(() => { Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, '延时任务', error)) }, Math.max(0, Number(ms) || 0))
         t.unref?.()
         return track(() => clearTimeout(t))
       },
       route: (path, handler) => {
+        if (!active()) return () => {}
         const full = '/aurabot/api' + prefix + (String(path).startsWith('/') ? path : '/' + path)
         const cur = routes.get(full)
         if (cur && cur.id !== id && live.has(cur.id)) throw new Error(`接口 ${full} 已经被模块「${cur.id}」占了`)
-        routes.set(full, { id, handler: guard(`接口 ${path}`, handler) })
-        return track(() => { if (routes.get(full)?.id === id) routes.delete(full) })
+        const route = { id, handler: guard(`接口 ${path}`, handler) }
+        routes.set(full, route)
+        return track(() => { if (routes.get(full) === route) routes.delete(full) })
       },
       onDispose: (fn) => track(fn),
       // ---- 常用操作的捷径（都是 core 里的东西包了一层）----
@@ -269,7 +283,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       ask: (opts) => core.ask(typeof opts === 'string' ? { text: opts } : opts),
       think: (prompt, opts = {}) => core.hub.runSystemTurn(`ext-${id}`, opts.title || def.name || id, String(prompt), opts),
       onebot: (action, params, opts) => core.onebot.call(action, params, opts),
-      dshTool: (tool) => { rec.dshTools.push(tool); core.bridge?.refresh(); return () => { remove(rec.dshTools, tool); core.bridge?.refresh() } },
+      dshTool: (tool) => { if (!active()) return () => {}; rec.dshTools.push(tool); core.bridge?.refresh(); return () => { remove(rec.dshTools, tool); core.bridge?.refresh() } },
     }
     return api
   }
@@ -294,8 +308,15 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     return rec ? rec.exports : null
   }
 
+  // 卸载接口保持同步；模块自己的同步 / 异步收尾失败只记日志。
+  function cleanup(fn) {
+    const failed = (error) => log.warn('模块清理失败：', String(error?.message || error))
+    try { Promise.resolve(fn()).catch(failed) } catch (error) { failed(error) }
+  }
+
   // ---------- 启动 / 停止 ----------
   async function start(def, source, extra = {}) {
+    if (disposed) return null
     const id = def.id
     const rec = { id, def, source, exports: null, offs: [], tools: [], contexts: [], rules: [], commands: [], dshTools: [], errors: [], startedAt: Date.now(), ...extra }
     // 设置里的密码字段不回传给面板
@@ -312,10 +333,16 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     try {
       const api = makeApi(id, source, rec)
       const r = def.setup(api)
-      rec.exports = (r && typeof r.then === 'function' ? await r : r) ?? {}
+      const exports = (r && typeof r.then === 'function' ? await r : r) ?? {}
+      if (disposed || rec.stopped || live.get(id) !== rec) {
+        cleanup(() => exports?.dispose?.())
+        return null
+      }
+      rec.exports = exports
       log.info(`模块「${def.name || id}」${source === 'user' ? '（自己写的）' : ''}已启动`)
       emit('module/start', id)
     } catch (error) {
+      if (disposed || rec.stopped || live.get(id) !== rec) return null
       stop(id, { quiet: true })
       errors.set(id, { message: String(error && error.message ? error.message : error).slice(0, 800), at: Date.now(), source })
       log.warn(`模块「${def.name || id}」启动失败：`, error.message)
@@ -325,6 +352,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
 
   /** 同步启动（内置模块的 setup 都是同步的，插件一加载就要能用）。 */
   function startSync(def) {
+    if (disposed) return
     const id = def.id
     const rec = { id, def, source: 'builtin', exports: null, offs: [], tools: [], contexts: [], rules: [], commands: [], dshTools: [], errors: [], startedAt: Date.now() }
     live.set(id, rec)
@@ -345,9 +373,11 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     const rec = live.get(id)
     if (!rec) return false
     live.delete(id)
-    generation++ // 模块被停掉/替换：工具清单或实例变了，下一轮重挂
-    for (const off of rec.offs.reverse()) { try { off() } catch (error) {} }
-    try { rec.exports?.dispose?.() } catch (error) {}
+    generation++ // 停止或替换也使会话工具缓存失效
+    rec.stopped = true
+    for (const off of rec.offs.splice(0).reverse()) cleanup(off)
+    cleanup(() => rec.exports?.dispose?.())
+    rec.exports = null
     for (const [path, r] of routes) if (r.id === id) routes.delete(path)
     for (const [ev, list] of listeners) listeners.set(ev, list.filter((x) => x.id !== id))
     if (rec.dshTools.length) core.bridge?.refresh()
@@ -378,13 +408,16 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   }
 
   async function startUser(u) {
+    if (disposed) return null
     let def
     let stamp = 0
     try {
       ({ def, stamp } = await importUser(u))
+      if (disposed) return null
       const why = checkDef(def, u.id)
       if (why) throw new Error(why)
     } catch (error) {
+      if (disposed) return null
       errors.set(u.id, { message: String(error.message || error).slice(0, 800), at: Date.now(), source: 'user', fallback: builtinDefs.has(u.id) })
       log.warn(`模块「${u.id}」加载失败：`, error.message)
       userSeen.set(u.id, { ...u, stamp: stampOf(u.dir) })
@@ -412,13 +445,16 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
 
   /** 插件加载时：内置模块同步启动（被替换 / 关掉的跳过），自己写的随后异步加载。 */
   function boot() {
+    if (disposed) return Promise.resolve()
     const users = isUserOn() ? scanUser() : []
     for (const def of builtins) if (wanted(def.id, users) === 'builtin') startSync(def)
     return (async () => {
       await loadLib()
+      if (disposed) return
       globalThis.aurabot = { lib, src: pathToFileURL(SRC).href, version, apiVersion: API_VERSION, modules: publicHandle }
       installDocs()
       await sync()
+      if (disposed) return
       watching = setInterval(() => { sync().catch((error) => log.warn('检查模块变化出错：', error.message)) }, 3000)
       watching.unref?.()
     })().catch((error) => log.error('加载自己写的模块出错：', error.message))
@@ -427,11 +463,13 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   /** 按配置和文件夹的现状，把该开的开、该关的关、改过的重新加载。 */
   let syncing = null
   function sync() {
+    if (disposed) return Promise.resolve()
     if (syncing) return syncing
     syncing = (async () => {
       const users = isUserOn() ? scanUser() : []
       const ids = new Set([...builtinDefs.keys(), ...users.map((u) => u.id), ...live.keys()])
       for (const id of ids) {
+        if (disposed) return
         const want = wanted(id, users)
         const rec = live.get(id)
         const u = users.find((x) => x.id === id)
@@ -451,6 +489,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         if (rec) stop(id, { quiet: true })
         if (seen && changed) log.info(`模块「${id}」文件改了，重新加载`)
         const ok = await startUser(u)
+        if (disposed) return
         // 替换版加载失败：先用回内置的，免得这项功能直接没了
         if (!ok && builtinDefs.has(id)) {
           startSync(builtinDefs.get(id))
@@ -473,12 +512,18 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   }
 
   function dispose() {
+    if (disposed) return
+    disposed = true
     clearInterval(watching)
     for (const id of [...live.keys()].reverse()) stop(id, { quiet: true })
+    routes.clear()
+    listeners.clear()
+    if (globalThis.aurabot?.modules === publicHandle) delete globalThis.aurabot
   }
 
   // ---------- 事件 ----------
   function emit(event, ...args) {
+    if (disposed) return
     for (const { fn } of listeners.get(event) || []) {
       try { const r = fn(...args); if (r && typeof r.catch === 'function') r.catch(() => {}) } catch (error) {}
     }
