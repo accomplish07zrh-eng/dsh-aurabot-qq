@@ -45,7 +45,10 @@ export function scoreText(text) {
   return Math.max(-20, Math.min(20, d))
 }
 
-export function decayed(value, at, halfLifeHours, now = Date.now(), base = 60) {
+/** 心情基线的兜底值：没有配置时用它（和上游原来的 60 一致）。改基线只改配置项 mood.base。 */
+export const MOOD_BASE = 60
+
+export function decayed(value, at, halfLifeHours, now = Date.now(), base = MOOD_BASE) {
   const h = Math.max(0, (now - at) / 3600_000)
   return base + (value - base) * Math.pow(0.5, h / halfLifeHours)
 }
@@ -66,11 +69,16 @@ export function parseMoodJudge(out) {
 
 export function createMood({ getConfig, dsh }) {
   const file = () => dataDir('mood.json')
-  const load = () => readJson(file(), () => ({ value: 65, at: Date.now(), reason: '', history: [] }))
+  /** 当前配置的基线：衰减、初始值、兜底、判断提示词四处统一读它。 */
+  const base = () => {
+    const v = Number(getConfig().mood?.base)
+    return Number.isFinite(v) && v >= 10 && v <= 90 ? v : MOOD_BASE
+  }
+  const load = () => readJson(file(), () => ({ value: base(), at: Date.now(), reason: '', history: [] }))
   const save = (s) => writeJson(file(), s)
   const current = () => {
     const s = load()
-    return Math.round(decayed(s.value, s.at, getConfig().mood.halfLifeHours))
+    return Math.round(decayed(s.value, s.at, getConfig().mood.halfLifeHours, Date.now(), base()))
   }
   /** 推一下心情（d 可正可负），记下原因。 */
   function nudge(d, reason) {
@@ -87,7 +95,7 @@ export function createMood({ getConfig, dsh }) {
     current,
     label: () => moodLabel(current()),
     state: () => ({ ...load(), value: current(), label: moodLabel(current()) }),
-    effects: () => (getConfig().mood.enabled ? moodEffects(current()) : moodEffects(60)),
+    effects: () => (getConfig().mood.enabled ? moodEffects(current()) : moodEffects(base())),
     nudge,
     /**
      * 聊天里的一句话。direct = 是对她说的（私聊、@她、叫她）；owner = 主人说的。
@@ -112,7 +120,7 @@ export function createMood({ getConfig, dsh }) {
       try {
         const out = await askModel(dsh, {
           cfg: getConfig(),
-          system: '你在判断聊天角色「大肥鱼」聊完一轮后的心情变化。她现在心情 ' + v + '/100（60 是平常）。' + scene + '。只看这一轮真正影响她心情的东西：被夸、被关心、被惦记会开心；被凶、被冷落、被嫌弃会难过；开玩笑的「讨厌~」「笨蛋」不算真骂。只输出 JSON：{"delta": -15~15 的整数, "reason": "十几个字的理由", "confidence": 0~1 你有多确定}。没什么影响就 delta 为 0。',
+          system: '你在判断聊天角色「大肥鱼」聊完一轮后的心情变化。她现在心情 ' + v + '/100（' + base() + ' 是平常）。' + scene + '。只看这一轮真正影响她心情的东西：被夸、被关心、被惦记会开心；被凶、被冷落、被嫌弃会难过；开玩笑的「讨厌~」「笨蛋」不算真骂。只输出 JSON：{"delta": -15~15 的整数, "reason": "十几个字的理由", "confidence": 0~1 你有多确定}。没什么影响就 delta 为 0。',
           text: `${origin === 'speak-up' ? '她主动说' : who + '说'}：${String(userText || '').slice(0, 600)}\n她回：${String(reply || '').slice(0, 600)}`,
           maxTokens: 400,
           temperature: 0.2,
