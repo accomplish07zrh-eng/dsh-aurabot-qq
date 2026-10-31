@@ -55,6 +55,7 @@ const clip = (text, n = 300) => (text.length > n ? text.slice(0, n) + '…' : te
  */
 export function createDangerGuard ({ getConfig, deliver, chatOfSession, ownerQQ, timeoutMs = 60_000, log } = {}) {
   const pending = new Map() // chatId → { resolve, timer }
+  let disposed = false
 
   function cleanup (chatId, value) {
     const p = pending.get(chatId)
@@ -70,6 +71,7 @@ export function createDangerGuard ({ getConfig, deliver, chatOfSession, ownerQQ,
    * next() 返回 allow；返回 deny 时 DSH 会把 reason 给模型。
    */
   async function preExecute (exec, next) {
+    if (disposed) return { kind: 'deny', reason: '插件已卸载，取消旧工具调用。' }
     const cfg = getConfig() || {}
     if (!cfg.security || cfg.security.dangerConfirm !== true) return next()
     const tool = String(exec && exec.name || '')
@@ -109,7 +111,7 @@ export function createDangerGuard ({ getConfig, deliver, chatOfSession, ownerQQ,
       log?.warn?.('危险命令确认出错：', error.message)
       ok = false
     }
-    if (ok) {
+    if (ok && !disposed) {
       log?.info?.(`主人确认执行危险命令（${danger.label}）：${clip(command, 120)}`)
       return next()
     }
@@ -134,6 +136,10 @@ export function createDangerGuard ({ getConfig, deliver, chatOfSession, ownerQQ,
   return {
     preExecute,
     handleReply,
+    dispose() {
+      disposed = true
+      for (const chatId of pending.keys()) cleanup(chatId, false)
+    },
     /** 等确认中的数量（测试/排查用） */
     get pendingCount () { return pending.size },
   }
