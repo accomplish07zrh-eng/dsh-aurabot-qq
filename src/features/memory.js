@@ -414,7 +414,15 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     if (recent.length) parts.push('（你最近做过的事：' + recent.map((m) => `${agoText(m.at)}${m.text}`).join('；') + '。聊到了可以自然提起。）')
     // 注意：随每条消息变化的「相关记忆」不放在这里（#79）——运行时上下文快照每轮都会追加到历史，
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
-    return parts.join('\n')
+    // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
+    // 长期相处这段会慢慢变长，而它每轮都进上下文。超了从尾部截断，宁可少一句也不无声膨胀。
+    const RESIDENT_MAX_CHARS = 600
+    let resident = parts.join('\n')
+    if (resident.length > RESIDENT_MAX_CHARS) {
+      resident = resident.slice(0, RESIDENT_MAX_CHARS) + '…'
+      log.debug(`常驻记忆超长，已截断到 ${RESIDENT_MAX_CHARS} 字`)
+    }
+    return resident
   }
 
   // 主人私聊里问起群里的事：才临时把最近 24 小时的群聊流水当成「她自己的见闻」补进这一轮
