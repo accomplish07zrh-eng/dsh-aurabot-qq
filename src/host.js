@@ -635,6 +635,8 @@ export function apply(ctx) {
     }
     // 人物大小倍率：0.5~2.0，步进 0.05；坏值忽略（别把桌宠缩没了）
     if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
+    // 松手后落地：布尔透传（模块侧缺省当开，别让老面板把抛掷关没）
+    if (typeof b.petReleaseLand === 'boolean') patch.petReleaseLand = b.petReleaseLand
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
     // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
     // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
