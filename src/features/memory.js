@@ -678,6 +678,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       for (const qq of [...touched, ...missing].slice(0, 8)) {
         try { if (await buildProfile(qq)) profiles++ } catch (error) { log.warn('写人物小档案失败：', error.message) }
       }
+      // 先合并（内部 load→改→save），再重新读快照，否则下面那次 save(s) 会把合并结果覆盖回旧数据
+      try { await mergeGroups() } catch (error) { log.warn('合并记忆出错：', error.message) }
       const s = load()
       // 遗忘：不重要、很久没被想起的自动记忆清掉，记忆库不会越堆越乱
       const before = s.items.length
@@ -693,6 +695,59 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     } finally {
       busy = false
     }
+  }
+
+  /**
+   * 按人整组合并：同一个人名下的重复条目交给模型判断，是同一件事就并成一条。
+   * 只并 importance 低的；约定/边界这类（>= 0.85）只加不并。默认关（memory.mergeGroups）。
+   */
+  async function mergeGroups() {
+    const cfg = getConfig()
+    if (cfg.memory?.mergeGroups === false) return { groups: 0, calls: 0, merged: 0 }
+    const list = load().items.filter((m) => !m.invalidAt)
+    const by = new Map()
+    for (const m of list) {
+      const k = String(m.about || '(通用)')
+      if (!by.has(k)) by.set(k, [])
+      by.get(k).push(m)
+    }
+    let groups = 0, calls = 0, merged = 0
+    for (const [who, items] of by) {
+      const soft = items.filter((m) => (Number(m.importance) || 0) < 0.85)
+      if (soft.length < 4) continue
+      groups++
+      try {
+        const out = await askModel(dsh, {
+          cfg,
+          system: '你是「大肥鱼」。下面是同一个人名下的一些记忆条目，看有没有说的是同一件事、可以并成一条的。只并「确实是同一件事」的，拿不准就不要并；合并后的说法要保留原意，别添加没写过的东西。只输出 JSON：{"merges":[{"ids":[编号...],"text":"合并后的一句话"}]}，没有可并的就输出 {"merges":[]}。',
+          text: soft.map((m) => `#${m.id} ${m.text}`).join('\n'),
+          maxTokens: 1200,
+          temperature: 0.2,
+        })
+        calls++
+        const hit = String(out || '').match(/\{[\s\S]*\}/)
+        let plan = { merges: [] }
+        try { plan = hit ? JSON.parse(hit[0]) : { merges: [] } } catch (error) { log.debug?.(`合并 ${who}：模型输出不是合法 JSON，跳过`); continue }
+        const arr = Array.isArray(plan.merges) ? plan.merges : []
+        if (!arr.length) continue
+        const s = load()
+        for (const g of arr) {
+          const ids = (g.ids || []).map(String)
+          const text = String(g.text || '').trim()
+          if (ids.length < 2 || !text) continue
+          const members = s.items.filter((m) => ids.includes(String(m.id)) && !m.invalidAt)
+          if (members.length < 2) continue
+          const keep = members.reduce((a, b) => ((Number(a.importance) || 0) >= (Number(b.importance) || 0) ? a : b))
+          keep.text = text
+          keep.mergedAt = Date.now()
+          keep.mergedFrom = (keep.mergedFrom || 0) + members.length
+          for (const m of members) { if (m !== keep) { m.invalidAt = Date.now(); merged++ } }
+        }
+        save(s)
+      } catch (error) { log.warn(`合并 ${who} 的记忆失败：`, error.message) }
+    }
+    if (groups) log.info(`记忆合并：看了 ${groups} 组、调了 ${calls} 次模型，并掉 ${merged} 条`)
+    return { groups, calls, merged }
   }
 
   /** 从各人的说话方式里，沉淀出几条她自己不知不觉学会的说法（很少、很淡）。 */
