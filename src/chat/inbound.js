@@ -35,6 +35,7 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
   const groupId = kind === 'group' ? String(event.group_id ?? '') : ''
   const sender = event.sender || {}
   let mentioned = false
+  let atOthers = false // 这一条 @ 了别人（既不是她，也不是全体）
   let replyId = ''
   const texts = []
   const images = []
@@ -49,7 +50,10 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
         break
       case 'at':
         if (String(d.qq) === self || d.qq === 'all') mentioned = mentioned || String(d.qq) === self
-        else texts.push(`@${d.name || d.qq} `)
+        else {
+          atOthers = true
+          texts.push(`@${d.name || d.qq} `)
+        }
         break
       case 'reply':
         replyId = String(d.id ?? '')
@@ -110,6 +114,7 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
     messageId: String(event.message_id ?? ''),
     text,
     mentioned,
+    atOthers,
     replyId,
     images,
     stickers,

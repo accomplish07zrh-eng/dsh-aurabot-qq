@@ -370,6 +370,8 @@ export function normalize(raw) {
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, 20)
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
+  // @ 了别人时不算叫她（只挡必回，仍然可以插话）；默认关，保持原行为
+  g.ignoreAtOthers = bool(g.ignoreAtOthers, false)
   c.merge.enabled = bool(c.merge.enabled, true)
   c.merge.waitSec = num(c.merge.waitSec, 2.5, 0, 30)
   c.merge.maxSec = Math.max(c.merge.waitSec, num(c.merge.maxSec, 8, 0, 60))

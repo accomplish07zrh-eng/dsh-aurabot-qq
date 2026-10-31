@@ -1087,6 +1087,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         relevance: topicRelevance(recentTexts, pol.interests, memScore),
         engagedUntil: groupEngaged.get(msg.groupId) || 0,
         mentioned: msg.mentioned,
+        atOthers: cfg.group?.ignoreAtOthers ? msg.atOthers : false,
         repliedToBot: quotedBot,
         fromOwner: isOwner(cfg, msg.userId),
         text: msg.text,
