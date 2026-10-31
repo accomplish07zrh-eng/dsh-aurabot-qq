@@ -156,7 +156,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
 
   // 每次换个由头，免得句句都是「在干嘛」
   const ANGLES = [
-    '分享一件你今天（编也行，符合你的人设）遇到的小事或想到的东西',
+    '分享一件你今天遇到的小事或想到的东西',
     '接着你们上次聊的话题，问问后来怎么样了',
     '想起记忆里关于对方的一件事，顺口提一句或关心一下',
     '问问对方现在在干嘛、吃了没、累不累',
@@ -172,7 +172,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
     const angle = ANGLES[Math.floor(Math.random() * ANGLES.length)]
     const prompt = nudge
       ? `【系统提醒，不是${owner}说的话】你刚才跟${owner}说「${String(hub.lastBotToOwner?.text || '').slice(-60)}」，${owner}已经 ${idle} 分钟没回了。可以轻轻追一句（比如「人呢」「睡着啦？」，或者换个话题），别催、别抱怨；觉得${owner}在忙就只回 [沉默]。`
-      : `【系统提醒，不是${owner}说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和${owner}私聊了，想主动找${owner}说点什么。这次的由头可以是：${angle}。用你自己的口气，一两句就好，别用模板、别解释为什么来找；实在不想说就只回 [沉默]。`
+      : `【系统提醒，不是${owner}说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和${owner}私聊了，想主动找${owner}说点什么。这次的由头可以是：${angle}。优先用手里真实的素材（最近做过的事、记忆里的、聊天流水里能查到的），没有真实素材就别硬找，也不要编；用你自己的口气，一两句就好，别用模板、别解释为什么来找；实在不想说就只回 [沉默]。`
     log.info(`主动搭话（${reason}）`)
     await hub.pushToSession({ chatId: `private:${cfg.ownerQQ}`, kind: 'private', userId: cfg.ownerQQ, nickname: owner }, [{ type: 'text', text: prompt }], '')
   }
