@@ -48,7 +48,7 @@
 | GET | `/asset/<包>/<文件>.webm?token=` | 形象包素材（P1）。**严格隔离**：只服务该包 `-animation/` 目录里的文件；缺文件/越包访问/路径穿越一律 404，**绝不回落 default**。`Cache-Control: private` |
 | GET | `/audio/<sha1>.wav?token=` | 语音文件；`Cache-Control: private`；不存在 404 |
 | POST | `/client/install` | 把模块自带 `pet-client/` 生成到 `app/`，返回 `{ok, dir, files, message}` |
-| POST | `/electron-install` | 两档自动安装（已装则跳过并提示）：① 环境里有 npm-cli.js → 在 `app/` 下 `npm i -D electron`（**必须注入 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`**，真机直连 github release 会 fetch failed；不走 shell）；② 没有 npm（DSH 自带运行时不带 npm-cli、目标电脑可能没装 Node）→ **zip 直装**：从 npmmirror 下载 electron 官方 zip（版本取 `app/package.json`），Node 自带 zlib 纯 JS 解压到 `app/node_modules/electron/`，零环境依赖。返回进度摘要 |
+| POST | `/electron-install` | 两档自动安装（已装则跳过并提示）：① 环境里有 npm-cli.js → 在 `app/` 下 `npm i -D electron`（注入 `ELECTRON_MIRROR=<electronMirror>`，默认 npmmirror，真机直连 github release 会 fetch failed；不走 shell），**npm 失败自动回退 ②**；② 没有 npm（DSH 自带运行时不带 npm-cli、目标电脑可能没装 Node）→ **zip 直装**：从同一镜像下载 electron 官方 zip（版本取 `app/package.json`），Node 自带 zlib 纯 JS 解压到 `app/node_modules/electron/`，零环境依赖。返回进度摘要 |
 | POST | `/launch` | 分离进程启动 `electron.exe main.js`。**启动前必须清掉子进程环境的 `ELECTRON_RUN_AS_NODE`**（宿主环境必带，不清则 Electron 以纯 Node 模式启动即崩）。已在跑（心跳活着）则提示；pid 记进 `process.json` |
 | POST | `/stop` | 杀 `process.json` 记录的 pid 并清记录；进程已不在（ESRCH）按已停止处理 |
 
@@ -233,7 +233,7 @@ pet.dispatch({ text, modality?, purpose?, force?, anim? })
 
 | 导出 | 用途 |
 |---|---|
-| `status()` | 同步返回 `{online, lastSeenAt, clients, focus, carrier, modality, bootId, seq, pack, playbackCount, portReady, port, electronInstalled, pid}`（面板状态卡） |
+| `status()` | 同步返回 `{online, lastSeenAt, clients, focus, carrier, modality, bootId, seq, pack, playbackCount, packInfo, portReady, port, electronInstalled, pid}`（面板状态卡）。`packInfo = {url, downloading, hasDefault, defaultAnims, packs}`：面板「素材包」卡用它显示就位状态与下载地址（内建模块的 `settings` 不渲染表单，故走这里 + `/panel/pet/*` 通道） |
 | `download()` | 异步：生成客户端到数据目录，返回 `{ok, dir, files, message}`（面板「下载/重装客户端」按钮） |
 | `setFocus(enabled)` | 写 focus.json + 广播事件（面板专注开关） |
 | `setWebPort(port)` | 宿主启动时注入真实 Web 端口（host.js 读 `ctx.webServer.port`，取不到退 `DSH_WEB_URL` env；注入时机 = pet 每次 module/start + boot 完成兜底）。非法端口拒绝返回 false；写 host.json 幂等 |
@@ -282,7 +282,8 @@ CC BY-NC-SA 4.0 + 禁止商用，**不随本插件分发**。default 包由插�
 [dsh-aurabot-qq-mods](https://github.com/accomplish07zrh-eng/dsh-aurabot-qq-mods) 自动下载落位（素材放在该仓库的
 `pet-pack/` 文件夹里：`pet-pack/default-config.json` + `pet-pack/default-manifest.json` + `pet-pack/default-animation/*.webm`；
 文件夹名其实随意，下载端只认「哪一层里有 default-animation/」）。`POST /packs/fetch-default`
-可手动重下；地址在面板设置 `petPackUrl`，可换 Gitee 等镜像直链。自制包可参考 dsh-pet 的 MAKE-YOUR-OWN-PET 配方，
+可手动重下；地址在面板「桌宠」页的「素材包」卡里改（写 `ext.pet.petPackUrl`，也可直接改 config.json），
+可换 Gitee 等镜像直链。自制包可参考 dsh-pet 的 MAKE-YOUR-OWN-PET 配方，
 放进数据目录 `packs/` 即可（重新分发须遵守 CC BY-NC-SA：署名 + 非商业 + 相同方式共享）。
 
 ## 7. 桌宠客户端（pet-client）
@@ -303,10 +304,11 @@ Electron 运行时**不是本插件的依赖**，也**不会在启动/更新时�
    模板**从本机拷贝**到 `modules-data/pet/app/`，零网络请求、零远程代码。
 2. **安装 Electron**（面板「安装 Electron」→ `POST /electron-install`）：用户**手动点击**才执行，
    两条路径按环境自动二选一，**目标电脑不需要预装 Node/npm**：
-   - **有 npm-cli.js** → 在 `app/` 目录跑 `npm i -D electron`。下载源强制走 **npmmirror 镜像**
-     （`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`；真机直连 github release 会 fetch failed），
-     不走 shell（当前 node 直接跑 npm-cli.js），安装前清掉子进程的 `ELECTRON_RUN_AS_NODE`。
-   - **没有 npm**（DSH 自带运行时不带 npm-cli，裸机也常见）→ **zip 直装**：从 npmmirror
+   - **有 npm-cli.js** → 在 `app/` 目录跑 `npm i -D electron`。下载源走 **`electronMirror`** 指到的镜像
+     （默认 `https://npmmirror.com/mirrors/electron/`，真机直连 github release 会 fetch failed；面板「桌宠」页
+     「Electron 镜像」可改），不走 shell（当前 node 直接跑 npm-cli.js），安装前清掉子进程的 `ELECTRON_RUN_AS_NODE`。
+     **npm 失败会自动回退到下面的 zip 直装**，不用再点第二次。
+   - **没有 npm**（DSH 自带运行时不带 npm-cli，裸机也常见）→ **zip 直装**：从同一个镜像
      下载 electron 官方 zip（版本取 `app/package.json`，兜底 45.1.0），用 Node 自带 zlib
      纯 JS 解压到 `app/node_modules/electron/`（带 zip-slip 防护，unix 恢复可执行位），
      不需要 npm、不需要 shell、不需要系统里装任何东西。

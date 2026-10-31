@@ -1723,6 +1723,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [quar, setQuar] = useState(null)
       const [quarErr, setQuarErr] = useState('')
       const [pend, setPend] = useState({})
+      // 素材包下载地址的本地编辑态：null = 跟着服务端当前值显示，改过就用本地值
+      const [pkUrl, setPkUrl] = useState(null)
+      // Electron 下载镜像的本地编辑态（同上；留空 = 用内置默认 npmmirror）
+      const [emUrl, setEmUrl] = useState(null)
       const load = async () => {
         const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
         if (pr.ok) { setPet(pr.pet); setWs((old) => old || (pr.pet && pr.pet.whisper ? { ...pr.pet.whisper } : null)) }
@@ -1864,10 +1868,35 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Btn, { small: true, disabled: busy === 'st', onClick: () => act('st', '/panel/pet/stop', '已停止') }, busy === 'st' ? '停止中…' : '停止桌宠'),
           h('span', { className: 'ab-muted ab-small' },
             'Electron ' + (electronInstalled ? '已装' : '未装') + '｜运行 ' + (online ? '在跑' : '没在跑') + (pet?.pid ? '（pid ' + pet.pid + '）' : '') + (portReady ? '' : '｜端口未就绪（等宿主注入）'))),
+        h(Row, { label: 'Electron 镜像', hint: '装 Electron 从哪下（末尾带 /）。默认 npmmirror，国内一般快；连不上可换 https://github.com/electron/electron/releases/download/。留空 = 用内置默认。npm 装失败会自动改用 zip 直装' },
+          h('div', { className: 'ab-flex' },
+            h('input', { className: 'ab-input', style: { width: 'min(300px, 100%)' }, value: emUrl == null ? (pet?.electronMirror || '') : emUrl, placeholder: 'https://npmmirror.com/mirrors/electron/', onChange: (e) => setEmUrl(e.target.value) }),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await savePet({ electronMirror: String(emUrl == null ? (pet?.electronMirror || '') : emUrl).trim() }, 'Electron 镜像已保存'); setEmUrl(null) } }, '保存'))),
         h(Row, { label: '表情预览', hint: '气泡与心情事件会用到这些表情' },
           h('div', { style: { flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 } },
             moods.map((m, i) => h('span', { key: (m.key || m) + i, className: 'ab-pill' }, moodLabel(m))))),
         ),
+        // ---------- 素材包：默认形象包（大肥鱼）自动下载落位，也可在这里换镜像地址重下 ----------
+        h(Card, { title: '素材包', desc: '桌宠的形象与动画（「大肥鱼」那 106 段）。插件发现缺包会自动从素材仓库下载落位，通常不用你动手；下载不动时可以在这里换镜像地址再重下。没有素材时桌宠会显示内置的静态形象（蓝色小鲸鱼）。' },
+          !pet ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : (() => {
+              const pi = pet.packInfo || null
+              if (!pi) return h('div', { className: 'ab-flex' }, h('span', { className: 'ab-muted ab-small' }, '素材包状态接口还没就绪（更新插件后刷新页面即可）'), h(Btn, { small: true, onClick: load }, '重试'))
+              const okPack = Boolean(pi.hasDefault && pi.defaultAnims > 0)
+              const cur = pkUrl == null ? (pi.url || '') : pkUrl
+              return h('div', null,
+                h('div', { className: 'ab-flex', style: { marginBottom: 8, flexWrap: 'wrap' } },
+                  h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', okPack ? 'ok' : 'err') }), okPack ? '已就位' : '还没有素材'),
+                  h('span', { className: 'ab-pill' }, 'default：' + (pi.defaultAnims || 0) + ' 个动画'),
+                  pi.downloading ? h('span', { className: 'ab-pill' }, '正在下载…') : null,
+                  !okPack ? h('span', { className: 'ab-muted ab-small' }, '缺包时每 10 分钟会自动重试一次') : null),
+                h(Row, { label: '下载地址', hint: 'zip 直链。默认走 GitHub 素材仓库 dsh-aurabot-qq-mods；国内网络可换成 gitee / ghproxy 等镜像。zip 里素材放文件夹即可（如 pet-pack/default-animation/）' },
+                  h('input', { className: 'ab-input', style: { width: 'min(380px, 100%)' }, value: cur, placeholder: 'https://…/archive/refs/heads/main.zip', onChange: (e) => setPkUrl(e.target.value) })),
+                h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+                  h(Btn, { small: true, disabled: busy === 'cfg' || busy === 'pk' || !String(cur).trim(), onClick: async () => { await savePet({ petPackUrl: String(cur).trim() }, '下载地址已保存'); setPkUrl(null) } }, '保存地址'),
+                  h(Btn, { small: true, disabled: busy === 'pk', onClick: () => act('pk', '/panel/pet/fetch-pack', '素材包已就位') }, busy === 'pk' ? '下载中…' : okPack ? '重新下载素材包' : '下载素材包'),
+                  h('span', { className: 'ab-muted ab-small' }, '落位到 modules-data/pet/packs/，下完自动生效')))
+            })()),
         // ---------- 行为动作（面板测试通道）：状态行 + 逐动作「试一下」/ AI 开关 + 行内最近回执 ----------
         h(Card, { title: '行为动作', desc: '她的「行为大脑」每隔一会儿自己挑一个动作演：追鼠标、叼鼠标、叼图标、推窗口……这里可以逐个「试一下」（绕过专注模式与安静时段，立刻下发），也可以把某个动作从 AI 的动作表里拿掉——「试一下」按钮不受影响。桌宠没在跑时点按钮只是下发排队，等她跑起来才演。右边「最近回执」是客户端演完或拒演回来的结果。AI 每次决策都在工作区里单独开一条「行为大脑」会话，能当场看到她怎么想的。' },
           bhErr && !bh

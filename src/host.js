@@ -579,6 +579,17 @@ export function apply(ctx) {
       if (Number.isFinite(b[k])) patch[k] = k === 'whisperMaxPerDay' ? Math.min(9999, Math.max(0, Math.floor(b[k]))) : Math.min(9999, Math.max(1, Math.floor(b[k])))
     }
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
+    // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
+    // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
+    if (typeof b.petPackUrl === 'string') {
+      const u = b.petPackUrl.trim().slice(0, 1000)
+      if (!u || /^https?:\/\//i.test(u)) patch.petPackUrl = u
+    }
+    // Electron 下载镜像：同上（内建模块不渲染 settings）；留空 = 回落内置默认 npmmirror
+    if (typeof b.electronMirror === 'string') {
+      const u = b.electronMirror.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.electronMirror = u
+    }
     // 行为大脑的模块级设置（AI 自己改不了，只有主人能改）。pet 是**内置模块**，
     // 它的 settings schema 不会渲染成表单（面板只给「用户自己复制出来的模块」生成），
     // 所以这里是这些开关唯一的写入通道——不补，关窗物理闸就永远打不开。
@@ -614,6 +625,12 @@ export function apply(ctx) {
     const pet = use('pet')
     if (typeof pet?.download !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，装不了客户端' }
     return { ok: true, result: redactTokens(await pet.download()) }
+  })
+  // 素材包：手动重下默认形象包（换镜像地址后用；force=true 表示已有也重下）
+  route('/panel/pet/fetch-pack', async () => {
+    const pet = use('pet')
+    if (typeof pet?.ensureDefaultPack !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，下不了素材包' }
+    return { ok: true, result: await pet.ensureDefaultPack(true), pet: petStatus() }
   })
   route('/panel/pet/focus', async (req) => {
     const enabled = Boolean((await readBody(req)).enabled)

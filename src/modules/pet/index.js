@@ -43,6 +43,8 @@ export default {
     carrier: 'qq', modality: 'text', petFallbackToQQ: true, pack: 'default',
     // 默认素材包下载地址（「大肥鱼」形象包不进插件仓库，从素材仓库拉；网络不佳可换成任意镜像直链）
     petPackUrl: 'https://github.com/accomplish07zrh-eng/dsh-aurabot-qq-mods/archive/refs/heads/main.zip',
+    // Electron 下载镜像（末尾带 /；留空 = 用内置默认）。npm 与 zip 直装两条路都读它
+    electronMirror: 'https://npmmirror.com/mirrors/electron/',
     // 碎碎念（桌宠自己的气泡流，与「主动搭话」完全独立：载体选 QQ 时她也会在桌面上自己嘟囔）
     whisperEnabled: true,
     whisperSource: 'model',       // 'model' = 现想一句（失败回落本地池）/ 'pool' = 只用文案池
@@ -73,6 +75,7 @@ export default {
     { key: 'modality', label: '气泡形式', type: 'select', options: [{ value: 'text', label: '文字气泡' }, { value: 'voice', label: '文字 + 语音' }], hint: '语音失败自动降级为纯文字' },
     { key: 'petFallbackToQQ', label: '桌宠离线回落 QQ', type: 'switch' },
     { key: 'petPackUrl', label: '素材包下载地址', type: 'text', hint: '「大肥鱼」形象包 zip 直链（默认走 GitHub 素材仓库 dsh-aurabot-qq-mods；国内网络可换成 Gitee 等镜像直链）。zip 里素材要放文件夹（如 pet-pack/default-animation/），archive 自带的单层仓库目录会自动剥。装完插件后缺包自动下载，也可在面板手动重下' },
+    { key: 'electronMirror', label: 'Electron 下载镜像', type: 'text', hint: '装 Electron 时从哪下（末尾带 /）。默认 npmmirror（国内快）；连不上可换 https://github.com/electron/electron/releases/download/ 等。npm 装失败会自动改用 zip 直装' },
     { key: 'whisperEnabled', label: '碎碎念', type: 'switch', hint: '只出现在桌宠气泡里，不会发到 QQ；载体是 QQ 时照常生效' },
     { key: 'whisperSource', label: '碎碎念内容', type: 'select', options: [{ value: 'model', label: '她自己想一句（工作区看得到思考）' }, { value: 'pool', label: '用现成文案' }] },
     { key: 'whisperMinMinutes', label: '碎碎念最短间隔（分钟）', type: 'number', min: 1, max: 9999 },
@@ -692,8 +695,16 @@ export default {
     // ---------- zip 直装（无 npm 环境的兜底，自动化优先） ----------
     // 背景：DSH 自带运行时（dsh-runtimes/.../node）不带 npm-cli.js，目标电脑也可能没装 Node/npm。
     // Electron 的 npm 包本质就是「下载官方 zip → 解压到 node_modules/electron/dist」，这里跳过 npm 直接干：
-    // 下载走 npmmirror 镜像（同 npm 路径的 ELECTRON_MIRROR），解压用 Node 自带 zlib（纯 JS，零外部依赖、零环境要求）。
+    // 下载走镜像（面板可改 electronMirror，默认 npmmirror；同 npm 路径的 ELECTRON_MIRROR），
+    // 解压用 Node 自带 zlib（纯 JS，零外部依赖、零环境要求）。
     const ELECTRON_VERSION_FALLBACK = '45.1.0' // 与 pet-client 模板 app/package.json 的 devDependencies.electron 对齐
+    const DEFAULT_ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+    /** 当前镜像（末尾一定带 /）：面板留空或写成非 http(s) 时回落内置默认。 */
+    const electronMirror = () => {
+      const raw = String(api.settings().electronMirror || '').trim()
+      const base = /^https?:\/\//i.test(raw) ? raw : DEFAULT_ELECTRON_MIRROR
+      return base.endsWith('/') ? base : base + '/'
+    }
     const electronZipUrl = () => {
       let ver = ELECTRON_VERSION_FALLBACK
       try {
@@ -702,7 +713,7 @@ export default {
         if (m) ver = m[0]
       } catch {} // package.json 读不到就用兜底版本
       const platform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux'
-      return { ver, url: `https://npmmirror.com/mirrors/electron/${ver}/electron-v${ver}-${platform}-${process.arch}.zip` }
+      return { ver, url: `${electronMirror()}${ver}/electron-v${ver}-${platform}-${process.arch}.zip` }
     }
 
     // 纯 JS zip 解压（支持存储/deflate 两种压缩法；带 zip-slip 防护；unix 上恢复可执行位）
@@ -796,7 +807,7 @@ export default {
       if (packDownloading) return { ok: false, message: '素材包正在下载中，别急' }
       if (!force && !defaultPackMissing()) return { ok: true, skipped: true, message: 'default 素材包已就位，不用下载' }
       const url = String(api.settings().petPackUrl || '').trim()
-      if (!url) return { ok: false, message: '没有配置素材包下载地址（面板「桌宠」→「素材包下载地址」）' }
+      if (!url) return { ok: false, message: '没有配置素材包下载地址（面板「桌宠」页 →「素材包」卡里填）' }
       packDownloading = true
       const stage = api.dataDir('packs-staging') // 解压暂存目录：校验通过才落位，失败不污染 packs/
       try {
@@ -870,7 +881,7 @@ export default {
         try {
           child = spawnFn(process.execPath, [cli, 'install', '-D', 'electron'], {
             cwd: appDir(),
-            env: { ...process.env, ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/' },
+            env: { ...process.env, ELECTRON_MIRROR: electronMirror() },
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
           })
@@ -884,14 +895,14 @@ export default {
         child.on('close', (code) => { clearTimeout(timer); resolve({ code, tail }) })
       })
       const ok = out.code === 0 && existsSync(exe)
+      if (ok) return { ok: true, installed: true, exitCode: 0, exe, message: `Electron 安装完成（镜像 ${electronMirror()}）` }
+      // npm 挂了（镜像慢/网络断/权限都常见）→ 自动回退 zip 直装，别让人连点两次都失败还没出路
+      const why = out.timeout ? 'npm 安装超时（10 分钟）' : `npm 安装失败（退出码 ${out.code}${out.tail ? '：' + String(out.tail).slice(-160) : ''}）`
+      const fb = await electronInstallZip(exe)
       return {
-        ok,
+        ...fb,
         exitCode: out.code,
-        installed: ok,
-        exe,
-        message: out.timeout ? '安装超时（10 分钟，镜像可能慢），再试一次'
-          : ok ? 'Electron 安装完成（npmmirror 镜像）'
-          : `npm 安装失败（退出码 ${out.code}）：${(out.tail || '').slice(-300)}`,
+        message: fb.ok ? `${why}，已自动改用 zip 直装：${fb.message}` : `${why}；zip 直装也没成：${fb.message}`,
       }
     }
 
@@ -2263,6 +2274,19 @@ export default {
         return {
           ...online(), focus: focusOn(), carrier: s.carrier, modality: s.modality, bootId, seq,
           pack: activePack(), playbackCount: playbacks.length,
+          // 素材包概况：面板「素材包」卡用它显示状态（内建模块的 settings 不渲染表单，只能走 status + /panel/pet/*）
+          packInfo: (() => {
+            const list = listPacks()
+            const def = list.find((p) => p.name === 'default')
+            return {
+              url: String(s.petPackUrl || ''),
+              downloading: Boolean(packDownloading),
+              hasDefault: Boolean(def && def.anims.length),
+              defaultAnims: def ? def.anims.length : 0,
+              packs: list.map((p) => p.name),
+            }
+          })(),
+          electronMirror: electronMirror(), // 面板「Electron 镜像」输入框的当前值（留空=内置默认）
           work: { ...workSnapshot(), label: WORK_STATE_LABEL[workSnap.state] || '' },
           workEnabled: w.enabled, workBubble: w.bubble, workNotify: w.notify,
           workAnimMap: (packView() || {}).workStatus || null, // 面板展示「六档动画能不能对上」

@@ -406,6 +406,22 @@ test('素材包：没配下载地址 → 明确报错不炸；包已就位 → �
   assert.ok(!existsSync(env.api.dataDir('packs-staging')), '不留下暂存目录')
 })
 
+test('素材包：status().packInfo 给面板用（地址 / 是否就位 / 动画数 / 包列表）', async () => {
+  const env = startModule({ settings: { petPackUrl: 'https://example.com/pet-pack.zip' } })
+  const empty = env.exports.status().packInfo
+  assert.equal(empty.url, 'https://example.com/pet-pack.zip')
+  assert.equal(empty.hasDefault, false)
+  assert.equal(empty.defaultAnims, 0)
+  assert.deepEqual(empty.packs, [])
+  assert.equal(empty.downloading, false)
+
+  writePack(process.env.AURABOT_DATA_DIR, 'default', { 'anim-001.webm': WEBM, 'anim-002.webm': WEBM }, { pools: {} })
+  const filled = env.exports.status().packInfo
+  assert.equal(filled.hasDefault, true, '包就位后 hasDefault=true（面板显示「已就位」）')
+  assert.equal(filled.defaultAnims, 2)
+  assert.deepEqual(filled.packs, ['default'])
+})
+
 test('素材包：下载炸了（HTTP 404）→ ok:false 带原因，packs/ 不被污染', async () => {
   const env = startModule({
     settings: { petPackUrl: 'https://example.com/bad.zip' },
@@ -551,10 +567,16 @@ test('Electron 安装：走 node + npm-cli.js（不经 shell）、注入 ELECTRO
   assert.equal(calls.length, 1, '跳过时不再 spawn')
 })
 
-test('Electron 安装失败路径：npm 非零退出 → ok:false 带原因；没生成客户端先拦', async () => {
+test('Electron 安装失败路径：npm 非零退出 → 自动回退 zip 直装；两条都挂才 ok:false；没生成客户端先拦', async () => {
   const fakeCli = join(process.env.AURABOT_DATA_DIR, 'npm-cli.js')
   writeFileSync(fakeCli, '// fake npm-cli')
-  const env = startModule({ hooks: { spawn: fakeSpawn({ exit: 1 }).spawn, npmCli: fakeCli } })
+  const env = startModule({
+    hooks: {
+      spawn: fakeSpawn({ exit: 1 }).spawn,
+      npmCli: fakeCli,
+      fetchZip: async () => { throw new Error('ECONNREFUSED 模拟断网') }, // 回退也失败，别打真网络
+    },
+  })
   const r0 = await env.exports.electronInstall()
   assert.equal(r0.ok, false, '还没生成客户端：先拦下，不 spawn')
   await env.exports.download()
@@ -562,6 +584,56 @@ test('Electron 安装失败路径：npm 非零退出 → ok:false 带原因；�
   assert.equal(r.ok, false)
   assert.equal(r.exitCode, 1)
   assert.match(r.message, /npm 安装失败/)
+  assert.match(r.message, /zip 直装也没成/, 'npm 失败会先自动回退 zip 直装，两条都挂才报错')
+})
+
+test('Electron 安装：npm 失败但 zip 直装成功 → 整体 ok:true，并在消息里说明已回退', async () => {
+  const fakeCli = join(process.env.AURABOT_DATA_DIR, 'npm-cli.js')
+  writeFileSync(fakeCli, '// fake npm-cli')
+  const env0 = startModule()
+  const appDir = env0.api.dataDir('app')
+  await env0.exports.download() // 先生成客户端（app/main.js + package.json）
+  const exe = join(appDir, 'node_modules', 'electron', ELECTRON_REL)
+  const fakeZip = tinyZip([
+    ['dist/', Buffer.alloc(0)],
+    [ELECTRON_REL.split('\\').join('/'), Buffer.from('fake electron')],
+  ])
+  const env = startModule({
+    hooks: {
+      spawn: fakeSpawn({ exit: 1 }).spawn, // npm 必失败
+      npmCli: fakeCli,
+      fetchZip: async () => ({ ok: true, arrayBuffer: async () => fakeZip.buffer.slice(fakeZip.byteOffset, fakeZip.byteOffset + fakeZip.byteLength) }),
+    },
+  })
+  const r = await env.exports.electronInstall()
+  assert.equal(r.ok, true, `回退成功应算装好了：${r.message}`)
+  assert.match(r.message, /已自动改用 zip 直装/, '告诉用户为什么换了条路')
+  assert.match(r.message, /npm 安装失败/, '保留 npm 的失败原因')
+  assert.ok(existsSync(exe), 'zip 解压出来的 electron.exe 在位')
+})
+
+test('Electron 镜像可配：electronMirror 同时作用于 zip 直装 URL 与 npm 的 ELECTRON_MIRROR（末尾自动补 /）', async () => {
+  // ① zip 直装：没有 npm-cli 时用配置的镜像拼版本路径
+  let requestedUrl = ''
+  const zipped = startModule({
+    settings: { electronMirror: 'https://example.com/em' }, // 故意不写结尾斜杠
+    hooks: {
+      npmCli: '',
+      fetchZip: async (url) => { requestedUrl = url; return { ok: false, status: 502 } },
+    },
+  })
+  await zipped.exports.download()
+  const zr = await zipped.exports.electronInstall()
+  assert.equal(zr.ok, false, '下载失败（注入的 502）')
+  assert.match(requestedUrl, /^https:\/\/example\.com\/em\/\d+\.\d+\.\d+\/electron-v/, '用面板配的镜像，且自动补了斜杠')
+
+  // ② npm 路径：ELECTRON_MIRROR 环境变量同源
+  const fakeCli = join(process.env.AURABOT_DATA_DIR, 'npm-cli.js')
+  writeFileSync(fakeCli, '// fake npm-cli')
+  const { spawn, calls } = fakeSpawn({ exit: 1 })
+  const env = startModule({ settings: { electronMirror: 'https://example.com/em/' }, hooks: { spawn, npmCli: fakeCli, fetchZip: async () => ({ ok: false, status: 502 }) } })
+  await env.exports.electronInstall()
+  assert.equal(calls[0].env.ELECTRON_MIRROR, 'https://example.com/em/', 'npm 安装也走同一个镜像')
 })
 
 /** 手工拼一个最小合法 zip（存储法、无压缩）：顺带走真解压器，不引第三方依赖。 */
