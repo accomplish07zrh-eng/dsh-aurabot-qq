@@ -14,7 +14,10 @@ export function isStickerSegment(seg) {
   if (seg.type === 'mface') return true
   if (seg.type !== 'image') return false
   const d = seg.data
-  if (String(d.sub_type ?? d.subType ?? '') === '1') return true
+  const sub = String(d.sub_type ?? d.subType ?? '')
+  if (sub === '1') return true
+  // 带文字说明的表情（比如「[啊？]」）是 sub_type 7；只认有说明的，普通图片的说明是「[图片]」
+  if (sub === '7' && d.summary && d.summary !== '[图片]') return true
   if (d.emoji_id || d.emojiId) return true
   return false
 }
@@ -25,7 +28,7 @@ export function isStickerSegment(seg) {
  * @returns {{
  *   kind: 'private'|'group', chatId: string, userId: string, groupId: string,
  *   nickname: string, role: string, messageId: string, text: string,
- *   mentioned: boolean, replyId: string, images: object[], stickers: object[], records: object[],
+ *   mentioned: boolean, replyId: string, images: object[], stickers: object[], records: object[], files: object[],
  * }}
  */
 export function parseMessageEvent(event, selfId, { faceName } = {}) {
@@ -35,12 +38,14 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
   const groupId = kind === 'group' ? String(event.group_id ?? '') : ''
   const sender = event.sender || {}
   let mentioned = false
+  let atOthers = false // 这一条 @ 了别人（既不是她，也不是全体）
   let replyId = ''
   const texts = []
   const images = []
   const stickers = []
   const records = []
   const forwards = [] // 合并转发的 id
+  const files = []
   for (const seg of segmentsOf(event)) {
     const d = seg.data || {}
     switch (seg.type) {
@@ -49,7 +54,10 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
         break
       case 'at':
         if (String(d.qq) === self || d.qq === 'all') mentioned = mentioned || String(d.qq) === self
-        else texts.push(`@${d.name || d.qq} `)
+        else {
+          atOthers = true
+          texts.push(`@${d.name || d.qq} `)
+        }
         break
       case 'reply':
         replyId = String(d.id ?? '')
@@ -78,6 +86,7 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
         break
       case 'file':
         texts.push(`[文件 ${d.name || d.file || ''}]`)
+        files.push({ name: String(d.name || d.file || ''), size: Number(d.size ?? d.file_size) || 0, id: String(d.id ?? d.file_id ?? ''), url: String(d.url || ''), hash: String(d.file_hash || ''), busid: Number(d.busid) || 0 })
         break
       case 'json':
         texts.push(cardText(d.data))
@@ -110,19 +119,20 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
     messageId: String(event.message_id ?? ''),
     text,
     mentioned,
+    atOthers,
     replyId,
     images,
     stickers,
     records,
     forwards,
+    files,
   }
 }
 
 /** 偷表情的尺寸兜底（拿到字节、宽高之后再判）。 */
 export function stickerSizeOk({ width, height, bytes }, limits = {}) {
   const maxSide = limits.maxSide ?? 520
-  const maxBytes = limits.maxBytes ?? 1.5 * 1024 * 1024
-  if (!(bytes > 0) || bytes > maxBytes) return false
+  if (!(bytes > 0)) return false
   if (!(width > 0) || !(height > 0)) return true // 读不出尺寸就只看体积
   if (width > maxSide || height > maxSide) return false
   const r = width / height
@@ -174,6 +184,14 @@ export function cardText(raw) {
   } catch (error) {
     return '[卡片消息]'
   }
+}
+
+/** GIF 有几帧：数图形控制扩展块，够判断是不是动图。 */
+export function gifFrames(buf) {
+  if (!buf || buf[0] !== 0x47 || buf[1] !== 0x49) return 0
+  let n = 0
+  for (let i = 13; i + 2 < buf.length; i++) if (buf[i] === 0x21 && buf[i + 1] === 0xf9 && buf[i + 2] === 4) n++
+  return n
 }
 
 export function mimeOf(buf) {

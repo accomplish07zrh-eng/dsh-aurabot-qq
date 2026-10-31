@@ -12,7 +12,11 @@
 
 import { randomUUID } from 'node:crypto'
 import { dataDir, readJson, writeJson } from '../core/store.js'
-import { askModel } from '../core/llm.js'
+import { askModel, lastEmptyInfo } from '../core/llm.js'
+import { clipText } from '../core/text.js'
+
+const NO_ARRAY = '提炼记忆时模型没有返回 JSON 数组'
+const EXTRACT_RETRY_TOKENS = 16000
 
 // ---------------- 纯函数：切词与打分 ----------------
 
@@ -66,10 +70,17 @@ export function search(idx, query, o = {}) {
   const q = [...new Set(tokenize(query))]
   const now = o.now ?? Date.now()
   const aboutSet = new Set((Array.isArray(o.about) ? o.about : o.about ? [o.about] : []).map(String))
+  const onlyAbout = o.onlyAbout
+    ? new Set((Array.isArray(o.onlyAbout) ? o.onlyAbout : [o.onlyAbout]).map(String))
+    : null
   const k1 = 1.4
   const b = 0.7
   const scored = []
   for (const d of idx.docs) {
+    // 群聊 / 非主人私聊里只允许想起「和这一段说话的人有关」的记忆；
+    // requireAbout 再收紧：社交场景连没有 about 的旧日记/事件也不放进来。
+    if (onlyAbout && d.it.about && !onlyAbout.has(String(d.it.about))) continue
+    if (o.requireAbout && !d.it.about) continue
     let s = 0
     const why = []
     for (const t of q) {
@@ -123,12 +134,15 @@ export function memoryLine(it, now = Date.now()) {
 }
 
 /**
- * 该不该忘掉：每日整理自动提炼出来的、不太重要、已经淡了的（见 retention），忘掉。
+ * 该不该忘掉：自动提炼的按遗忘曲线淡了忘掉（见 retention）；桌宠行为回执只留 3 天，到期清掉。
  * 她自己记的、你加的、经历和日记不自动忘。
  */
 export function shouldForget(m, now = Date.now()) {
   // 过时的留半年（面板里能看到、能恢复），之后清掉
   if (m.invalidAt) return now - m.invalidAt > 180 * 86400_000
+  // 桌宠行为回执（source='pet'，比如「执行了 wander 动作」）只留 3 天：
+  // 写下来是给后续几天聊天的，过了就没什么用了，不然每个琐碎动作都永久占着记忆库。
+  if (m.source === 'pet') return now - (m.at || 0) > 3 * 86400_000
   if (m.source !== 'auto') return false
   if ((Number(m.importance) || 0) >= 0.6) return false
   return retention(m, now) < 0.05
@@ -170,9 +184,11 @@ export function parseReflection(out) {
 
 export function createMemoryStore({ dsh, getConfig, hub, log }) {
   const file = () => dataDir('memories.json')
-  const load = () => readJson(file(), () => ({ items: [] }))
+  let transaction = null // 一批记忆和流水进度一起落盘，避免中断后重复提炼
+  const load = () => transaction ? structuredClone(transaction) : readJson(file(), () => ({ items: [] }))
   const save = (s) => {
-    writeJson(file(), s)
+    if (transaction) transaction = s
+    else writeJson(file(), s)
     cache = null
   }
   let cache = null // { stamp, idx }
@@ -304,13 +320,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   }
 
   const recallLog = [] // 最近几次想起了什么（给面板看）
-  function recall(query, { about, limit, where = '', context = '' } = {}) {
+  function recall(query, { about, limit, where = '', context = '', onlyAbout, requireAbout } = {}) {
     const max = limit ?? getConfig().memory.recallCount
-    const hits = search(index(), query, { about, limit: max })
+    const hits = search(index(), query, { about, limit: max, onlyAbout, requireAbout })
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
     if (context && hits.length < max) {
       const have = new Set(hits.map((h) => h.it.id))
-      for (const h of search(index(), context, { about, limit: max, minScore: 0.5 })) {
+      for (const h of search(index(), context, { about, limit: max, minScore: 0.5, onlyAbout, requireAbout })) {
         if (hits.length >= max) break
         if (!have.has(h.it.id)) hits.push({ ...h, score: h.score * 0.6, why: [...(h.why || []), '（上一句）'] })
       }
@@ -409,12 +425,24 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     if (sty.length || self.length) {
       parts.push('（说话方式：' + [sty.length ? '和' + (chat.kind === 'group' ? '这个群' : '对方') + '聊久了，' + sty.join('；') : '', self.length ? '你平时不知不觉会用的说法：' + self.join('、') : ''].filter(Boolean).join('。') + '。自然带一点就好，别刻意模仿，也别变成另一个人。）')
     }
-    // 最近做过的事：不用等别人提，她自己记得（比如刚给你唱过歌）
-    const recent = recentEvents()
-    if (recent.length) parts.push('（你最近做过的事：' + recent.map((m) => `${agoText(m.at)}${m.text}`).join('；') + '。聊到了可以自然提起。）')
+    // 最近做过的事：只给主人私聊；群聊/非主人私聊不带，避免日记/经历里的主人细节外溢
+    const owner = String(getConfig().ownerQQ || '')
+    const ownerPrivate = chat.kind === 'private' && String(chat.userId) === owner
+    if (ownerPrivate) {
+      const recent = recentEvents()
+      if (recent.length) parts.push('（你最近做过的事：' + recent.map((m) => `${agoText(m.at)}${m.text}`).join('；') + '。聊到了可以自然提起。）')
+    }
     // 注意：随每条消息变化的「相关记忆」不放在这里（#79）——运行时上下文快照每轮都会追加到历史，
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
-    return parts.join('\n')
+    // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
+    // 长期相处这段会慢慢变长，而它每轮都进上下文。超了从尾部截断，宁可少一句也不无声膨胀。
+    const RESIDENT_MAX_CHARS = 600
+    let resident = parts.join('\n')
+    if (resident.length > RESIDENT_MAX_CHARS) {
+      resident = resident.slice(0, RESIDENT_MAX_CHARS) + '…'
+      log.debug(`常驻记忆超长，已截断到 ${RESIDENT_MAX_CHARS} 字`)
+    }
+    return resident
   }
 
   // 主人私聊里问起群里的事：才临时把最近 24 小时的群聊流水当成「她自己的见闻」补进这一轮
@@ -483,7 +511,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
    * 这一轮聊到的事相关的记忆（#79）：内容随每条消息变化，所以由模块在「交给她的内容」里附上，
    * 不放进每轮都会追加的运行时上下文快照。最多 4 条、总长 ≤ 300 字。
    */
-  function recallHint(chat, queryText, prevText = '') {
+  function recallHint(chat, queryText, prevText = '', sessionId = '', speakers) {
     const cfg = getConfig().memory
     if (!cfg.enabled) return ''
     const q = String(queryText || '').trim()
@@ -491,10 +519,15 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     const backdrop = groupBackdrop(chat, q)
     const recent = recentEvents()
     const shown = new Set(recent.map((m) => m.id))
-    const about = chat && chat.kind === 'private' ? chat.userId : undefined
+    const about = chat && chat.kind === 'private' ? chat.userId : (speakers || hub?.speakersOf?.(sessionId) || [])
+    // 群聊 / 非主人私聊只许想起和这一段说话的人有关的记忆；主人的私事不能带出来
+    const owner = String(getConfig().ownerQQ || '')
+    const ownerPrivate = chat && chat.kind === 'private' && String(chat.userId) === owner
+    const onlyAbout = ownerPrivate ? undefined : about
+    const requireAbout = !ownerPrivate
     // 「嗯嗯」「然后呢」这种短句单看检索不到东西，把上一句也带上
     const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
-    const hits = recall(q, { about, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
+    const hits = recall(q, { about, onlyAbout, requireAbout, where: (chat && chat.chatId) || '', context: ctxText }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
     if (!hits.length) return backdrop
     let body = hits.map((h) => memoryLine(h.it)).join('；')
     if (body.length > 300) body = body.slice(0, 300) + '…'
@@ -532,22 +565,17 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   // 各个 DSH 会话自己的对话上下文不动；这里只处理插件记下的聊天流水。
 
   /** 从一段聊天里提炼长期记忆，并回顾相处经验。lines：[{who, text}] */
-  async function extractLines(chatId, lines) {
+  async function extractLines(chatId, lines, checkpoint) {
     const talk = lines.filter((l) => l.text && !String(l.text).startsWith('【系统'))
     const isQzone = chatId === 'qzone'
-    // 空间动态一条就可能有料；聊天至少要几句
-    if (talk.filter((l) => l.who !== 'bot').length < (isQzone ? 1 : 3)) return { ok: false, message: '内容太少', added: 0, insights: 0 }
+    if (!talk.length) { checkpoint(); return { ok: true, added: 0, insights: 0 } }
     // 带上 QQ 号，模型才能把事记到人头上（群聊、空间里说话的人很多）
     const line = (l) => (l.who === 'bot' ? '我' : l.uid ? `${l.who}(${l.uid})` : l.who) + '：' + l.text
     try {
-      // 太长就分段，每段最多 80 行
-      const chunks = []
-      for (let i = 0; i < talk.length; i += 80) chunks.push(talk.slice(i, i + 80))
-      let n = 0
-      for (const part of chunks.slice(-3)) n += await extractFacts(chatId, part.map(line).join('\n'))
+      const n = await extractFacts(chatId, talk.map(line).join('\n'), checkpoint)
       log.info(`从 ${chatId} 的${isQzone ? '空间动态' : '聊天'}里提炼了 ${n} 条新记忆`)
       if (isQzone) return { ok: true, added: n, insights: 0 }
-      // 顺便回顾一次相处经验（用全天的聊天，最多最近 120 行）
+      // 顺便回顾这一批的相处经验。
       let ins = 0
       try {
         const [kind, id] = chatId.split(':')
@@ -567,21 +595,39 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   function relatedTo(chatId, transcript) {
     const ppl = new Set([...String(transcript).matchAll(/\((\d{5,})\)/g)].map((m) => m[1]))
     if (chatId.startsWith('private:')) ppl.add(chatId.slice(8))
-    const items = load().items.filter((m) => !m.invalidAt && m.source !== 'event' && m.source !== 'diary')
+    const ownerQQ = String(getConfig().ownerQQ || '')
+    const ownerScope = chatId === `private:${ownerQQ}`
+    // 群聊/非主人私聊不把主人相关的旧记忆塞进整理候选，避免被模型看到并可改写
+    const allowed = (m) => !m.invalidAt && m.source !== 'event' && m.source !== 'diary' && (ownerScope || String(m.about || '') !== ownerQQ)
+    const items = load().items.filter(allowed)
     const out = items.filter((m) => m.about && ppl.has(String(m.about))).sort((a, b) => b.at - a.at).slice(0, 10)
     for (const h of search(index(), String(transcript).slice(-1500), { limit: 8, minScore: 0.5 })) {
       if (out.length >= 15) break
-      if (!out.some((m) => m.id === h.it.id) && h.it.source !== 'event' && h.it.source !== 'diary') out.push(h.it)
+      if (!out.some((m) => m.id === h.it.id) && allowed(h.it)) out.push(h.it)
     }
     return out
   }
 
-  async function extractFacts(chatId, transcript) {
+  async function extractFacts(chatId, transcript, checkpoint) {
     const cfg = getConfig()
+    const ownerQQ = String(cfg.ownerQQ || '')
+    const ownerScope = chatId === `private:${ownerQQ}`
+    const ppl = new Set([...String(transcript).matchAll(/\((\d{5,})\)/g)].map((m) => m[1]))
+    if (chatId.startsWith('private:')) ppl.add(chatId.slice(8))
+    // 整理结果只能改「当前聊天候选里的、关于当前在场人的」记忆；不能跨聊天/改主人
+    const canRevise = (target) => {
+      if (!target || target.source === 'panel') return false
+      const about = String(target.about || '')
+      if (about === ownerQQ && !ownerScope) return false
+      if (target.chatId && String(target.chatId) !== String(chatId)) return false
+      if (!ownerScope && !about) return false
+      if (!ownerScope && about && !ppl.has(about)) return false
+      return true
+    }
     const source = chatId === 'qzone' ? '下面是 QQ 空间里的动态（好友发的说说、别人给你的评论、你的回复）' : '下面是一段聊天'
     const related = relatedTo(chatId, transcript)
     const known = new Map(related.map((m) => [m.id, m]))
-    const out = await askModel(dsh, {
+    const ask = (extra = {}) => askModel(dsh, {
       cfg,
       system: `你帮一个叫「大肥鱼」的聊天角色整理长期记忆。${source}，说话人后面括号里是 QQ 号。挑出以后值得记住的事实：别人的名字/称呼、喜好、讨厌的东西、身份、近况和重要经历、约定、你们之间的关系变化。不要记寒暄、日常琐事、一次性的问答；不要记大肥鱼自己的人设和喜好（她本来就知道），只记关于别人、以及你们之间的事。每条一句话，主语写清楚是谁。QQ 号是 ${cfg.ownerQQ} 的人是她的${cfg.ownerName || '主人'}。` +
         (related.length ? '\n每条新事实先和「已经记得的事」比一比：全新的写 "op":"add"；是对某条旧记忆的补充或更准确的说法，写 "op":"update"、"id" 填那条的编号、"text" 写合并后的完整说法；和某条旧记忆矛盾、说明那条已经过时（比如以前喜欢现在不喜欢了、换了工作、搬家了、分手了），写 "op":"outdated"、"id" 填旧的编号、"text" 写现在的新事实。拿不准是不是矛盾就当 add；已经记得、没有新信息的不要输出。' : '') +
@@ -589,42 +635,70 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       text: (related.length ? `已经记得的事：\n${related.map((m) => `#${m.id} [${whenText(m.at)}] ${m.aboutName ? '[' + m.aboutName + '] ' : ''}${m.text}`).join('\n')}\n\n` : '') + transcript,
       maxTokens: 1500,
       temperature: 0.2,
+      ...extra,
     })
+    let out = await ask()
+    // 推理模型可能把预算全花在思考上，一个字没写就被截断；有的模型思考关不掉，所以同时放宽预算
+    if (!out) out = await ask({ reasoningEffort: 'off', maxTokens: EXTRACT_RETRY_TOKENS })
     const m = out.match(/\[[\s\S]*\]/)
-    const arr = m ? JSON.parse(m[0]) : []
+    if (!m) throw new Error(`${NO_ARRAY}（模型返回：${out ? clipText(out, 60) : '空，' + lastEmptyInfo()}）`)
+    const arr = JSON.parse(m[0])
+    if (!Array.isArray(arr)) throw new Error(NO_ARRAY)
     let n = 0
-    for (const x of arr.slice(0, 12)) {
-      if (!x || !x.text) continue
-      if (/^(我|大肥鱼)/.test(String(x.about || '')) || String(x.about || '') === '大肥鱼') continue
-      // 关于谁：模型给了 QQ 号就用（群聊、空间里也能记到人头上），私聊默认是对方
-      const qq = String(x.about_qq ?? '').replace(/\D/g, '')
-      const about = qq.length >= 5 && qq !== String(cfg.botQQ) ? qq : chatId.startsWith('private:') ? chatId.slice(8) : ''
-      const op = String(x.op || 'add')
-      const target = known.get(String(x.id || '').replace(/^#/, ''))
-      // 补充旧的（你在面板里亲手写的不改写）
-      if (op === 'update' && target && target.source !== 'panel') {
-        if (revise(target.id, x.text, x.importance)) n++
-        continue
-      }
-      // 旧的过时了：先标过时（这样新的不会被当成重复合并进去），再记新的
-      if (op === 'outdated' && target) {
-        invalidate(target.id)
-        const r = add({ text: x.text, aboutName: x.about || target.aboutName || '', about: about || target.about || '', importance: x.importance ?? target.importance ?? 0.5, source: 'auto', chatId })
-        if (r.id || r.updated) {
-          invalidate(target.id, r.id || r.updated)
-          log.info(`记忆更新：「${target.text}」过时了 → 「${String(x.text).slice(0, 60)}」`)
-          n++
+    // 模型返回后才开始事务；期间没有异步操作，记忆和本批进度只写一次。
+    transaction = load()
+    try {
+      for (const x of arr.slice(0, 12)) {
+        if (!x || !x.text) continue
+        if (/^(我|大肥鱼)/.test(String(x.about || '')) || String(x.about || '') === '大肥鱼') continue
+        // 关于谁：模型给了 QQ 号就用（群聊、空间里也能记到人头上），私聊默认是对方
+        const qq = String(x.about_qq ?? '').replace(/\D/g, '')
+        const about = qq.length >= 5 && qq !== String(cfg.botQQ) ? qq : chatId.startsWith('private:') ? chatId.slice(8) : ''
+        const op = String(x.op || 'add')
+        const target = known.get(String(x.id || '').replace(/^#/, ''))
+        // 非主人/群聊整理不能新增挂到主人 QQ 或不在场人身上的记忆
+        if (!ownerScope && about && (about === ownerQQ || !ppl.has(about))) {
+          log.warn(`整理结果丢弃：${chatId} 试图写关于 ${about} 的记忆`)
+          continue
         }
-        continue
+        // 补充/作废旧记忆必须经过来源授权（不能跨聊天、不能借群聊改主人）
+        if ((op === 'update' || op === 'outdated') && !canRevise(target)) {
+          log.warn(`整理结果丢弃：${chatId} 试图改不属于本轮候选的记忆 ${x && x.id}`)
+          continue
+        }
+        if (op === 'update') {
+          if (revise(target.id, x.text, x.importance)) n++
+          continue
+        }
+        // 旧的过时了：先标过时（这样新的不会被当成重复合并进去），再记新的
+        if (op === 'outdated') {
+          invalidate(target.id)
+          const r = add({ text: x.text, aboutName: x.about || target.aboutName || '', about: about || target.about || '', importance: x.importance ?? target.importance ?? 0.5, source: 'auto', chatId })
+          if (r.id || r.updated) {
+            invalidate(target.id, r.id || r.updated)
+            log.info(`记忆更新：「${target.text}」过时了 → 「${String(x.text).slice(0, 60)}」`)
+            n++
+          }
+          continue
+        }
+        const r = add({ text: x.text, aboutName: x.about || '', about, importance: x.importance ?? 0.5, source: 'auto', chatId })
+        if (r.ok && r.id) n++
       }
-      const r = add({ text: x.text, aboutName: x.about || '', about, importance: x.importance ?? 0.5, source: 'auto', chatId })
-      if (r.ok && r.id) n++
-    }
+      checkpoint()
+      writeJson(file(), transaction)
+    } finally { transaction = null; cache = null }
     return n
   }
 
   const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const EXTRACT_LINES = 80 // 每次给模型最多多少行
+  const EXTRACT_WINDOW = 240 // 每段流水按聊天分组；完成后才推进整段的行号
+  const EXTRACT_LIMIT = 12 // 每次整理最多提炼多少批，剩下的留到下次
+  const BAD_BATCH_LIMIT = 3 // 同一批连续几次提炼不出来就跳过，别让它卡住后面的记忆
+  const badBatches = new Map() // 批次 → 失败次数；重启清零，再给一次机会
   let busy = false
+  let failures = 0
+  let retryAt = 0
 
   /**
    * 整理临时记忆。
@@ -639,33 +713,77 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     let insights = 0
     let days = 0
     let profiles = 0
+    let batches = 0
     try {
       for (const day of hub.chatLogDays()) {
         if (day > today || (day === today && !o.includeToday)) continue
-        // 同一天整理过一部分的（比如下午那次），只处理之后新增的聊天
-        const done = (load().processed || {})[day] || 0
         const all = hub.chatLogOf(day)
-        const byChat = new Map()
-        for (const l of all.slice(done)) {
-          if (String(l.chatId).startsWith('system:')) continue
-          if (!byChat.has(l.chatId)) byChat.set(l.chatId, [])
-          byChat.get(l.chatId).push(l)
-        }
-        for (const [chatId, lines] of byChat) {
-          const r = await extractLines(chatId, lines)
-          added += r.added || 0
-          insights += r.insights ? 1 : 0
+        const saved = (load().processed || {})[day]
+        // 旧版只记全天行数，无法知道其中哪些内容被跳过；保守地从头补提炼。
+        let done = saved && typeof saved === 'object' ? saved.offset : 0
+        let progress = saved && typeof saved === 'object' ? saved : 0
+        if (saved != null && typeof saved !== 'object') log.info(`${day}：旧版整理进度无法区分漏掉的内容，从头补提炼`)
+        while (done < all.length) {
+          // 记录每个聊天已完成的批次，失败后不重复提炼。
+          if (typeof progress === 'number' || progress.end <= progress.offset) progress = { offset: done, end: Math.min(all.length, done + EXTRACT_WINDOW), chats: {} }
+          const byChat = new Map()
+          for (const l of all.slice(progress.offset, progress.end)) {
+            if (String(l.chatId).startsWith('system:')) continue
+            if (!byChat.has(l.chatId)) byChat.set(l.chatId, [])
+            byChat.get(l.chatId).push(l)
+          }
+          let stopped = false
+          for (const [chatId, lines] of byChat) {
+            let n = progress.chats[chatId] || 0
+            while (n < lines.length) {
+              if (batches >= EXTRACT_LIMIT) { stopped = true; break }
+              const part = lines.slice(n, n + EXTRACT_LINES)
+              const r = await extractLines(chatId, part, () => {
+                const s = load()
+                s.processed = s.processed || {}
+                s.processed[day] = { ...progress, chats: { ...progress.chats, [chatId]: n + part.length } }
+                save(s)
+              })
+              if (!r.ok) {
+                // 只跳过模型答非所问的；断网、上游出错等恢复了还要接着提炼
+                const key = `${day}:${chatId}:${n}`
+                const fails = (badBatches.get(key) || 0) + 1
+                badBatches.set(key, fails)
+                if (!String(r.message).includes(NO_ARRAY) || fails < BAD_BATCH_LIMIT) throw new Error(r.message || '提炼记忆失败')
+                log.warn(`${chatId} 第 ${n} 行起的 ${part.length} 行连续 ${fails} 次提炼不出来，跳过（流水还在）`)
+                const s = load()
+                s.processed = s.processed || {}
+                s.processed[day] = { ...progress, chats: { ...progress.chats, [chatId]: n + part.length } }
+                save(s)
+              }
+              added += r.added || 0
+              insights += r.insights ? 1 : 0
+              batches++
+              n += part.length
+              progress.chats[chatId] = n
+            }
+            if (stopped) break
+          }
+          if (stopped) break
+          done = progress.end
+          progress = done
+          const s = load()
+          s.processed = s.processed || {}
+          s.processed[day] = { offset: done, end: done, chats: {} }
+          save(s)
         }
         const s = load()
         s.processed = s.processed || {}
-        if (day < today) {
-          hub.deleteChatLog(day) // 整理完清空（今天的留着，写日记还要用）
+        // 只在整天都处理完且没有新流水时清理；今天留着给日记用。
+        const keepDays = Number(getConfig().memory.keepChatlogDays)
+        const expire = keepDays >= 0 && day < dayKey(new Date(Date.now() - keepDays * 86400_000))
+        if (day < today && done === all.length && hub.chatLogOf(day).length === all.length && (keepDays === 0 || expire)) {
+          hub.deleteChatLog(day)
           delete s.processed[day]
-        } else {
-          s.processed[day] = all.length
+          save(s)
         }
-        save(s)
         days++
+        if (batches >= EXTRACT_LIMIT) break
       }
       if (days) await learnSelfStyle()
       // 这次记忆有变化的人，重写人物小档案（每次最多 8 个人）
@@ -678,6 +796,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       for (const qq of [...touched, ...missing].slice(0, 8)) {
         try { if (await buildProfile(qq)) profiles++ } catch (error) { log.warn('写人物小档案失败：', error.message) }
       }
+      // 先合并（内部 load→改→save），再重新读快照，否则下面那次 save(s) 会把合并结果覆盖回旧数据
+      try { await mergeGroups() } catch (error) { log.warn('合并记忆出错：', error.message) }
       const s = load()
       // 遗忘：不重要、很久没被想起的自动记忆清掉，记忆库不会越堆越乱
       const before = s.items.length
@@ -693,6 +813,61 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     } finally {
       busy = false
     }
+  }
+
+  /**
+   * 按人整组合并：同一个人名下的重复条目交给模型判断，是同一件事就并成一条。
+   * 只并 importance 低的；约定/边界这类（>= 0.85）只加不并。默认关（memory.mergeGroups）。
+   */
+  async function mergeGroups() {
+    const cfg = getConfig()
+    if (!cfg.memory?.mergeGroups) return { groups: 0, calls: 0, merged: 0 }
+    const list = load().items.filter((m) => !m.invalidAt)
+    const by = new Map()
+    for (const m of list) {
+      const k = String(m.about || '(通用)')
+      if (!by.has(k)) by.set(k, [])
+      by.get(k).push(m)
+    }
+    let groups = 0, calls = 0, merged = 0
+    for (const [who, items] of by) {
+      const soft = items.filter((m) => (Number(m.importance) || 0) < 0.85)
+      if (soft.length < 4) continue
+      groups++
+      try {
+        const out = await askModel(dsh, {
+          cfg,
+          system: '你是「大肥鱼」。下面是同一个人名下的一些记忆条目，看有没有说的是同一件事、可以并成一条的。只并「确实是同一件事」的，拿不准就不要并；合并后的说法要保留原意，别添加没写过的东西。只输出 JSON：{"merges":[{"ids":[编号...],"text":"合并后的一句话"}]}，没有可并的就输出 {"merges":[]}。',
+          text: soft.map((m) => `#${m.id} ${m.text}`).join('\n'),
+          maxTokens: 1200,
+          temperature: 0.2,
+        })
+        calls++
+        const hit = String(out || '').match(/\{[\s\S]*\}/)
+        let plan = { merges: [] }
+        try { plan = hit ? JSON.parse(hit[0]) : { merges: [] } } catch (error) { log.debug?.(`合并 ${who}：模型输出不是合法 JSON，跳过`); continue }
+        const arr = Array.isArray(plan.merges) ? plan.merges : []
+        if (!arr.length) continue
+        const s = load()
+        for (const g of arr) {
+          const ids = (g.ids || []).map(String)
+          const text = String(g.text || '').trim()
+          if (ids.length < 2 || !text) continue
+          // 模型给的编号只认这一组里低权重的：别把约定或别人的记忆并进来
+          const allowed = new Set(soft.map((x) => String(x.id)))
+          const members = s.items.filter((m) => ids.includes(String(m.id)) && allowed.has(String(m.id)) && !m.invalidAt)
+          if (members.length < 2) continue
+          const keep = members.reduce((a, b) => ((Number(a.importance) || 0) >= (Number(b.importance) || 0) ? a : b))
+          keep.text = text
+          keep.mergedAt = Date.now()
+          keep.mergedFrom = (keep.mergedFrom || 0) + members.length
+          for (const m of members) { if (m !== keep) { m.invalidAt = Date.now(); merged++ } }
+        }
+        save(s)
+      } catch (error) { log.warn(`合并 ${who} 的记忆失败：`, error.message) }
+    }
+    if (groups) log.info(`记忆合并：看了 ${groups} 组、调了 ${calls} 次模型，并掉 ${merged} 条`)
+    return { groups, calls, merged }
   }
 
   /** 从各人的说话方式里，沉淀出几条她自己不知不觉学会的说法（很少、很淡）。 */
@@ -720,8 +895,13 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
   async function tick() {
     const cfg = getConfig().memory
     if (!cfg.enabled || !cfg.dailyConsolidate) {
-      const cutoff = dayKey(new Date(Date.now() - 14 * 86400_000))
-      for (const day of hub.chatLogDays?.() || []) if (day < cutoff) hub.deleteChatLog(day)
+      // 没开每日整理时也按 keepChatlogDays 清理：-1 不清、0 沿用原来的 14 天、N 按 N 天
+      const keepDays = Number(getConfig().memory.keepChatlogDays)
+      if (keepDays !== -1) {
+        const days = keepDays > 0 ? keepDays : 14
+        const cutoff = dayKey(new Date(Date.now() - days * 86400_000))
+        for (const day of hub.chatLogDays?.() || []) if (day < cutoff) hub.deleteChatLog(day)
+      }
       return
     }
     const s = load()
@@ -733,9 +913,12 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
       const [hh, mm] = String(t).split(':').map(Number)
       return mins >= hh * 60 + mm && runs[t] !== today
     })
-    if (!due.length) return
+    if (!due.length || Date.now() < retryAt) return
     // 连今天到目前为止的聊天一起提炼；记着整理到第几行，下一次只处理新的
     const r = await consolidate({ includeToday: true })
+    // 失败后退避：10 分钟起步翻倍，最多 2 小时，不每分钟打一次模型
+    failures = r.ok ? 0 : failures + 1
+    retryAt = r.ok ? 0 : Date.now() + Math.min(120, 10 * 2 ** (failures - 1)) * 60_000
     if (r.ok) {
       const s2 = load()
       s2.runs = { ...(s2.runs || {}) }

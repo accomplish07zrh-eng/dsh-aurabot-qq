@@ -28,8 +28,12 @@ import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
+import { createCommunity } from './core/community.js'
+import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
+import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard } from './security/danger.js'
+import { setSsrpMode } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
 export const name = 'aurabot'
@@ -45,10 +49,16 @@ const PREFIX = '/aurabot/api'
 export function apply(ctx) {
   const logger = createLogger({ dsh: ctx })
   const log = logger.child('core')
+  // 恢复备份必须在读配置之前：读完配置后内存里的旧状态会写回去
+  try {
+    const restored = applyPendingRestore()
+    if (restored) log.info(`已恢复备份：${restored} 个文件，原来的文件在 backups/ 里留了底`)
+  } catch (error) { log.error('恢复备份失败：', error.message) }
   let cfg = loadConfig()
   let mods = null
   let bridge = null
   const getConfig = () => cfg
+  setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
   const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token) }
   const setConfig = (next) => {
     const before = cfg
@@ -68,7 +78,7 @@ export function apply(ctx) {
   seedPersonas()
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
-  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, fn), `aurabot: 变量 ${n}`)
+  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => cleanText(fn(...args))), `aurabot: 变量 ${n}`)
   const rulesOpts = (kind) => (mods ? { off: mods.builtinOff(), extra: mods.rules(kind) } : {})
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
@@ -161,6 +171,8 @@ export function apply(ctx) {
       }
     } else if (ev.post_type === 'notice' && ev.notice_type === 'notify' && ev.sub_type === 'poke') {
       hub.onPoke(ev).catch((error) => log.error('处理戳一戳出错：', error.message))
+    } else if (ev.post_type === 'notice' && ev.notice_type === 'group_upload') {
+      hub.onGroupFile(ev).catch((error) => log.error('处理群文件出错：', error.message))
     }
   }
   const onebot = createOneBotClient({
@@ -369,9 +381,45 @@ export function apply(ctx) {
   }
   mods.listen('module/start', (id) => { if (id === 'pet') injectPetPort() })
 
+  let unloaded = false
+  const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
   booted.then(() => injectPetPort()).catch(() => {})
-  booted.then(() => bridge.refresh())
+  booted.then(() => (unloaded ? [] : community.migrate())).catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
+    .then(async () => {
+      // 恢复备份后把市场模块装回来；没装上的留着，下次启动再试
+      const left = []
+      for (const id of pendingModules()) {
+        if (unloaded) return
+        const r = await community.install(id)
+        if (!r.ok && !/自己的文件夹/.test(r.message)) { left.push(id); log.warn(`恢复模块「${id}」没装上，下次启动再试：`, r.message) }
+      }
+      if (!unloaded) setPendingModules(left)
+    }).catch((error) => log.warn('恢复模块失败：', error.message))
+  booted.then(() => { if (!unloaded) bridge.refresh() })
+
+  // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
+  // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
+  const approvalSeen = new Map()
+  async function notifyApproval(session, event) {
+    try {
+      if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
+      const d = event.data || {}
+      const id = String(d.id || '')
+      if (!id || approvalSeen.has(id)) return
+      approvalSeen.set(id, Date.now())
+      if (approvalSeen.size > 200) { for (const [k, t] of approvalSeen) if (Date.now() - t > 6 * 3600_000) approvalSeen.delete(k) }
+      let title = ''
+      try { title = String(session?.title || session?.id || '') } catch (error) {}
+      const lines = ['【要授权】' + (d.toolName || '未知工具')]
+      if (d.reason) lines.push('原因：' + String(d.reason).slice(0, 300))
+      if (title) lines.push('会话：' + title.slice(0, 60))
+      lines.push('这个得在 DSH 界面里点「批准」，QQ 这边没法代答。')
+      await hub.sendText(`private:${cfg.ownerQQ}`, lines.join('\n'))
+    } catch (error) {
+      log.debug?.('审批通知失败：', error.message)
+    }
+  }
 
   // ---------- 盯会话：一轮结束就发回 QQ ----------
   ctx.effect(() => {
@@ -383,6 +431,8 @@ export function apply(ctx) {
       }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
       try { use('pet')?.onSessionEvent?.(session, event) } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
+      // 审批请求顺手通知到主人私聊（只通知，不代答）
+      if (event && event.type === 'approval/asked') notifyApproval(session, event)
     })
     return () => { try { if (typeof off === 'function') off() } catch (error) {} }
   }, 'aurabot: 盯会话')
@@ -412,9 +462,14 @@ export function apply(ctx) {
   }
   const safe = (fn, label) => () => { Promise.resolve().then(fn).catch((error) => log.warn(`${label}出错：`, error.message)) }
   ctx.effect(() => ctx.interval(safe(watchdog, '看门狗'), 30_000), 'aurabot: 看门狗')
-  setTimeout(safe(watchdog, '看门狗'), 3000).unref?.()
+  const firstWatch = setTimeout(safe(watchdog, '看门狗'), 3000)
+  firstWatch.unref?.()
   ctx.effect(() => () => {
-    hub.disposeRecentMedia()
+    unloaded = true
+    clearTimeout(firstWatch)
+    dangerGuard?.dispose()
+    hub.dispose()
+    bridge.dispose()
     mods.dispose()
     onebot.stop()
     snowluma.dispose()
@@ -578,7 +633,20 @@ export function apply(ctx) {
       // 面板口径：间隔 1~9999 分钟、每日上限 0~9999 次（0 = 不发）
       if (Number.isFinite(b[k])) patch[k] = k === 'whisperMaxPerDay' ? Math.min(9999, Math.max(0, Math.floor(b[k]))) : Math.min(9999, Math.max(1, Math.floor(b[k])))
     }
+    // 人物大小倍率：0.5~2.0，步进 0.05；坏值忽略（别把桌宠缩没了）
+    if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
+    // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
+    // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
+    if (typeof b.petPackUrl === 'string') {
+      const u = b.petPackUrl.trim().slice(0, 1000)
+      if (!u || /^https?:\/\//i.test(u)) patch.petPackUrl = u
+    }
+    // Electron 下载镜像：同上（内建模块不渲染 settings）；留空 = 回落内置默认 npmmirror
+    if (typeof b.electronMirror === 'string') {
+      const u = b.electronMirror.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.electronMirror = u
+    }
     // 行为大脑的模块级设置（AI 自己改不了，只有主人能改）。pet 是**内置模块**，
     // 它的 settings schema 不会渲染成表单（面板只给「用户自己复制出来的模块」生成），
     // 所以这里是这些开关唯一的写入通道——不补，关窗物理闸就永远打不开。
@@ -592,11 +660,16 @@ export function apply(ctx) {
       ['behaviorIdleCursorMinutes', 1, 240],
       ['behaviorMoodCloseWindowBelow', 0, 100],
       ['behaviorIconQuarantineDays', 1, 365],
+      ['chatBehaviorCooldownMinutes', 1, 1440], // 聊天联动冷却：1 分钟起，最长一天
+      ['chatBehaviorMaxPerDay', 0, 9999],       // 聊天联动每日上限：0 = 聊天时她也不动
     ]) {
       if (Number.isFinite(b[k])) patch[k] = Math.min(hi, Math.max(lo, Math.round(b[k])))
     }
     if (typeof b.behaviorWindowWhitelist === 'string') patch.behaviorWindowWhitelist = b.behaviorWindowWhitelist.slice(0, 2000)
     if (typeof b.behaviorDisabledActions === 'string') patch.behaviorDisabledActions = b.behaviorDisabledActions.slice(0, 500)
+    // 聊天联动动作（1.2.0 起 pet 模块代码在 mods 仓；核心侧 /panel/pet/config 仍是这些键的面板写入通道）
+    if (typeof b.chatBehaviorEnabled === 'boolean') patch.chatBehaviorEnabled = b.chatBehaviorEnabled
+    if (typeof b.chatBehaviorWhitelist === 'string') patch.chatBehaviorWhitelist = b.chatBehaviorWhitelist.slice(0, 2000)
     if (!Object.keys(patch).length) return { ok: false, message: '没有可保存的字段' }
     setConfig(mergeFromPanel(cfg, { ext: { pet: patch } }))
     log.info(`面板已保存桌宠设置｜${Object.keys(patch).map((k) => k + '=' + String(patch[k]).slice(0, 20)).join(' ')}`)
@@ -614,6 +687,12 @@ export function apply(ctx) {
     const pet = use('pet')
     if (typeof pet?.download !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，装不了客户端' }
     return { ok: true, result: redactTokens(await pet.download()) }
+  })
+  // 素材包：手动重下默认形象包（换镜像地址后用；force=true 表示已有也重下）
+  route('/panel/pet/fetch-pack', async () => {
+    const pet = use('pet')
+    if (typeof pet?.ensureDefaultPack !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，下不了素材包' }
+    return { ok: true, result: await pet.ensureDefaultPack(true), pet: petStatus() }
   })
   route('/panel/pet/focus', async (req) => {
     const enabled = Boolean((await readBody(req)).enabled)
@@ -731,7 +810,7 @@ export function apply(ctx) {
   })
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
-  const checkUpdate = createUpdateChecker({ pkg: PKG, log })
+  const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })
   route('/update/check', async (req) => checkUpdate({ force: query(req).force === '1' }))
   route('/changelog', async () => {
     let text = ''
@@ -877,9 +956,41 @@ export function apply(ctx) {
   // 本地接口
   const openFolder = (dir) => {
     mkdirSync(dir, { recursive: true })
-    spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref()
-    return { ok: true, message: '打开了' }
+    const opener = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+    // 子进程起不来是以 error 事件抛的，没人听就是未捕获异常，会把 DSH 整个带走（#135）
+    return new Promise((resolve) => {
+      const child = spawn(opener, [dir], { detached: true, stdio: 'ignore' })
+      child.once('error', (error) => resolve({ ok: false, message: `打不开文件夹：${dir}（${error.message}）` }))
+      child.once('spawn', () => { child.unref(); resolve({ ok: true, message: '打开了' }) })
+    })
   }
+  // 备份：文件里有账号凭证，只存在本机文件夹，不提供网页下载
+  let backupJob = null // { running, done, total, error, result }
+  const backupAction = (run) => async (req) => {
+    if (req.method !== 'POST' || req.headers?.['x-aurabot-backup'] !== '1') return { ok: false, message: '请从面板发起操作' }
+    return run(req)
+  }
+  route('/backup/state', async () => ({ ok: true, job: backupJob, list: listBackups(), pending: pendingRestore(), modules: pendingModules(), dir: dataDir('backups') }))
+  route('/backup/create', backupAction(async () => {
+    if (backupJob?.running) return { ok: false, message: '上一个备份还在打包' }
+    backupJob = { running: true, done: 0, total: 0 }
+    createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()), onProgress: (p) => { backupJob = { ...backupJob, ...p } } })
+      .then((result) => { backupJob = { running: false, result }; log.info(`备份完成：${result.name}，${result.files} 个文件`) })
+      .catch((error) => { backupJob = { running: false, error: error.message }; log.error('备份失败：', error.message) })
+    return { ok: true, message: '开始打包了' }
+  }))
+  route('/backup/open', backupAction(async () => openFolder(dataDir('backups'))))
+  route('/backup/upload', backupAction(async (req) => {
+    const buf = await readRaw(req, 2 * 1024 * 1024 * 1024 - 1)
+    if (!buf.length) return { ok: false, message: '文件是空的' }
+    try { return await stageRestore(await saveUpload(buf)) } catch (error) { return { ok: false, message: error.message } }
+  }))
+  route('/backup/restore-path', backupAction(async (req) => {
+    const path = String((await readBody(req)).path || '').trim().replace(/^"|"$/g, '')
+    if (!path) return { ok: false, message: '填备份文件的完整路径' }
+    try { return await stageRestore(path) } catch (error) { return { ok: false, message: error.message } }
+  }))
+  route('/backup/cancel', backupAction(async () => { cancelRestore(); return { ok: true, message: '取消了' } }))
   route('/local/status', async () => ({ ok: true, dir: local.dir(), list: local.status() }))
   route('/local/template', async (req) => {
     const slot = String((await readBody(req)).slot || '')
@@ -907,6 +1018,21 @@ export function apply(ctx) {
 
   // 模块（面板「扩展」页）
   route('/modules', async () => ({ ok: true, dir: mods.dir(), safeMode: cfg.safeMode, apiVersion: API_VERSION, list: mods.status(), prompt: mods.promptFor('') }))
+  route('/modules/community', async (req) => {
+    try { return { ok: true, ...(await community.list({ force: query(req).force === '1' })) } } catch (error) { return { ok: false, message: error.message, list: [] } }
+  })
+  route('/modules/tutorial', async () => {
+    try { return { ok: true, text: readFileSync(join(ROOT, 'docs', 'MODULE-TUTORIAL.md'), 'utf8') } } catch (error) { return { ok: false, message: '教程文件不见了' } }
+  })
+  route('/modules/community/progress', async () => ({ ok: true, progress: community.progress() }))
+  route('/modules/community/install', async (req) => {
+    const b = await readBody(req)
+    return { ...(await community.install(String(b.id || ''), { confirmReplace: b.confirmReplace === true })), modules: mods.status() }
+  })
+  route('/modules/community/remove', async (req) => {
+    const b = await readBody(req)
+    return { ...(await community.remove(String(b.id || ''), { purge: b.purge === true })), modules: mods.status() }
+  })
   route('/modules/reload', async (req) => {
     const id = String((await readBody(req)).id || '')
     if (!id) { await mods.sync(); return { ok: true, message: '检查过了', list: mods.status() } }

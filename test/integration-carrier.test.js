@@ -32,6 +32,8 @@ function makeHub() {
     chatLogDays: () => [],
     chatLogOf: () => [],
     delivered: [],
+    noted: [],
+    noteSaid(chatId, text) { this.noted.push({ chatId, text }) },
     async runSystemTurn() { return '主人，想到一件事想跟你说' },
     async deliver(chatId, text) { this.delivered.push({ chatId, text }); return { missedAt: [] } },
   }
@@ -81,6 +83,7 @@ test('carrier=pet 且桌宠在线：只推气泡（dispatch 一次、带 purpose
   assert.equal(pet.calls[0].text, '主人，想到一件事想跟你说', '气泡推的是本轮生成的发言')
   assert.ok(pet.calls[0].purpose, '事件带 purpose 字段（PET_MODULE_API 契约）')
   assert.equal(hub.delivered.length, 0, '互斥：本轮不发 QQ')
+  assert.deepEqual(hub.noted, [{ chatId: `private:${OWNER}`, text: '主人，想到一件事想跟你说' }], '气泡的话记进主人私聊（#133）')
   assert.equal(p.state().lastOutcome, 'sent')
   assert.equal(p.state().countToday, 1)
   assert.equal(cfg.ext.pet.carrier, 'pet', '投递前对齐 pet 侧镜像设置')

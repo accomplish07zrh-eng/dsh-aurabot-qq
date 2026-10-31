@@ -106,6 +106,29 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-card{background:var(--ab-card);border:1px solid var(--ab-line);border-radius:14px;padding:16px 18px}
 .ab-card h3{margin:0 0 4px;font-size:14px;font-weight:620;display:flex;align-items:center;gap:8px}
 .ab-card .ab-desc{color:var(--ab-sub);font-size:12.5px;margin:0 0 12px}
+/* 「关于」页：三张通栏大卡 + 两张可折叠门帘 */
+.ab-about-lead{grid-column:1/-1;padding:20px 22px;border-radius:16px;box-shadow:var(--ab-shadow)}
+.ab-about-lead h3{font-size:16px;margin-bottom:6px}
+.ab-about-lead p{line-height:1.65;font-size:13.5px;margin:0}
+.ab-about-sum{grid-column:1/-1;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);padding:0 20px;box-shadow:var(--ab-shadow)}
+.ab-about-sum summary{cursor:pointer;padding:14px 0;font-weight:600;font-size:14px;color:var(--ab-text);list-style:none;display:flex;align-items:center;gap:10px;user-select:none}
+.ab-about-sum summary::-webkit-details-marker{display:none}
+.ab-about-sum summary .chev{margin-left:auto;color:var(--ab-dim);font-size:12px;transition:transform .15s}
+.ab-about-sum[open] summary .chev{transform:rotate(90deg)}
+.ab-about-sum .inner{padding:14px 0 18px;border-top:1px solid var(--ab-line)}
+.ab-about-chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--ab-line-2);border-radius:999px;padding:6px 14px;font-size:13px;background:var(--ab-foam);font-weight:560}
+.ab-about-chip b{color:var(--ab-deep);font-variant-numeric:tabular-nums}
+/* 核心开发者：上头像、下名字，竖排居中。头像拉不到时露出首字母，不留破图 */
+.ab-devs{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:16px}
+.ab-dev{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:18px 12px 14px;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card-2);min-width:0}
+.ab-dev .av{position:relative;width:64px;height:64px;border-radius:50%;overflow:hidden;flex:none;display:flex;align-items:center;justify-content:center;background:var(--ab-foam);border:1px solid var(--ab-line-2);font-weight:650;font-size:22px;color:var(--ab-deep)}
+.ab-dev .av img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.ab-dev .who{min-width:0;width:100%}
+.ab-dev .nm{display:block;font-weight:600;font-size:13.5px;color:var(--ab-text);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ab-dev .nm:hover{color:var(--ab-sea);text-decoration:underline}
+/* contrib.rocks 自动更新的贡献者头像墙 */
+.ab-contrib{display:block;margin:0 0 14px}
+.ab-contrib img{display:block;max-width:100%;height:auto}
 .ab-stat{padding:14px 16px}
 .ab-stat .n{font-size:24px;font-weight:650;color:var(--ab-deep);font-variant-numeric:tabular-nums}
 .ab-stat .l{color:var(--ab-sub);font-size:12px}
@@ -494,7 +517,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         text: (path, props) => h('input', { className: cx('ab-input', props && props.size), value: getPath(draft, path) ?? '', placeholder: props && props.placeholder, type: (props && props.type) || 'text', onChange: (e) => setDraft(setPath(draft, path, e.target.value)) }),
         num: (path, props) => h('input', { className: 'ab-input sm', type: 'number', min: props && props.min, max: props && props.max, step: (props && props.step) || 1, value: getPath(draft, path) ?? '', onChange: (e) => setDraft(setPath(draft, path, e.target.value === '' ? '' : Number(e.target.value))) }),
         percent: (path) => h(Range, { min: 0, max: 100, value: pct(getPath(draft, path)), onChange: (v) => setDraft(setPath(draft, path, v / 100)), fmt: (v) => v + '%' }),
-        range: (path, min, max, step, fmt) => h(Range, { min, max, step, value: getPath(draft, path), onChange: (v) => setDraft(setPath(draft, path, v)), fmt }),
+        // 滑块只是常用范围；超过的值在旁边的框里直接填（概率这种 0~1 的不用）
+        range: (path, min, max, step, fmt) => {
+          const slider = h(Range, { min, max, step, value: getPath(draft, path), onChange: (v) => setDraft(setPath(draft, path, v)), fmt })
+          if (max <= 1) return slider
+          return h('div', { className: 'ab-flex' }, slider, h('input', { className: 'ab-input sm', type: 'number', step, value: getPath(draft, path) ?? '', onChange: (e) => setDraft(setPath(draft, path, e.target.value === '' ? '' : Number(e.target.value))) }))
+        },
         list: (path, props) => h(ListArea, { value: getPath(draft, path) || [], placeholder: props && props.placeholder, numbers: props && props.numbers, onChange: (v) => setDraft(setPath(draft, path, v)) }),
         select: (path, options, props) => h(Select, { value: getPath(draft, path) ?? '', options, onChange: (v) => setDraft(setPath(draft, path, v)), ...(props || {}) }),
         choices: (path, options) => h(Choices, { value: getPath(draft, path), options, onChange: (v) => setDraft(setPath(draft, path, v)) }),
@@ -521,7 +549,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'douyin', label: '抖音', flag: 'douyin.enabled' },
       { id: 'heybox', label: '小黑盒', flag: 'heybox.enabled' },
       { id: 'local', label: '本地接口' },
-      { id: 'modules', label: '扩展' },
+      { id: 'security', label: '安全防护' },
+      { id: 'market', label: '模块市场' },
+      { id: 'modules', label: '已安装' },
+      { id: 'backup', label: '备份' },
+      { id: 'about', label: '关于' },
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
@@ -535,7 +567,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['persona', 'group', 'speakup', 'mood'] },
       { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'stickers', 'imagegen', 'song', 'pet'] },
       { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin', 'heybox'] },
-      { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'local', 'modules', 'logs'] },
+      { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'security', 'backup', 'about', 'logs'] },
+      { id: 'market', label: '模块', icon: 'M4 9.5 5.5 4h13L20 9.5M4 9.5a2.7 2.7 0 0 0 5.3 0 2.7 2.7 0 0 0 5.4 0 2.7 2.7 0 0 0 5.3 0M5.5 12.5V20h13v-7.5M10 20v-4.5h4V20', tabs: ['market', 'modules', 'local'] },
     ]
     // 自己写的模块：名字像逛平台的放「平台」，其余放「系统」（排在「日志」前面）
     const PLATFORM_EXT = /逛|刷|B站|抖音|小红书|闲鱼|淘宝|微博|知乎|贴吧|快手|触站|小黑盒/
@@ -545,7 +578,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', persona: '人设 性格 设定 头像', access: '主人 白名单 权限 群管 改资料',
       group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', stickers: '表情 小黄脸 gif 商城表情',
       imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
-      bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', modules: '扩展 模块 插件', logs: '日志 报错',
+      bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', security: '安全 防护 ssrf 内网 图片 下载', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错', about: '关于 关于我们 版本 许可 鸣谢 开源', backup: '备份 恢复 换电脑 迁移 导入 导出',
     }
     const navIcon = (d) => h('svg', { viewBox: '0 0 24 24', 'aria-hidden': true }, h('path', { d }))
 
@@ -662,13 +695,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return h('div', { className: 'ab-grid' },
         h(UpdateNotes, { st, toast }),
         !cfg.enabled ? h('div', { className: 'ab-note warn' }, '总开关是关着的：大肥鱼现在不会收也不会发任何 QQ 消息。准备好了就在右上角打开。') : null,
-        cfg.enabled && cfg.dryRun ? h('div', { className: 'ab-note' }, '现在是试运行：她会照常思考回复，但只写进日志，不会真的发到 QQ。确认没问题后在右上角关掉「试运行」。') : null,
+        cfg.enabled && cfg.dryRun ? h('div', { className: 'ab-note' }, '现在是试运行：ta会照常思考回复，但只写进日志，不会真的发到 QQ。确认没问题后在右上角关掉「试运行」。') : null,
         cfg.enabled && !conn ? h('div', { className: 'ab-note err' }, '还没连上 QQ 网关' + (st.onebot.problem ? '：' + st.onebot.problem + '。' : '。去「连接」标签看看 SnowLuma 有没有装好、启动没有。') + ' ', h('a', { href: '#', onClick: (e) => { e.preventDefault(); go('connect') } }, '去连接 →')) : null,
         h('div', { className: 'ab-grid ab-g4' },
           [['今天收到', s.received, '📥'], ['今天发出', s.sent, '📤'], ['语音条', s.voice, '🎙️'], ['表情包', s.stickers, '😺']].map(([l, n, ic]) => h('div', { key: l, className: 'ab-card ab-stat' }, h('span', { className: 'ic', 'aria-hidden': true }, ic), h('div', { className: 'n' }, n || 0), h('div', { className: 'l' }, l))),
         ),
         h('div', { className: 'ab-grid ab-g2' },
-          h(Card, { title: '她现在', desc: '心情会随聊天起伏，过一阵子慢慢回到平常。' },
+          h(Card, { title: 'ta现在', desc: '心情会随聊天起伏，过一阵子慢慢回到平常。' },
             h('div', { className: 'ab-flex', style: { marginBottom: 8 } }, h('b', null, st.mood.label), h('span', { className: 'ab-muted' }, st.mood.value + ' / 100')),
             h('div', { className: 'ab-mood' }, h('i', { style: { width: Math.max(4, st.mood.value) + '%' } })),
             h('div', { className: 'ab-kv', style: { marginTop: 14 } },
@@ -678,18 +711,87 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               h('span', null, 'QQ 会话'), h('span', null, Object.keys(st.sessions || {}).filter((k) => !k.startsWith('system:')).length + ' 个（在侧栏「Aurabot · QQ」工作区里）'),
             ),
           ),
-          h(Card, { title: '快捷操作', desc: '试一试她是不是活着。这些操作会真的发到 QQ（试运行时只写日志）。' },
+          h(Card, { title: '快捷操作', desc: '试一试ta是不是活着。这些操作会真的发到 QQ（试运行时只写日志）。' },
             h('div', { className: 'ab-flex' },
               h(Btn, { kind: 'primary', onClick: quick('/test-send') }, '给主人发一条自测'),
-              h(Btn, { onClick: quick('/speakup/fire') }, '让她现在来找你'),
+              h(Btn, { onClick: quick('/speakup/fire') }, '让ta现在来找你'),
               h(Btn, { onClick: quick('/diary/run', { visibility: 'self' }) }, '写一篇日记（仅自己可见）'),
             ),
-            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '想看她和每个人聊了什么、调了什么工具：点 DSH 侧栏「Aurabot · QQ」工作区里对应的会话，也可以直接在会话里插话。'),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '想看ta和每个人聊了什么、调了什么工具：点 DSH 侧栏「Aurabot · QQ」工作区里对应的会话，也可以直接在会话里插话。'),
             h('div', { className: 'ab-flex', style: { marginTop: 10 } },
-              h(Btn, { small: true, kind: 'ghost', onClick: async () => { if (!confirm('把现在所有 QQ 会话归档、让她从头开始聊？（旧会话在侧栏的归档里还能找到）')) return; const r = await post('/sessions/reset'); toast(r.message) } }, '重新开始所有 QQ 会话')),
+              h(Btn, { small: true, kind: 'ghost', onClick: async () => { if (!confirm('把现在所有 QQ 会话归档、让ta从头开始聊？（旧会话在侧栏的归档里还能找到）')) return; const r = await post('/sessions/reset'); toast(r.message) } }, '重新开始所有 QQ 会话')),
           ),
         ),
         h(RecentLogs, { go }),
+      )
+    }
+
+    /** 「关于」页：三张通栏大卡（这是谁 / 加入我们 / 核心开发者），贡献者与许可默认折叠。
+     *  只读展示，没有设置项。「核心开发者」写死三个人；「贡献者」里的头像墙走 contrib.rocks 自动更新，
+     *  文字名单取自 GitHub contributors 与版本说明（含没有 commit 的反馈者）。 */
+    function About({ st }) {
+      const repo = 'https://github.com/accomplish07zrh-eng/dsh-aurabot-qq'
+      const gh = (name) => h('a', { key: 'gh-' + name, href: 'https://github.com/' + name, target: '_blank', rel: 'noreferrer' }, '@' + name)
+      // GitHub contributors API（按提交数排序）+ 版本说明里记录的 issue 报告 / 反馈者（没有 commit，单列）
+      const coders = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao', 'GitNekopedia', 'Chsw-CC', 'chsw']
+      const reporters = ['cxin21', 'zhuyi314', '38213063', 'HuaGyuu', 'CYyare', 'yunxirumo', 'XiongYachao']
+      const kv = (rows) => h('div', { className: 'ab-kv' }, rows.flatMap(([k, v]) => [h('span', { key: k }, k), h('span', { key: k + '-v' }, v)]))
+      const copyGroup = (e) => { try { navigator.clipboard.writeText('1130575035'); e.target.textContent = '已复制'; setTimeout(() => { e.target.textContent = '复制' }, 1500) } catch (error) {} }
+      // 核心开发者：仓库创建者 + 两位主要贡献者（只展示头像与名字，不标具体模块）
+      const devs = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao']
+      const dev = (n) => h('div', { key: 'dev-' + n, className: 'ab-dev' },
+        h('div', { className: 'av' }, n.slice(0, 1).toUpperCase(),
+          h('img', { src: 'https://github.com/' + n + '.png?size=96', alt: n, loading: 'lazy', referrerPolicy: 'no-referrer', onError: (e) => { e.currentTarget.style.display = 'none' } })),
+        h('div', { className: 'who' },
+          h('a', { className: 'nm', href: 'https://github.com/' + n, target: '_blank', rel: 'noreferrer', title: n }, '@' + n)))
+      const fold = (title, open, children) => h('details', { key: title, className: 'ab-about-sum' },
+        h('summary', null, title, h('i', { className: 'chev', 'aria-hidden': true }, '▶')),
+        h('div', { className: 'inner' }, children))
+      return h('div', { className: 'ab-grid' },
+        h(Card, { className: 'ab-about-lead', title: 'Aurabot · 住在 QQ 里的 AI 伙伴「大肥鱼」🐟', desc: 'v' + st.version + ' · 面板 API v' + (st.apiVersion || '?') },
+          h('p', null, '一个 DeepSeek Harness 插件，经 SnowLuma（OneBot v11 网关）接入 QQ。聊天、语音、表情包、日记、B 站这些本事都来自内置模块，更多模块在「模块市场」，也可以自己写。'),
+          h('div', { className: 'ab-flex', style: { marginTop: 14 } },
+            h('a', { key: 'repo', className: 'ab-btn sm', href: repo, target: '_blank', rel: 'noreferrer' }, 'GitHub 仓库'),
+            h('a', { key: 'doc', className: 'ab-btn sm', href: repo + '/blob/main/docs/USER-MANUAL.md', target: '_blank', rel: 'noreferrer' }, '用户手册'),
+          ),
+        ),
+        h(Card, { className: 'ab-about-lead', title: '加入我们', desc: '交流、报 bug、提代码都在这儿。' },
+          h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 12 } },
+            h('span', { key: 'qq', className: 'ab-about-chip' }, 'QQ 交流群 ', h('b', null, '1130575035'),
+              h('button', { key: 'cp', type: 'button', className: 'ab-btn sm', onClick: copyGroup }, '复制')),
+            h('a', { key: 'issue', className: 'ab-btn sm', href: repo + '/issues', target: '_blank', rel: 'noreferrer' }, '报 bug / 提需求'),
+            h('a', { key: 'pr', className: 'ab-btn sm', href: repo + '/pulls', target: '_blank', rel: 'noreferrer' }, '提代码（PR）'),
+          ),
+          h('p', { className: 'ab-muted ab-small', style: { marginTop: 12 } }, '提 issue / PR 前先翻一下有没有重复；群里问问题时尽量带上「日志」页的报错和版本号。'),
+        ),
+        h(Card, { className: 'ab-about-lead', title: '核心开发者', desc: '从第一行代码到现在，主要靠这三位在写。' },
+          h('div', { className: 'ab-devs' }, devs.map(dev)),
+          h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '仓库由 @accomplish07zrh-eng 创建；点名字进 GitHub 主页，其余帮忙的见下面「贡献者」。'),
+        ),
+        fold('贡献者（' + (coders.length + reporters.length) + ' 人）', false,
+          h('div', null,
+            // 头像墙由 contrib.rocks 按仓库提交记录自动生成，有新人提交就会自己更新，不用改代码
+            h('a', { key: 'wall', className: 'ab-contrib', href: repo + '/graphs/contributors', target: '_blank', rel: 'noreferrer', title: '在 GitHub 上查看贡献者列表' },
+              h('img', { src: 'https://contrib.rocks/image?repo=accomplish07zrh-eng/dsh-aurabot-qq', alt: '贡献者头像墙', loading: 'lazy', referrerPolicy: 'no-referrer', onError: (e) => { e.currentTarget.style.display = 'none' } })),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 0, marginBottom: 12 } }, '上面这排头像由 contrib.rocks 按提交记录自动更新，有新人提交就会自己变（加载不出来就点它，跳 GitHub 看）。下面按「写代码的 / 报问题提建议的」分开列。'),
+            h('div', { style: { marginBottom: 8 } }, h('b', { style: { fontSize: 13 } }, '写代码的')),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8 } },
+              coders.map((n) => h('span', { key: n, className: 'ab-pill' }, gh(n)))),
+            h('div', { style: { margin: '12px 0 8px' } }, h('b', { style: { fontSize: 13 } }, '报问题、提建议的')),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8 } },
+              reporters.map((n) => h('span', { key: n, className: 'ab-pill' }, gh(n)))),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '名单来自 GitHub contributors 与版本说明（CHANGELOG.md）；「导航布局」「群头衔回复过滤」两个社区扩展的思路也做进了面板和聊天中枢，一并谢过。'),
+          )),
+        fold('许可与鸣谢', false,
+          h('div', null,
+            kv([
+              ['插件代码', h('span', { key: 'mit' }, 'MIT License（见仓库 LICENSE）')],
+              ['「大肥鱼」形象', h('span', { key: 'cc' }, 'CC BY-NC-SA 4.0（署名 · 非商业 · 相同方式共享）')],
+              ['参考插件', h('span', { key: 'yuu' }, gh('Yuuyuko-uu'), ' 的 dsh-qq-bridge / speak-up / mood / memory（MIT，只借鉴踩坑经验）')],
+              ['其他署名', h('span', { key: 'tp' }, 'qq-bridge / QSH、surfcore purpose-engine 等，见 THIRD-PARTY-NOTICES.md')],
+            ]),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '素材包体积大（50MB+），不进本仓库：放独立素材仓 dsh-aurabot-qq-mods 的 pet-pack/，插件缺包时会按设置里的地址自动下载落位。'),
+          )),
       )
     }
 
@@ -830,7 +932,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 h('td', null, p.injected ? (p.connected ? '已接入' : '已注入，连接中') : '未接入'),
                 h('td', null, p.isBot ? h('span', { className: 'ab-badge' }, '机器人号') : h('span', { className: 'ab-muted ab-small' }, '不会碰'))))))) : null,
         ),
-        h(Card, { title: 'QQ 会话放在哪', desc: '每个 QQ 私聊 / 群都是 DSH 里「Aurabot · QQ」工作区下的一个会话，她在会话里读写文件也在这个文件夹。改了以后新开的会话放到新位置；已有的会话还在原来的地方，想全部挪过去就在「概览」点「重新开始所有 QQ 会话」。' },
+        h(Card, { title: 'QQ 会话放在哪', desc: '每个 QQ 私聊 / 群都是 DSH 里「Aurabot · QQ」工作区下的一个会话，ta在会话里读写文件也在这个文件夹。改了以后新开的会话放到新位置；已有的会话还在原来的地方，想全部挪过去就在「概览」点「重新开始所有 QQ 会话」。' },
           h(Row, { label: '工作区文件夹', hint: '填完整路径（比如 D:\\Aurabot\\qq-chats）；留空 = 默认位置' }, f.text('workspaceDir', { size: 'wide', placeholder: st.workspaceDir || '' })),
           h('div', { className: 'ab-muted ab-small' }, '现在用的：' + (st.workspaceDir || '—'))),
         h(Card, { title: '连接状态' },
@@ -919,7 +1021,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return h('div', { className: cx('ab-psec', lead && 'lead', pending && 'cmp'), style: { '--c': color } },
         h('div', { className: 'ab-psec-head' },
           lead
-            ? h('div', { className: 'ab-psec-fixed' }, '开场', h('small', null, '她是谁，一两段话'))
+            ? h('div', { className: 'ab-psec-fixed' }, '开场', h('small', null, 'ta是谁，一两段话'))
             : h('input', { className: 'ab-psec-title', value: sec.title, placeholder: '这一节叫什么', maxLength: 30, onChange: (e) => onChange({ title: e.target.value.replace(/[【】\n]/g, '') }) }),
           h('span', { className: 'ab-psec-n' }, showing.length + ' 字'),
           h('div', { className: 'ab-psec-act' },
@@ -1032,63 +1134,67 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       )
     }
 
-    function Access({ draft, setDraft }) {
+    function Access({ st, draft, setDraft }) {
       const f = useField(draft, setDraft)
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '主人', desc: '主人的 QQ 号。群管、点歌、电脑上的操作只听主人的。' },
           h(Row, { label: '主人 QQ 号' }, f.text('ownerQQ')),
-          h(Row, { label: '她怎么称呼你' }, f.text('ownerName', { placeholder: '主人' })),
+          h(Row, { label: 'ta怎么称呼你' }, f.text('ownerName', { placeholder: '主人' })),
           h(Row, { label: '主人私聊的权限', hint: '群聊永远没有电脑操作权限，这里管不到群。' },
             h('div', { style: { width: '100%' } },
               h(Choices, { value: draft.ownerLevel, onChange: (v) => setDraft(setPath(draft, 'ownerLevel', v)), options: [
-                { value: 'full', label: '完整', desc: '私聊里让她用电脑做事（查文件、跑命令、上网查）也能做' },
+                { value: 'full', label: '完整', desc: '私聊里让ta用电脑做事（查文件、跑命令、上网查）也能做' },
                 { value: 'social', label: '受限', desc: '只有发表情、发说说这类 QQ 工具，碰不到电脑' },
                 { value: 'chat', label: '纯聊天', desc: '什么工具都没有，只聊天' },
               ] }),
               h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } }, '切换后会给主人私聊换一个新的 DSH 会话（旧的还在侧栏里）。'))),
-          h(Row, { label: '长任务模式', hint: '只在「完整」权限下生效。打开后她能把命令放到后台跑、跑完自动回来告诉你，也能设定时任务；工具多一点，回话会稍慢。切换后同样换新会话。' },
+          h(Row, { label: 'DSH 要授权时发到 QQ', hint: '人不在电脑前也知道ta卡住了。只是通知，批准还得回 DSH 里点。' }, f.sw('approvalNotify')),
+          h(Row, { label: '长任务模式', hint: '只在「完整」权限下生效。打开后ta能把命令放到后台跑、跑完自动回来告诉你，也能设定时任务；工具多一点，回话会稍慢。切换后同样换新会话。' },
             h(Choices, { value: draft.longTasks ? 'on' : 'off', onChange: (v) => setDraft(setPath(draft, 'longTasks', v === 'on')), options: [
               { value: 'off', label: '关', desc: '维持现在的速度（默认）' },
               { value: 'on', label: '开', desc: '挂上后台任务（jobs）+ 定时任务（schedule）' },
             ] })),
         ),
-        h(ProfilePerms, { draft, setDraft }),
-        h(Card, { title: '白名单', desc: '只有名单里的人和群，她才会理。一行一个号码。' },
+        h(ProfilePerms, { st, draft, setDraft }),
+        h(Card, { title: '白名单', desc: '只有名单里的人和群，ta才会理。一行一个号码。' },
           h(Row, { label: '私聊白名单', hint: '主人默认就在里面。' }, f.list('allow.private', { placeholder: '每行一个 QQ 号', numbers: true })),
           h(Row, { label: '群白名单', hint: '把机器人拉进群后，把群号加到这里。' }, f.list('allow.groups', { placeholder: '每行一个群号', numbers: true })),
         ),
-        h(GroupRoles, null),
+        modOn(st, 'group-admin') ? h(GroupRoles, null) : null,
         h(CommandList, null),
       )
     }
 
     /** 改资料类操作的权限：关 / 仅主人私聊 / 所有人。 */
-    function ProfilePerms({ draft, setDraft }) {
+    function ProfilePerms({ st, draft, setDraft }) {
       const perms = draft.profilePerms || {}
+      const douyinOn = modOn(st, 'douyin')
+      const heyboxOn = modOn(st, 'heybox')
       const opts = [
         { value: 'off', label: '关', desc: '谁说都不改' },
-        { value: 'owner', label: '仅主人私聊', desc: '只有你私聊让她改才改（默认）' },
-        { value: 'all', label: '所有人', desc: '白名单里的人、群里的人都能让她改' },
+        { value: 'owner', label: '仅主人私聊', desc: '只有你私聊让ta改才改（默认）' },
+        { value: 'all', label: '所有人', desc: '白名单里的人、群里的人都能让ta改' },
       ]
       const row = (key, label, hint) => h(Row, { label, hint },
         h(Choices, { value: perms[key] || 'owner', onChange: (v) => setDraft(setPath(draft, 'profilePerms.' + key, v)), options: opts }))
-      return h(Card, { title: '改资料与名单', desc: '她能不能听人的话改自己的 QQ 昵称、签名、头像和 B 站签名，处理好友申请、改白名单，以及抖音上的浏览、点赞、评论、分享。改 QQ 资料要 SnowLuma 支持（set_qq_profile / set_self_longnick / set_qq_avatar）。抖音各项默认仅主人，要放开自己在这里开。' },
+      return h(Card, { title: '改资料与名单', desc: 'ta能不能听人的话改自己的 QQ 昵称、签名、头像和 B 站签名，处理好友申请和改白名单；装了抖音、小黑盒模块后，它们的操作权限也在这里。改 QQ 资料要 SnowLuma 支持。各项默认仅主人。' },
         row('qqNickname', 'QQ 昵称'),
         row('qqSignature', 'QQ 个性签名'),
         row('qqAvatar', 'QQ 头像', '只用网址图片，或「刚才发的那张图」。'),
         row('biliSign', 'B 站签名', '要先在 B 站页登录并打开 B 站。'),
         row('biliAvatar', 'B 站头像', '要先在 B 站页登录并打开 B 站。图片网址或刚才发的图，最大 2MB。'),
-        row('qqFriendRequest', '处理好友申请', '让她通过 / 拒绝别人加她为好友的申请。她自己主动加别人暂不支持（SnowLuma 没有这个接口）。'),
-        row('whitelist', '改白名单', '让她把 QQ 号 / 群号加进或移出下面的白名单。主人不会被移出。开成「所有人」前请想清楚。'),
-        row('douyinBrowse', '刷抖音 / 看视频', '让她去刷推荐（douyin_browse）、点开别人发来的抖音链接（douyin_watch）。定时自己刷不受这项限制。'),
-        row('douyinLike', '抖音点赞', '有人让她给某个视频点赞；关掉后她自己刷的时候也不点赞。'),
-        row('douyinComment', '抖音评论', '有人让她去某个视频下评论；关掉后她自己刷的时候也不评论。'),
-        row('douyinShareOwner', '分享抖音给主人', '刷到好玩的视频在 QQ 私聊里发给你（她的话 + 链接）。'),
-        row('douyinDm', '主动发抖音私信', '主人明确让她给某个人发私信时（主页链接或抖音号）；列表里没有会话会从对方主页发起。默认仅主人私聊。'),
-        row('heyboxBrowse', '逛小黑盒 / 看帖子', '让她翻信息流（heybox_feed）、读帖子正文和热评（heybox_watch）、看热榜和搜帖子（heybox_hot / heybox_search / heybox_topics）。定时自己逛不受这项限制。'),
-        row('heyboxLike', '小黑盒点赞', '有人让她给某个帖子点赞；关掉后她自己逛的时候也不点赞。'),
-        row('heyboxComment', '小黑盒评论', '有人让她去某个帖子下评论；关掉后她自己逛的时候也不评论。'),
-        row('heyboxPost', '小黑盒发帖 / 删帖', '让她发帖（heybox_post，文章模式可带图）和删自己发的帖（heybox_delete）。发帖会用你的账号公开发布，默认仅主人私聊。'),
+        row('biliComment', 'B 站评论', '有人让ta去某个视频下发评论（bili_comment）。「仅主人」也包括你在群里开口。ta自己刷视频时发不发评论，看 B 站页的开关。'),
+        row('qqFriendRequest', '处理好友申请', '让ta通过 / 拒绝别人加ta为好友的申请。ta自己主动加别人暂不支持（SnowLuma 没有这个接口）。'),
+        row('whitelist', '改白名单', '让ta把 QQ 号 / 群号加进或移出下面的白名单。主人不会被移出。开成「所有人」前请想清楚。'),
+        douyinOn && row('douyinBrowse', '刷抖音 / 看视频', '让ta去刷推荐（douyin_browse）、点开别人发来的抖音链接（douyin_watch）。定时自己刷不受这项限制。'),
+        douyinOn && row('douyinLike', '抖音点赞', '有人让ta给某个视频点赞；关掉后ta自己刷的时候也不点赞。'),
+        douyinOn && row('douyinComment', '抖音评论', '有人让ta去某个视频下评论；关掉后ta自己刷的时候也不评论。'),
+        douyinOn && row('douyinShareOwner', '分享抖音给主人', '刷到好玩的视频在 QQ 私聊里发给你（ta的话 + 链接）。'),
+        douyinOn && row('douyinDm', '主动发抖音私信', '主人明确让ta给某个人发私信时（主页链接或抖音号）；列表里没有会话会从对方主页发起。默认仅主人私聊。'),
+        heyboxOn && row('heyboxBrowse', '逛小黑盒 / 看帖子', '让ta翻信息流（heybox_feed）、读帖子正文和热评（heybox_watch）、看热榜和搜帖子（heybox_hot / heybox_search / heybox_topics）。定时自己逛不受这项限制。'),
+        heyboxOn && row('heyboxLike', '小黑盒点赞', '有人让ta给某个帖子点赞；关掉后ta自己逛的时候也不点赞。'),
+        heyboxOn && row('heyboxComment', '小黑盒评论', '有人让ta去某个帖子下评论；关掉后ta自己逛的时候也不评论。'),
+        heyboxOn && row('heyboxPost', '小黑盒发帖 / 删帖', '让ta发帖（heybox_post，文章模式可带图）和删自己发的帖（heybox_delete）。发帖会用你的账号公开发布，默认仅主人私聊。'),
       )
     }
 
@@ -1096,7 +1202,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function CommandList() {
       const [list, setList] = useState([])
       useEffect(() => { get('/commands').then((r) => setList(r.list || [])) }, [])
-      return h(Card, { title: 'QQ 命令', desc: '主人在 QQ 里（私聊或白名单群）直接发这些命令就能管她，别人发了不算。总开关关着时也能用。' },
+      return h(Card, { title: 'QQ 命令', desc: '主人在 QQ 里（私聊或白名单群）直接发这些命令就能管ta，别人发了不算。总开关关着时也能用。' },
         h('table', { className: 'ab-table' }, h('tbody', null, list.map((c) => h('tr', { key: c.name },
           h('td', { style: { whiteSpace: 'nowrap' } }, h('code', null, '/' + c.name), c.aliases.length ? h('div', { className: 'ab-muted ab-small' }, c.aliases.map((a) => '/' + a).join(' ')) : null),
           h('td', null, c.desc))))))
@@ -1107,12 +1213,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [list, setList] = useState(null)
       const load = () => { setList(null); get('/groups/roles').then((r) => setList(r.list || [])) }
       useEffect(load, [])
-      return h(Card, { title: '群管权限', desc: '她在群里是群主或管理员时，主人才能让她禁言、踢人、发公告；改专属头衔要群主。按已保存的群白名单查。',
+      return h(Card, { title: '群管权限', desc: 'ta在群里是群主或管理员时，主人才能让ta禁言、踢人、发公告；改专属头衔要群主。按已保存的群白名单查。',
         right: h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新') },
         !list ? h('div', { className: 'ab-muted ab-small' }, h('i', { className: 'ab-spin' }), ' 查询中…')
           : list.length === 0 ? h('div', { className: 'ab-muted ab-small' }, '群白名单是空的。')
           : h('table', { className: 'ab-table' },
-            h('thead', null, h('tr', null, ['群', '她的身份', '群管'].map((x) => h('th', { key: x }, x)))),
+            h('thead', null, h('tr', null, ['群', 'ta的身份', '群管'].map((x) => h('th', { key: x }, x)))),
             h('tbody', null, list.map((g) => h('tr', { key: g.groupId },
               h('td', null, (g.name && g.name !== g.groupId ? g.name + ' ' : '') + '(' + g.groupId + ')'),
               h('td', null, g.label),
@@ -1138,7 +1244,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const on = (gid) => tf.groups.includes(gid)
       const hit = info && info.titles ? info.titles.find((t) => t.title === tf.title.trim()) : null
       return h(Card, { title: '按头衔不理（防机器人互聊）', right: h(Switch, { on: tf.enabled, onChange: (v) => set({ enabled: v }) }),
-        desc: '同一个群里有别的机器人时，给它们挂上同一个专属头衔（比如「大肥鱼」），她在勾选的群里就不理它们：说话、@ 她、戳她都不回，免得机器人之间互相接话停不下来。只认专属头衔，昵称和群名片不算；私聊不受影响。' },
+        desc: '同一个群里有别的机器人时，给它们挂上同一个专属头衔（比如「大肥鱼」），ta在勾选的群里就不理它们：说话、@ ta、戳ta都不回，免得机器人之间互相接话停不下来。只认专属头衔，昵称和群名片不算；私聊不受影响。' },
         h(Row, { label: '要不理的头衔', hint: '一字不差才算。下面列出白名单群里现有的头衔，点一个就填进来。' },
           h('div', { style: { width: '100%' } },
             h('div', { className: 'ab-flex' },
@@ -1172,14 +1278,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const on = (gid) => (ob.groups || []).includes(gid)
       const toggle = (gid) => setDraft(setPath(draft, 'group.ownerBrief.groups', on(gid) ? (ob.groups || []).filter((x) => x !== gid) : [...(ob.groups || []), gid]))
       return h(Card, { title: '主人私聊：群聊摘要', right: f.sw('group.ownerBrief.enabled'),
-        desc: '主人在私聊里问起群里的事时，把最近 24 小时的群聊流水当成「她自己的见闻」补进这一轮上下文。只在「主人私聊 + 这句话提到群相关」时触发，不常驻、不写进记忆；默认关。开启前先在「权限」页把群加进白名单。' },
+        desc: '主人在私聊里问起群里的事时，把最近 24 小时的群聊流水当成「ta自己的见闻」补进这一轮上下文。只在「主人私聊 + 这句话提到群相关」时触发，不常驻、不写进记忆；默认关。开启前先在「权限」页把群加进白名单。' },
         h(Row, { label: '每个群给几条', hint: '越少越省上下文；最多 30 条' }, f.range('group.ownerBrief.lines', 1, 30, 1, (v) => v + ' 条')),
         h(Row, { label: '只取哪些群', hint: '没勾 = 所有白名单群；只列白名单里的群' },
           groups.length
             ? h('div', { className: 'ab-flex' }, groups.map((gid) => h('button', { key: gid, type: 'button', className: cx('ab-chip', on(gid) && 'on'), onClick: () => toggle(gid) },
               (on(gid) ? '✓ ' : '') + (nameOf(gid) || '群'), h('span', { className: 'n' }, gid))))
             : h('span', { className: 'ab-muted ab-small' }, '群白名单是空的，先在「权限」页加群。')),
-        h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '她只会当成自己最近在群里看到的，不会把群聊原文说成是主人发的。'))
+        h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, 'ta只会当成自己最近在群里看到的，不会把群聊原文说成是主人发的。'))
     }
 
     function Group({ draft, setDraft }) {
@@ -1187,32 +1293,35 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const overrides = draft.group.overrides || {}
       const [newGid, setNewGid] = useState('')
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '连发合并', right: f.sw('merge.enabled'), desc: '人常常一口气发好几句。打开后她会等对方说完再一起回，而不是一句一回。' },
+        h(Card, { title: '连发合并', right: f.sw('merge.enabled'), desc: '人常常一口气发好几句。打开后ta会等对方说完再一起回，而不是一句一回。' },
           h(Row, { label: '对方停顿多久算说完' }, f.range('merge.waitSec', 0.5, 10, 0.5, (v) => v + ' 秒')),
           h(Row, { label: '最多等多久', hint: '对方一直在发也最多等这么久' }, f.range('merge.maxSec', 2, 30, 1, (v) => v + ' 秒')),
-          h(Row, { label: '群里停顿多久算一段', hint: '群里大家你一句我一句，多等一会儿把一段话攒齐再回；她回上一段的时候，新消息也会先攒着' }, f.range('merge.groupWaitSec', 1, 20, 1, (v) => v + ' 秒')),
+          h(Row, { label: '群里停顿多久算一段', hint: '群里大家你一句我一句，多等一会儿把一段话攒齐再回；ta回上一段的时候，新消息也会先攒着' }, f.range('merge.groupWaitSec', 1, 20, 1, (v) => v + ' 秒')),
           h(Row, { label: '群里最多等多久' }, f.range('merge.groupMaxSec', 3, 60, 1, (v) => v + ' 秒')),
         ),
         h(TitleFilter, { draft, setDraft }),
         h(OwnerBrief, { draft, setDraft }),
-        h(Card, { title: '发文件', right: f.sw('files.enabled'), desc: '打开后，你在私聊里可以让她把本机文件当文件发到 QQ，也能按你说的发给白名单里的人或群。她只能发 QQ 工作区和下面目录里的文件；单个文件有大小上限；发过什么会记在日志里。' },
+        h(Card, { title: '发文件', right: f.sw('files.enabled'), desc: '打开后，你在私聊里可以让ta把本机文件当文件发到 QQ，也能按你说的发给白名单里的人或群。ta只能发 QQ 工作区和下面目录里的文件；单个文件有大小上限；发过什么会记在日志里。' },
           h(Row, { label: '单个文件最大' }, f.num('files.maxMB', { min: 1, max: 2048 }), h('span', { className: 'ab-muted' }, ' MB')),
           h(Row, { label: '额外允许的目录', hint: '一行一个完整路径。QQ 工作区里的文件一直允许，不用写；留空 = 只能发工作区里的' }, f.list('files.dirs', { placeholder: 'D:\\Aurabot\\要发的文件' })),
         ),
-                h(Card, { title: '危险命令确认', right: f.sw('security.dangerConfirm'), desc: '打开后，她在私聊里要执行终端危险命令（删根目录、格式化、关机、下载后直接执行等）之前，会先发 QQ 私聊问你；你回复「确认」才执行，回复「取消」或 60 秒没回就拦下。默认关。只拦真正致命的命令，普通删除/构建/改文件不受影响。' }),
-h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复她的消息、或者提到下面这些名字时，她一定会回。' },
-          h(Row, { label: '唤醒词', hint: '一行一个' }, f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
+                h(Card, { title: '危险命令确认', right: f.sw('security.dangerConfirm'), desc: '打开后，ta在私聊里要执行终端危险命令（删根目录、格式化、关机、下载后直接执行等）之前，会先发 QQ 私聊问你；你回复「确认」才执行，回复「取消」或 60 秒没回就拦下。默认关。只拦真正致命的命令，普通删除/构建/改文件不受影响。' }),
+h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta的消息、或者提到下面这些名字时，ta一定会回。' },
+          h(Row, { label: '能不能看别的群', hint: '只读白名单里的群，一次最多 50 条，主人随时能看。开到「群里也行」后，ta在 A 群的回答全群都看得到，里面可能有不在 B 群的人；读到的内容也会留在这个会话里。' }, f.choices('group.crossRead', [{ value: 'off', label: '关', desc: '只看当前聊天' }, { value: 'private', label: '私聊可以', desc: '主人，以及私聊里问的人本身在那个群（默认）' }, { value: 'group', label: '群里也行', desc: '再加上群里问的人都在那个群' }])),
+          h(Row, { label: '@ 了别人不算叫ta', hint: '有人 @ 别人时顺口提到ta的名字，不算在叫ta；ta还是可以按平时的频率插话。默认关' }, f.sw('group.ignoreAtOthers')),
+          h(Row, { label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
+          h(Row, { label: '唤醒词', hint: '一行一个' },f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
         ),
-        h(Card, { title: '安全刹车', desc: '只防失控（比如和别的机器人聊停不下来）：她在一个群里短时间说太多就歇一会儿，主人 @ 她除外。平时碰不到。' },
+        h(Card, { title: '安全刹车', desc: '只防失控（比如和别的机器人聊停不下来）：ta在一个群里短时间说太多就歇一会儿，主人 @ ta除外。平时碰不到。' },
           h(Row, { label: '最多说几次' }, f.range('group.burstMax', 1, 20, 1, (v) => v + ' 次'), h('span', { className: 'ab-muted' }, '/'), f.range('group.burstWindowSec', 30, 600, 30, (v) => Math.round(v / 6) / 10 + ' 分钟')),
         ),
-        h(Card, { title: '群里插话', desc: '没人叫她的时候，她也可能自然地插一句；她看完群里在聊什么，也可以决定不说话。' },
+        h(Card, { title: '群里插话', desc: '没人叫ta的时候，ta也可能自然地插一句；ta看完群里在聊什么，也可以决定不说话。' },
           h(Row, { label: '插话概率', hint: '每条普通消息触发插话的机会' }, f.percent('group.interjectChance')),
           h(Row, { label: '冷却', hint: '两次插话至少隔多久' }, f.range('group.cooldownSec', 0, 600, 10, (v) => v + ' 秒')),
           h(Row, { label: '每小时最多插话' }, f.range('group.maxPerHour', 0, 30, 1, (v) => v + ' 次')),
-          h(Row, { label: '她感兴趣的话题', hint: '群里在聊这些（或她记得相关的事）时更容易插话；一行一个' }, f.list('group.interests', { placeholder: '白米饭\n游戏\n追剧' })),
-          h(Row, { label: '话题相关度门槛', hint: '和她关系不大的话题就不插话；拉到 0 = 不看话题、纯随机' }, f.range('group.minRelevance', 0, 1, 0.05, (v) => (v === 0 ? '不看话题' : Math.round(v * 100) + '%'))),
-          h('div', { className: 'ab-note', style: { marginTop: 8 } }, '她被叫到或插上话以后算「加入了话题」：话题还和她相关、她 3 分钟内说过话，就会接着聊下去（每次看完群里新说的一段再回），不受冷却和每小时上限限制；话题跑偏或者她选择不说话就退出。'),
+          h(Row, { label: 'ta感兴趣的话题', hint: '群里在聊这些（或ta记得相关的事）时更容易插话；一行一个' }, f.list('group.interests', { placeholder: '白米饭\n游戏\n追剧' })),
+          h(Row, { label: '话题相关度门槛', hint: '和ta关系不大的话题就不插话；拉到 0 = 不看话题、纯随机' }, f.range('group.minRelevance', 0, 1, 0.05, (v) => (v === 0 ? '不看话题' : Math.round(v * 100) + '%'))),
+          h('div', { className: 'ab-note', style: { marginTop: 8 } }, 'ta被叫到或插上话以后算「加入了话题」：话题还和ta相关、ta 3 分钟内说过话，就会接着聊下去（每次看完群里新说的一段再回），不受冷却和每小时上限限制；话题跑偏或者ta选择不说话就退出。'),
           h(Row, { label: '群冷清时不插话', hint: '最近几分钟内消息少于这个数就不插' }, f.num('group.minRecentMessages', { min: 0 }), h('span', { className: 'ab-muted' }, '条 / '), f.num('group.activeWindowSec', { min: 30 }), h('span', { className: 'ab-muted' }, '秒')),
           h(Row, { label: '静默时段', hint: '这段时间不插话（被叫到还是会回）' },
             h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 23, value: draft.group.quietHours[0], onChange: (e) => setDraft(setPath(draft, 'group.quietHours', [Number(e.target.value), draft.group.quietHours[1]])) }),
@@ -1220,7 +1329,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 23, value: draft.group.quietHours[1], onChange: (e) => setDraft(setPath(draft, 'group.quietHours', [draft.group.quietHours[0], Number(e.target.value)])) }),
             h('span', { className: 'ab-muted' }, '点')),
         ),
-        h(Card, { title: '按群单独设置', desc: '某个群想让她更安静或更活跃，在这里单独设插话概率。' },
+        h(Card, { title: '按群单独设置', desc: '某个群想让ta更安静或更活跃，在这里单独设插话概率。' },
           Object.keys(overrides).length === 0 ? h('div', { className: 'ab-muted', style: { marginBottom: 10 } }, '还没有单独设置的群。') :
             Object.entries(overrides).map(([gid, o]) => h(Row, { key: gid, label: '群 ' + gid },
               h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 100, value: pct(o.interjectChance ?? draft.group.interjectChance), onChange: (e) => setDraft(setPath(draft, 'group.overrides', { ...overrides, [gid]: { ...o, interjectChance: Number(e.target.value) / 100 } })) }),
@@ -1325,7 +1434,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const f = useField(draft, setDraft)
       useEffect(() => { get('/voice/song-voices').then(setS).catch(() => setS({ ok: false, voices: [], message: '没查到翻唱音色' })) }, [])
       const voices = (s && s.voices) || []
-      return h(Card, { title: '语音条变声（用翻唱音色）', desc: '把她说话的声音也换成「翻唱」页导入的 RVC 音色模型：先 TTS 念出来，再用同一个音色变声。默认不变声，直接用 TTS 原声；变声失败会自动回退原声，不影响发送。' },
+      return h(Card, { title: '语音条变声（用翻唱音色）', desc: '把ta说话的声音也换成「翻唱」页导入的 RVC 音色模型：先 TTS 念出来，再用同一个音色变声。默认不变声，直接用 TTS 原声；变声失败会自动回退原声，不影响发送。' },
         h(Row, { label: '翻唱音色', hint: s && s.available === false ? (s.message || '翻唱环境还没装好，装好并导入音色后才能选') : '只列「翻唱」页导入过的 .pth 音色（带 index 的会标出来）' },
           f.select('voice.songVoice', [{ value: '', label: '不变声（TTS 原声）' }, ...voices.map((v) => ({ value: v.id, label: v.id + (v.hasIndex ? '（有 index）' : '') }))], { width: 280 })),
         h(Row, { label: '变调', hint: '模型是男声训练的、想变成女声一般 +12；不确定就 0' },
@@ -1386,7 +1495,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             src ? h('audio', { src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
         ),
         h(VoiceSongModel, { draft, setDraft }),
-        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给她：优先用 QQ 自带的转文字，不行再用 DSH 自带的语音识别（要在 DSH「插件」里开启「语音输入」）。' },
+        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给ta：优先用 QQ 自带的转文字，不行再用 DSH 自带的语音识别（要在 DSH「插件」里开启「语音输入」）。' },
           h(AsrStatus, { toast })),
       )
     }
@@ -1435,11 +1544,11 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Row, { label: '自动配表情的概率' }, f.percent('stickers.autoChance')),
           h(Row, { label: '夹 QQ 小黄脸', hint: '回复里能夹 QQ 自带的系统表情（/捂脸 /斜眼笑 这种），和文字在同一条消息里' }, f.sw('stickers.faces')),
           h(Row, { label: '偷表情', hint: '别人发的表情包会被收藏（普通照片不收）。' }, f.sw('stickers.collect'), h('span', { className: 'ab-muted' }, '从群里'), f.sw('stickers.fromGroups'), h('span', { className: 'ab-muted' }, '从私聊'), f.sw('stickers.fromPrivate')),
-          draft.stickers.collect ? h(Row, { label: '怎么偷', hint: '「她挑」只递给她看，喜欢才收；「只听主人的」只在主人私聊 / 这一轮只有主人时她才可自己收，有别人在场要主人发话' },
+          draft.stickers.collect ? h(Row, { label: '怎么偷', hint: '「ta挑」只递给ta看，喜欢才收；「只听主人的」只在主人私聊 / 这一轮只有主人时ta才可自己收，有别人在场要主人发话' },
             f.choices('stickers.collectMode', [
-              { value: 'auto', label: '全都偷', desc: '看到就收，不用她同意（默认，保持原行为）' },
-              { value: 'ask', label: '她挑', desc: '先记着，给她一句轻提示，喜欢才凭编号收' },
-              { value: 'owner', label: '只听主人的', desc: '只有主人私聊 / 只有主人时她才可自己收；别人在场要主人发话' },
+              { value: 'auto', label: '全都偷', desc: '看到就收，不用ta同意（默认，保持原行为）' },
+              { value: 'ask', label: 'ta挑', desc: '先记着，给ta一句轻提示，喜欢才凭编号收' },
+              { value: 'owner', label: '只听主人的', desc: '只有主人私聊 / 只有主人时ta才可自己收；别人在场要主人发话' },
             ])) : null,
           h(Row, { label: '每小时最多收' }, f.num('stickers.maxPerHour', { min: 0 }), h('span', { className: 'ab-muted' }, '张')),
           h(Row, { label: '表情库最多存', hint: 'QQ 收藏表情有数量上限，满了就收不进去了。超过这个数会自动清掉最少用的偷来的表情（你自己加的不会动）' }, f.num('stickers.maxLibrary', { min: 20, max: 2000 }), h('span', { className: 'ab-muted' }, '张')),
@@ -1451,7 +1560,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Btn, { small: true, onClick: () => fileRef.current && fileRef.current.click() }, '＋ 上传'),
           h(Btn, { small: true, title: '把机器人号 QQ「我喜欢的」里已有的表情导进来', onClick: async () => { toast('正在从 QQ 收藏导入…'); const r = await post('/sticker/import-qq'); toast(r.message, r.ok === false ? 'err' : 'ok'); load() } }, '从 QQ 收藏导入'),
           h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新')) },
-          items === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : items.length === 0 ? h(Empty, { icon: '🐳', text: '表情库还是空的。别人在群里发表情包，她会自己收；也可以点右上角上传，或者「从 QQ 收藏导入」机器人号已经收藏的表情。' }) :
+          items === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : items.length === 0 ? h(Empty, { icon: '🐳', text: '表情库还是空的。别人在群里发表情包，ta会自己收；也可以点右上角上传，或者「从 QQ 收藏导入」机器人号已经收藏的表情。' }) :
             h('div', { className: 'ab-stickers' }, items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, toast }))),
         ),
       )
@@ -1519,6 +1628,73 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       )
     }
 
+    function DiaryMedia({ st, draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      const [preview, setPreview] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const request = useRef(0)
+      const unsaved = JSON.stringify(draft.diary) !== JSON.stringify(st.config.diary)
+      // 修改配置后清掉旧预览，避免把旧目录或旧可见范围当成当前设置。
+      useEffect(() => { request.current++; setPreview(null); setBusy(false) }, [JSON.stringify(draft.diary)])
+      useEffect(() => () => { request.current++ }, [])
+      const generate = async () => {
+        const id = ++request.current
+        setBusy(true)
+        setPreview(null)
+        try {
+          const result = await post('/diary/preview', {})
+          if (id !== request.current) return
+          if (!result.ok) return toast(result.message || '预览没有生成')
+          setPreview(result)
+        } finally { if (id === request.current) setBusy(false) }
+      }
+      return h(Card, { title: '图文日记与预览', right: f.sw('diary.rich.enabled'), desc: '默认关闭。开启后围绕公开浏览经历或心情写日记，按备注挑选配图；关闭后沿用原来的日记流程。' },
+        draft.diary.rich?.enabled ? h('div', null,
+          h(Row, { label: '表情包', hint: '默认关闭，需主人单独开启；开启后可能将从群聊收藏的表情图发布到空间' }, f.sw('diary.rich.stickers')),
+          h(Row, { label: '公开浏览配图', hint: '仅取已浏览作品的公开封面；发布会附原作者和作品链接' }, f.sw('diary.rich.browsing')),
+          h(Row, { label: '使用指定目录的图片', hint: '只放你允许自动发布到空间的图片；文件内容不会自动识别隐私' }, f.sw('diary.rich.local')),
+          h(Row, { label: '本地图片目录', hint: '由主人主动填写完整路径。留空不扫描；不读取桌面或聊天截图' }, f.text('diary.rich.folder', { placeholder: '留空不读取本地图库' })),
+          h(Row, { label: '每篇最多配图' }, f.num('diary.rich.maxImages', { min: 1, max: 4 })),
+        ) : null,
+        h('div', { className: 'ab-small ab-muted', style: { margin: '12px 0' } }, '先保存设置再预览。预览不会发布、记入发布历史或消耗当天次数；「现在写一篇」会重新写作，遵守保存的可见范围。'),
+        unsaved ? h('div', { className: 'ab-small', style: { color: 'var(--ab-warn)', marginBottom: 8 } }, '日记设置尚未保存，保存后可生成预览。') : null,
+        h(Btn, { kind: 'ghost', disabled: busy || unsaved, onClick: generate }, busy ? '正在生成预览…' : '生成预览（不发布）'),
+        preview ? h('div', { className: 'ab-note', style: { marginTop: 14 } },
+          h('div', { className: 'ab-small ab-muted' }, '预览 · ' + preview.label + ' · 尚未发布'),
+          h('div', { style: { whiteSpace: 'pre-wrap', margin: '10px 0' } }, preview.text),
+          h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', alignItems: 'flex-start' } }, (preview.media || []).map((image) =>
+            h('figure', { key: image.id, style: { margin: 0, width: 160 } },
+              h('img', { src: image.src, alt: image.caption || '日记配图', style: { width: '100%', maxHeight: 180, objectFit: 'contain', borderRadius: 10 } }),
+              h('figcaption', { className: 'ab-small ab-muted' }, image.kind === 'browsing' || image.sourceKind === 'browsing' ? image.platform + ' · ' + image.title : image.kind === 'local' ? '主人指定图库 · ' + image.caption : '表情包 · ' + image.caption)))),
+          (preview.warnings || []).map((warning, i) => h('div', { key: i, className: 'ab-small', style: { color: 'var(--ab-warn)' } }, warning)),
+        ) : null,
+      )
+    }
+
+    function DiaryArchive({ st, draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      const [status, setStatus] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const unsaved = JSON.stringify(draft.diary.archive) !== JSON.stringify(st.config.diary.archive)
+      const load = () => get('/diary/archive').then(setStatus)
+      useEffect(() => {
+        load()
+        const timer = setInterval(load, 15_000)
+        return () => clearInterval(timer)
+      }, [])
+      return h(Card, { title: '按日期归档浏览图', right: f.sw('diary.archive.enabled'), desc: '默认关闭。每五分钟把已有的公开浏览配图或 B 站视频抽帧保存一份，按浏览日期放入 20261031 这样的文件夹。不截取桌面或聊天。' },
+        h(Row, { label: '归档文件夹', hint: '主人主动指定的输出目录，留空不保存；每张图附来源说明文件' }, f.text('diary.archive.folder', { placeholder: '请填写完整路径' })),
+        h('div', { className: 'ab-small ab-muted', style: { margin: '10px 0' } }, status ? '已归档 ' + status.count + ' 张' + (status.lastAt ? ' · 最近收集 ' + new Date(status.lastAt).toLocaleString() : '') : '正在读取归档状态…'),
+        status?.error ? h('div', { className: 'ab-small', style: { color: 'var(--ab-warn)' } }, status.error) : null,
+        h(Btn, { kind: 'ghost', disabled: busy || unsaved || !draft.diary.archive?.enabled || !draft.diary.archive?.folder, onClick: async () => {
+          setBusy(true)
+          try { const result = await post('/diary/archive/collect', {}); toast(result.message || '归档完成'); await load() }
+          finally { setBusy(false) }
+        } }, busy ? '正在收集…' : '现在收集浏览图'),
+        h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '先保存设置。总开关关闭或试运行开启时不保存图片；归档本身不会发布到空间。要用作日记配图，另在上方启用指定图库。'),
+      )
+    }
+
     function Diary({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [data, setData] = useState(null)
@@ -1528,22 +1704,33 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const social = modOn(st, 'qzone-social') ? h(QzoneSocial, { draft, setDraft, toast }) : h(ModOff, { name: '空间互动' })
       if (!on) return h('div', { className: 'ab-grid' }, h(ModOff, { name: '空间日记' }), social)
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '空间日记', right: f.sw('diary.enabled'), desc: '她每天会在 QQ 空间发几条说说，结合当天聊过的事，用自己的口吻写。写日记那一轮不会发到聊天里。' },
+        h(Card, { title: '空间日记', right: f.sw('diary.enabled'), desc: 'ta每天会在 QQ 空间发几条说说，结合当天聊过的事，用自己的口吻写。写日记那一轮不会发到聊天里。' },
           h(Row, { label: '每天写几次' }, f.num('diary.timesPerDay', { min: 0, max: 6 })),
           h(Row, { label: '时间段', hint: '在这段时间里随机挑时间' }, f.text('diary.windowStart', { size: 'sm' }), h('span', { className: 'ab-muted' }, '到'), f.text('diary.windowEnd', { size: 'sm' })),
           h(Row, { label: '两篇至少隔' }, f.num('diary.minGapMinutes', { min: 0 }), h('span', { className: 'ab-muted' }, '分钟')),
           h(Row, { label: '字数' }, f.num('diary.minChars', { min: 10 }), h('span', { className: 'ab-muted' }, '到'), f.num('diary.maxChars', { min: 20 }), h('span', { className: 'ab-muted' }, '字')),
-          h(Row, { label: '日记配图', hint: '开着时每篇会从「今天她画的图 / 今天收的表情包」里挑一张配上去；没有合适的就只发文字' }, f.sw('diary.attachImage')),
           h(DiaryAudience, { draft, setDraft, toast }),
         ),
+        h(DiaryMedia, { st, draft, setDraft, toast }),
+        h(DiaryArchive, { st, draft, setDraft, toast }),
         h(Card, { title: '写过的日记', right: h('div', { className: 'ab-flex' },
           data && data.next ? h('span', { className: 'ab-muted ab-small' }, '下一篇大约 ' + data.next) : null,
           h(Btn, { small: true, kind: 'ghost', title: '刷新空间状态', onClick: load }, h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, 'aria-hidden': true }, h('path', { d: 'M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17' }))),
-          h(Btn, { small: true, kind: 'primary', onClick: async () => { toast('她在写了…'); try { const r = await post('/diary/run', {}); toast(r.ok ? (r.dryRun ? '写好了（试运行，没真发）' : '发出去了') : r.message) } catch (e) { toast(e.message) } finally { await load() } } }, '现在写一篇')) },
+          h(Btn, { small: true, kind: 'primary', onClick: async () => {
+            toast('ta在写了…')
+            try {
+              const r = await post('/diary/run', {})
+              const message = r.dryRun ? '写好了（试运行，没真发）' : '发出去了'
+              toast(r.ok ? [message, ...(r.warnings || [])].join('；') : r.message)
+            } catch (e) { toast(e.message) }
+            finally { await load() }
+          } }, '现在写一篇')) },
           !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : !data.items || data.items.length === 0 ? h(Empty, { icon: '📔', text: '还没写过日记。' }) :
             h('div', { className: 'ab-list' }, data.items.map((d, i) => h('div', { key: i, className: 'ab-li' },
               h('div', { className: 'meta' }, new Date(d.at).toLocaleString(), h('br'), d.deletedAt ? '已从空间删除' : d.dryRun ? '试运行' : d.ok ? (AUDIENCE_LABEL[d.visibility] || '已发布') : '失败'),
-              h('div', { className: 'body' }, d.text, d.error ? h('div', { className: 'ab-small', style: { color: 'var(--ab-err)' } }, d.error) : null),
+              h('div', { className: 'body' }, d.text,
+                (d.warnings || []).map((warning, index) => h('div', { key: index, className: 'ab-small', style: { color: 'var(--ab-warn)' } }, warning)),
+                d.error ? h('div', { className: 'ab-small', style: { color: 'var(--ab-err)' } }, d.error) : null),
               d.tid && !d.deletedAt ? h(Btn, { small: true, kind: 'ghost', onClick: async () => { if (!confirm('从 QQ 空间删除这条说说？')) return; try { const r = await post('/qzone/delete', { tid: d.tid }); toast(r.message) } catch (e) { toast(e.message) } finally { await load() } } }, '从空间删除') : null))),
         ),
         social,
@@ -1558,7 +1745,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [s, setS] = useState(null)
       const load = () => get('/qzone/social/state').then(setS)
       useEffect(() => { load() }, [])
-      return h(Card, { title: '空间互动', right: f.sw('qzoneSocial.enabled'), desc: '她会定期逛 QQ 空间：有人评论她的说说就回一句；刷到好友的说说，偶尔点个赞、评一句（你的说说她更爱评）。评论按她的人格现写；试运行时只记日志不发。' },
+      return h(Card, { title: '空间互动', right: f.sw('qzoneSocial.enabled'), desc: 'ta会定期逛 QQ 空间：有人评论ta的说说就回一句；刷到好友的说说，偶尔点个赞、评一句（你的说说ta更爱评）。评论按ta的人格现写；试运行时只记日志不发。' },
         h(Row, { label: '回复自己说说下的评论' }, f.sw('qzoneSocial.replyOwn')),
         h(Row, { label: '评论好友的说说' }, f.sw('qzoneSocial.commentFriends')),
         h(Row, { label: '顺手点赞' }, f.sw('qzoneSocial.like')),
@@ -1569,7 +1756,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         h('div', { className: 'ab-flex', style: { marginTop: 10 } },
           h('span', { className: 'ab-muted ab-small' }, s ? '今天评论了 ' + s.count + ' 条' + (s.lastRun ? '，上次逛是 ' + timeAgo(s.lastRun) : '') : ''),
           h('div', { className: 'ab-spacer' }),
-          h(Btn, { small: true, onClick: async () => { toast('她去逛空间了…'); const r = await post('/qzone/social/run'); toast(r.message, r.ok ? 'ok' : 'err'); load() } }, '现在逛一次')),
+          h(Btn, { small: true, onClick: async () => { toast('ta去逛空间了…'); const r = await post('/qzone/social/run'); toast(r.message, r.ok ? 'ok' : 'err'); load() } }, '现在逛一次')),
         s && s.history && s.history.length ? h('div', { className: 'ab-list', style: { marginTop: 10 } }, s.history.map((x, i) => h('div', { key: i, className: 'ab-li' },
           h('div', { className: 'meta' }, timeAgo(x.at), h('br'), SOCIAL_KIND[x.kind] || x.kind),
           h('div', { className: 'body' }, h('b', null, x.who), x.post ? h('span', { className: 'ab-muted' }, ' 的「' + x.post + '」') : null, x.text ? h('div', null, x.text) : null)))) : null,
@@ -1579,16 +1766,17 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
     function SpeakUp({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '主动搭话', right: f.sw('speakUp.enabled'), desc: '只在和你的私聊里：你一阵子没理她，她会主动来找你说一句——每次由头不一样（分享小事、接着上次的话题、想起你的事、按时间问候……），内容是她现想的，不是模板。群里不会这样。' },
-          h(Row, { label: '追问', hint: '她问了你一句、你 15~40 分钟没回，偶尔轻轻追一句（「人呢」之类），每句最多追一次' }, f.sw('speakUp.nudge')),
+        h(Card, { title: '主动搭话', right: f.sw('speakUp.enabled'), desc: '只在和你的私聊里：你一阵子没理ta，ta会主动来找你说一句——每次由头不一样（分享小事、接着上次的话题、想起你的事、按时间问候……），内容是ta现想的，不是模板。群里不会这样。' },
+          h(Row, { label: '追问', hint: 'ta问了你一句、你 15~40 分钟没回，偶尔轻轻追一句（「人呢」之类），每句最多追一次' }, f.sw('speakUp.nudge')),
           h(Row, { label: '多久没聊才找你' }, f.num('speakUp.idleMinutes', { min: 5 }), h('span', { className: 'ab-muted' }, '分钟')),
           h(Row, { label: '两次之间隔', hint: '在这个范围里随机' }, f.num('speakUp.minIntervalMinutes', { min: 5 }), h('span', { className: 'ab-muted' }, '到'), f.num('speakUp.maxIntervalMinutes', { min: 5 }), h('span', { className: 'ab-muted' }, '分钟')),
-          h(Row, { label: '每天最多' }, f.num('speakUp.maxPerDay', { min: 0 }), h('span', { className: 'ab-muted' }, '次')),
-          h(Row, { label: '她醒着的时间', hint: '这段时间外不打扰你' }, f.num('speakUp.awakeFrom', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '点到'), f.num('speakUp.awakeTo', { min: 1, max: 24 }), h('span', { className: 'ab-muted' }, '点')),
+          h(Row, { label: '主动搭话白名单', hint: '除了你，还会主动找这些人，每人单独算次数。也可以在 QQ 里发 /speak add QQ 号。名单里的人要在私聊白名单里，才能回ta' }, f.list('speakUp.allow', { placeholder: '每行一个 QQ 号', numbers: true })),
+          h(Row, { label: '每天最多', hint: '每个人单独算；留空就是 20，不封顶' }, f.num('speakUp.maxPerDay', { min: 0 }), h('span', { className: 'ab-muted' }, '次')),
+          h(Row, { label: 'ta醒着的时间', hint: '这段时间外不打扰你' }, f.num('speakUp.awakeFrom', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '点到'), f.num('speakUp.awakeTo', { min: 1, max: 24 }), h('span', { className: 'ab-muted' }, '点')),
           h('div', { className: 'ab-flex', style: { marginTop: 10 } },
             h('span', { className: 'ab-muted ab-small' }, '今天已经找过你 ' + (st.speakUp.count || 0) + ' 次'),
             h('div', { className: 'ab-spacer' }),
-            h(Btn, { small: true, onClick: async () => { const r = await post('/speakup/fire'); toast(r.message) } }, '现在就让她来找我')),
+            h(Btn, { small: true, onClick: async () => { const r = await post('/speakup/fire'); toast(r.message) } }, '现在就让ta来找我')),
         ),
         h(PurposeStatus, { st, toast }),
       )
@@ -1626,8 +1814,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         try { const r = await post('/panel/purpose/config', patch); if (!r.ok) toast(r.message || '没成功', 'err'); else { setD(r); toast('保存好了', 'ok') } }
         catch (e) { toast(e.message) } finally { setBusy('') }
       }
-      return h(Card, { title: '目的引擎（实验）', desc: '可选的新引擎，默认关：她会自己从聊天和记忆里找「想跟你说的事」——攒素材 → 记观察 → 立目标假设 → 挑一个候选，到点了才来找你。开着的话建议关掉上方「主动搭话」总开关，两套别同时开。' },
-        !p.available ? h('div', { className: 'ab-note' }, '目的引擎模块没在跑。到面板「扩展」页看看模块状态。') : null,
+      return h(Card, { title: '目的引擎（实验）', desc: '可选的新引擎，默认关：ta会自己从聊天和记忆里找「想跟你说的事」——攒素材 → 记观察 → 立目标假设 → 挑一个候选，到点了才来找你。开着的话建议关掉上方「主动搭话」总开关，两套别同时开。' },
+        !p.available ? h('div', { className: 'ab-note' }, '目的引擎模块没在跑。到「已安装」页页看看模块状态。') : null,
         h(Row, { label: '启用目的引擎', hint: '默认关。这是「主动搭话」的替代引擎，两套同时开会重复打扰' },
           h(Switch, { on: p.enabled, disabled: !p.available, onChange: save({ enabled: !p.enabled, __k: 'enabled' }) })),
         p.enabled ? h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', margin: '4px 0 10px' } },
@@ -1677,7 +1865,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
 
     // 「桌宠」面板卡：状态、装客户端、专注模式、心跳、表情预览。数据走 /panel/pet/* 代理，模块没装好时给引导。
     const PET_MOODS = [{ key: 'idle', label: '😐 平常' }, { key: 'happy', label: '😄 开心' }, { key: 'shy', label: '😳 害羞' }, { key: 'sad', label: '😢 委屈' }, { key: 'angry', label: '😠 生气' }, { key: 'sleepy', label: '😴 困了' }, { key: 'think', label: '🤔 想事' }, { key: 'love', label: '🥰 喜欢你' }]
-    // 行为动作全表（面板「试一下」）：与 fork/src/modules/pet/index.js 的 BEHAVIOR_ACTIONS / BEHAVIOR_DEFERRED 一一对应。
+    // 行为动作全表（面板「试一下」）：与社区模块 pet 的 index.mjs 里的 BEHAVIOR_ACTIONS / BEHAVIOR_DEFERRED 一一对应。
     // tier：1 = 第一批已开放；2 = 第二批图标动作（服务端隔离区，可一键归还）；3 = 第三批暂未实现（点了客户端回执 refused:not-implemented）。
     const PET_BEHAVIOR_ACTIONS = [
       { action: 'chase_cursor', name: '追鼠标', effect: '扑过去追着你的鼠标跑，追到后按住指针 5 秒再松开', tier: 1 },
@@ -1719,10 +1907,16 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [bh, setBh] = useState(null)
       // 行为与安全的本地编辑态：数字/白名单要「应用」才提交（开关即点即存）。null = 还没动过，直接用服务端值。
       const [bcfg, setBcfg] = useState(null)
+      // 人物大小倍率的本地编辑态（0.5~2，点「保存」才下发）
+      const [scVal, setScVal] = useState(null)
       const [bhErr, setBhErr] = useState('')
       const [quar, setQuar] = useState(null)
       const [quarErr, setQuarErr] = useState('')
       const [pend, setPend] = useState({})
+      // 素材包下载地址的本地编辑态：null = 跟着服务端当前值显示，改过就用本地值
+      const [pkUrl, setPkUrl] = useState(null)
+      // Electron 下载镜像的本地编辑态（同上；留空 = 用内置默认 npmmirror）
+      const [emUrl, setEmUrl] = useState(null)
       const load = async () => {
         const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
         if (pr.ok) { setPet(pr.pet); setWs((old) => old || (pr.pet && pr.pet.whisper ? { ...pr.pet.whisper } : null)) }
@@ -1741,7 +1935,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const state = !pet ? '未安装' : online ? '在线' : '离线'
       const dotCls = !pet ? '' : online ? 'ok' : 'err'
       const carrier = purpose?.carrier || 'qq'
-      const focus = Boolean(pet && (pet.focus?.enabled ?? pet.focusEnabled))
+      // status() 的 focus 是布尔值，不是 {enabled} 对象（#152，RookieApe-tao）
+      const focus = Boolean(pet && pet.focus === true)
       const heart = pet && (pet.lastSeenAt || pet.heartbeatAt || pet.presence?.lastSeenAt)
       const moods = Array.isArray(pet?.moods) && pet.moods.length ? pet.moods : PET_MOODS
       const moodLabel = (m) => typeof m === 'string' ? (PET_MOODS.find((x) => x.key === m) || { label: m }).label : (m.label || m.key)
@@ -1834,14 +2029,14 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const apologize = async () => {
         try {
           const r = await post('/panel/pet/behavior/apologize', {})
-          toast(r.message || (r.ok ? '她道了歉' : '没道歉'), r.ok ? 'ok' : 'err')
+          toast(r.message || (r.ok ? 'ta道了歉' : '没道歉'), r.ok ? 'ok' : 'err')
         } catch (e) { toast(e.message) } finally { loadBehavior() }
       }
       // 行为与安全：c = 本地草稿（改了一半别被 8 秒轮询冲掉）|| 服务端真值
       const c = bcfg || bh || {}
       const saveBehCfg = async (patch, msg) => { await savePet(patch, msg); setBcfg(null); loadBehavior() }
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '桌宠', desc: '把「大肥鱼」请到桌面上：一个小小的她待在屏幕角落，主动搭话走气泡；你也可以点她聊天。' },
+        h(Card, { title: '桌宠', desc: '把「大肥鱼」请到桌面上：一个小小的ta待在屏幕角落，主动搭话走气泡；你也可以点ta聊天。' },
         h('div', { className: 'ab-flex', style: { marginBottom: 8 } },
           h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', dotCls) }), state),
           h('span', { className: 'ab-muted ab-small' }, heart ? '上次心跳 ' + timeAgo(heart) : loaded ? '还没有心跳记录' : '加载中…')),
@@ -1849,8 +2044,15 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h('span', { className: 'ab-muted ab-small' }, carrier === 'pet'
             ? (online ? '主动搭话正走桌宠气泡' : purpose?.petFallbackToQQ === false ? '桌宠离线，且已关闭回落：现在不会主动搭话' : '桌宠离线，主动搭话会回落到 QQ')
             : '主动搭话走 QQ 私聊，桌宠只显示气泡不发')),
-        h(Row, { label: '专注模式', hint: '开着时她不弹气泡、也不主动搭话（学习/开会不被打扰）' },
+        h(Row, { label: '专注模式', hint: '开着时ta不弹气泡、也不主动搭话（学习/开会不被打扰）' },
           h(Switch, { on: focus, onChange: async (v) => { setBusy('focus'); try { const r = await post('/panel/pet/focus', { enabled: v }); if (!r.ok) toast(r.message || '没成功', 'err'); else toast(v ? '专注模式开了' : '专注模式关了', 'ok') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })),
+        // 只有 1.0.3 以上的桌宠模块才支持缩放
+        pet?.scale != null ? h(Row, { label: '人物大小', hint: '0.5~2 倍，1 = 原始大小。拖滑块或在框里填数都可以，点保存后桌宠会自己整窗缩放（拖拽/甩抛物理跟着对齐），不用重启' },
+          h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+            h('input', { type: 'range', min: 0.5, max: 2, step: 0.05, style: { flex: 1, minWidth: 120, accentColor: 'var(--ab-sea, #2a86c6)' }, value: Number(scVal == null ? (pet?.scale || 1) : scVal), onChange: (e) => setScVal(e.target.value) }),
+            h('input', { className: 'ab-input', type: 'number', min: 0.5, max: 2, step: 0.05, style: { width: 84 }, value: scVal == null ? (pet?.scale || 1) : scVal, onChange: (e) => setScVal(e.target.value) }),
+            h('span', { className: 'ab-muted ab-small', style: { whiteSpace: 'nowrap' } }, '倍'),
+            h(Btn, { small: true, disabled: busy === 'scale', onClick: async () => { const v = Number(scVal == null ? (pet?.scale || 1) : scVal); if (!(v >= 0.5 && v <= 2)) { toast('大小要填 0.5 ~ 2 之间的数', 'err'); return } setBusy('scale'); try { await savePet({ petScale: Math.round(v * 20) / 20 }, '人物大小已保存'); setScVal(null) } finally { setBusy(''); load() } } }, busy === 'scale' ? '保存中…' : '保存'))) : null,
         clientBad ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } },
           h('div', null, '⚠ 客户端和插件版本对不上：' + (clientInfo.message || '需要重新生成')),
           clientInfo.missing && clientInfo.missing.length ? h('div', { className: 'ab-small', style: { marginTop: 4 } }, '缺文件：' + clientInfo.missing.join('、') + '（缺 behavior.js 时行为层整个不生效，只打日志）') : null,
@@ -1864,12 +2066,37 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Btn, { small: true, disabled: busy === 'st', onClick: () => act('st', '/panel/pet/stop', '已停止') }, busy === 'st' ? '停止中…' : '停止桌宠'),
           h('span', { className: 'ab-muted ab-small' },
             'Electron ' + (electronInstalled ? '已装' : '未装') + '｜运行 ' + (online ? '在跑' : '没在跑') + (pet?.pid ? '（pid ' + pet.pid + '）' : '') + (portReady ? '' : '｜端口未就绪（等宿主注入）'))),
+        h(Row, { label: 'Electron 镜像', hint: '装 Electron 从哪下（末尾带 /）。默认 npmmirror，国内一般快；连不上可换 https://github.com/electron/electron/releases/download/。留空 = 用内置默认。npm 装失败会自动改用 zip 直装' },
+          h('div', { className: 'ab-flex' },
+            h('input', { className: 'ab-input', style: { width: 'min(300px, 100%)' }, value: emUrl == null ? (pet?.electronMirror || '') : emUrl, placeholder: 'https://npmmirror.com/mirrors/electron/', onChange: (e) => setEmUrl(e.target.value) }),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await savePet({ electronMirror: String(emUrl == null ? (pet?.electronMirror || '') : emUrl).trim() }, 'Electron 镜像已保存'); setEmUrl(null) } }, '保存'))),
         h(Row, { label: '表情预览', hint: '气泡与心情事件会用到这些表情' },
           h('div', { style: { flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 } },
             moods.map((m, i) => h('span', { key: (m.key || m) + i, className: 'ab-pill' }, moodLabel(m))))),
         ),
+        // ---------- 素材包：默认形象包（大肥鱼）自动下载落位，也可在这里换镜像地址重下 ----------
+        h(Card, { title: '素材包', desc: '桌宠的形象与动画（「大肥鱼」那 106 段）。插件发现缺包会自动从素材仓库下载落位，通常不用你动手；下载不动时可以在这里换镜像地址再重下。没有素材时桌宠会显示内置的静态形象（蓝色小鲸鱼）。' },
+          !pet ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : (() => {
+              const pi = pet.packInfo || null
+              if (!pi) return h('div', { className: 'ab-flex' }, h('span', { className: 'ab-muted ab-small' }, '素材包状态接口还没就绪（更新插件后刷新页面即可）'), h(Btn, { small: true, onClick: load }, '重试'))
+              const okPack = Boolean(pi.hasDefault && pi.defaultAnims > 0)
+              const cur = pkUrl == null ? (pi.url || '') : pkUrl
+              return h('div', null,
+                h('div', { className: 'ab-flex', style: { marginBottom: 8, flexWrap: 'wrap' } },
+                  h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', okPack ? 'ok' : 'err') }), okPack ? '已就位' : '还没有素材'),
+                  h('span', { className: 'ab-pill' }, 'default：' + (pi.defaultAnims || 0) + ' 个动画'),
+                  pi.downloading ? h('span', { className: 'ab-pill' }, '正在下载…') : null,
+                  !okPack ? h('span', { className: 'ab-muted ab-small' }, '缺包时每 10 分钟会自动重试一次') : null),
+                h(Row, { label: '下载地址', hint: 'zip 直链。默认走 GitHub 素材仓库 dsh-aurabot-qq-mods；国内网络可换成 gitee / ghproxy 等镜像。zip 里素材放文件夹即可（如 pet-pack/default-animation/）' },
+                  h('input', { className: 'ab-input', style: { width: 'min(380px, 100%)' }, value: cur, placeholder: 'https://…/archive/refs/heads/main.zip', onChange: (e) => setPkUrl(e.target.value) })),
+                h('div', { className: 'ab-flex', style: { marginTop: 8 } },
+                  h(Btn, { small: true, disabled: busy === 'cfg' || busy === 'pk' || !String(cur).trim(), onClick: async () => { await savePet({ petPackUrl: String(cur).trim() }, '下载地址已保存'); setPkUrl(null) } }, '保存地址'),
+                  h(Btn, { small: true, disabled: busy === 'pk', onClick: () => act('pk', '/panel/pet/fetch-pack', '素材包已就位') }, busy === 'pk' ? '下载中…' : okPack ? '重新下载素材包' : '下载素材包'),
+                  h('span', { className: 'ab-muted ab-small' }, '落位到 modules-data/pet/packs/，下完自动生效')))
+            })()),
         // ---------- 行为动作（面板测试通道）：状态行 + 逐动作「试一下」/ AI 开关 + 行内最近回执 ----------
-        h(Card, { title: '行为动作', desc: '她的「行为大脑」每隔一会儿自己挑一个动作演：追鼠标、叼鼠标、叼图标、推窗口……这里可以逐个「试一下」（绕过专注模式与安静时段，立刻下发），也可以把某个动作从 AI 的动作表里拿掉——「试一下」按钮不受影响。桌宠没在跑时点按钮只是下发排队，等她跑起来才演。右边「最近回执」是客户端演完或拒演回来的结果。AI 每次决策都在工作区里单独开一条「行为大脑」会话，能当场看到她怎么想的。' },
+        h(Card, { title: '行为动作', desc: 'ta的「行为大脑」每隔一会儿自己挑一个动作演：追鼠标、叼鼠标、叼图标、推窗口……这里可以逐个「试一下」（绕过专注模式与安静时段，立刻下发），也可以把某个动作从 AI 的动作表里拿掉——「试一下」按钮不受影响。桌宠没在跑时点按钮只是下发排队，等ta跑起来才演。右边「最近回执」是客户端演完或拒演回来的结果。AI 每次决策都在工作区里单独开一条「行为大脑」会话，能当场看到ta怎么想的。' },
           bhErr && !bh
             ? h('div', { className: 'ab-flex' }, h('span', { className: 'ab-muted ab-small' }, '行为动作接口还没就绪：' + bhErr + '（更新插件后刷新页面即可）'), h(Btn, { small: true, onClick: loadBehavior }, '重试'))
             : !bh ? h(Empty, { icon: '⏳', text: '加载中…' })
@@ -1916,33 +2143,31 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
               ),
         ),
         // ---------- 行为与安全（模块级开关）----------
-        // 为什么放在面板：pet 是**内置模块**，DSH 面板只给「用户自己复制出来的模块」生成设置表单
-        // （client.js 的 hasUi 要求 running==='user' && !builtin），所以 index.js 里那份 settings schema
-        // 在内置形态下没有任何 UI。不在这里补一张卡，关窗物理闸就永远打不开。
+        // 为什么放在面板：hasUi 不给自带页面的模块生成自动表单，这里不补一张卡，关窗物理闸就永远打不开。
         bh ? h(Card, {
           title: '行为与安全',
           desc: 'AI 只能从动作表里挑动作，闹到什么程度由这里定。开关即点即存，数字和白名单点「应用」。'
             + '「允许 AI 关闭窗口」默认关，它是一道物理闸：AI 与手动「试一下」都绕不过去。',
         },
-          h(Row, { label: '行为大脑', hint: '关掉后她不再自己挑动作（面板「试一下」仍可手动触发）' },
-            h(Switch, { on: c.enabled !== false, onChange: (v) => saveBehCfg({ behaviorEnabled: v }, v ? '行为大脑已开' : '行为大脑已关，她只回应你') })),
+          h(Row, { label: '行为大脑', hint: '关掉后ta不再自己挑动作（面板「试一下」仍可手动触发）' },
+            h(Switch, { on: c.enabled !== false, onChange: (v) => saveBehCfg({ behaviorEnabled: v }, v ? '行为大脑已开' : '行为大脑已关，ta只回应你') })),
           h(Row, { label: '行为间隔', hint: '最短不低于 1 分钟（铁律）' },
             h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 9999, value: c.minMinutes ?? '', onChange: (e) => setBcfg({ ...c, minMinutes: e.target.value }) }),
             h('span', { className: 'ab-muted' }, '到'),
             h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 9999, value: c.maxMinutes ?? '', onChange: (e) => setBcfg({ ...c, maxMinutes: e.target.value }) }),
             h('span', { className: 'ab-muted' }, '分钟'),
             h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ behaviorMinMinutes: Number(c.minMinutes), behaviorMaxMinutes: Number(c.maxMinutes) }, '间隔改好了') }, '应用')),
-          h(Row, { label: '每天最多', hint: '0 = 她不再自己动' },
+          h(Row, { label: '每天最多', hint: '0 = ta不再自己动' },
             h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 999999, value: c.maxPerDay ?? '', onChange: (e) => setBcfg({ ...c, maxPerDay: e.target.value }) }),
             h('span', { className: 'ab-muted' }, '次'),
             h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ behaviorMaxPerDay: Number(c.maxPerDay) }, '上限改好了') }, '应用')),
-          h(Row, { label: '鼠标闲置凑近', hint: '鼠标这么久没动，她凑过去戳一下' },
+          h(Row, { label: '鼠标闲置凑近', hint: '鼠标这么久没动，ta凑过去戳一下' },
             h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 240, value: c.idleCursorMinutes ?? '', onChange: (e) => setBcfg({ ...c, idleCursorMinutes: e.target.value }) }),
             h('span', { className: 'ab-muted' }, '分钟'),
             h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ behaviorIdleCursorMinutes: Number(c.idleCursorMinutes) }, '改好了') }, '应用')),
           h(Row, { label: '图标小动作', hint: '叼着桌面图标拖一拖 / 收走图标（只挪不删，可一键归还）' },
-            h(Switch, { on: c.iconMischiefEnabled !== false, onChange: (v) => saveBehCfg({ behaviorIconMischiefEnabled: v }, v ? '图标小动作已开' : '已关，她不碰桌面图标了') })),
-          h(Row, { label: '收走的图标自动归还', hint: '超过这么多天还没被放回，她自己还回去' },
+            h(Switch, { on: c.iconMischiefEnabled !== false, onChange: (v) => saveBehCfg({ behaviorIconMischiefEnabled: v }, v ? '图标小动作已开' : '已关，ta不碰桌面图标了') })),
+          h(Row, { label: '收走的图标自动归还', hint: '超过这么多天还没被放回，ta自己还回去' },
             h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 365, value: c.iconQuarantineDays ?? '', onChange: (e) => setBcfg({ ...c, iconQuarantineDays: e.target.value }) }),
             h('span', { className: 'ab-muted' }, '天'),
             h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ behaviorIconQuarantineDays: Number(c.iconQuarantineDays) }, '改好了') }, '应用')),
@@ -1956,8 +2181,29 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             h('textarea', { className: 'ab-textarea', rows: 3, value: c.windowWhitelist ?? '', placeholder: 'notepad', onChange: (e) => setBcfg({ ...c, windowWhitelist: e.target.value }) }),
             h('div', { style: { marginTop: 6 } }, h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ behaviorWindowWhitelist: String(c.windowWhitelist ?? '') }, '白名单存好了') }, '保存白名单'))),
         ) : null,
+        // ---------- 聊天联动：主人聊天时她可能顺带做个小动作（只读旁观，独立开关/冷却/上限；模块代码在 mods 仓）----------
+        h(Card, { title: '聊天联动', desc: '主人在生效范围内的 QQ 聊天里说话时，ta可能根据聊天内容与心情顺带在桌面上做个小动作（追鼠标、溜达、小动作、说一句话——只挑安分的，绝不碰图标和窗口）。ta只是旁观聊天：不接管消息、不改回复、不阻塞回合，聊天功能完全不受影响。默认关；与上面的「行为大脑」总开关互相独立（关掉行为大脑不影响这边，反之亦然）。每次决策在工作区「聊天联动」会话里能看到ta的取舍。' },
+          h('div', { className: 'ab-flex', style: { marginBottom: 6 } },
+            h('span', { className: 'ab-pill' }, h('i', { className: cx('ab-dot', c.chatBehaviorEnabled ? 'ok' : '') }), '聊天联动' + (c.chatBehaviorEnabled ? '开着' : '关着')),
+            h('span', { className: 'ab-pill' }, '今天 ' + (c.chatBehaviorToday || 0) + '/' + (c.chatBehaviorMaxPerDay ?? '?') + ' 次'),
+            c.chatBehaviorThinking ? h('span', { className: 'ab-pill' }, '正在想要不要动…') : null,
+            c.chatBehaviorLastAt ? h('span', { className: 'ab-muted ab-small' }, '上次 ' + timeAgo(c.chatBehaviorLastAt)) : null),
+          h(Row, { label: '开启聊天联动', hint: '开关即点即存；关掉后聊天时ta只回复、不动' },
+            h(Switch, { on: c.chatBehaviorEnabled === true, onChange: (v) => saveBehCfg({ chatBehaviorEnabled: v }, v ? '聊天联动已开' : '聊天联动已关') })),
+          h(Row, { label: '生效范围', hint: '一行一个：private:QQ号 或 group:群号（写法同「权限」页白名单，冒号后带空格也能认）；留空 = 只有主人私聊生效。不符合格式的行会被忽略，不会报错' },
+            h('textarea', { className: 'ab-textarea', rows: 3, value: c.chatBehaviorWhitelistText ?? '', placeholder: 'private:12345\ngroup:67890', onChange: (e) => setBcfg({ ...c, chatBehaviorWhitelistText: e.target.value }) }),
+            h('div', { style: { marginTop: 6 } }, h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ chatBehaviorWhitelist: String(c.chatBehaviorWhitelistText ?? '') }, '生效范围存好了') }, '保存范围'))),
+          h(Row, { label: '冷却', hint: '两次联动动作之间至少隔这么久（1~1440 分钟），宁缺毋滥' },
+            h('input', { className: 'ab-input sm', type: 'number', min: 1, max: 1440, value: c.chatBehaviorCooldownMinutes ?? '', onChange: (e) => setBcfg({ ...c, chatBehaviorCooldownMinutes: e.target.value }) }),
+            h('span', { className: 'ab-muted' }, '分钟'),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ chatBehaviorCooldownMinutes: Number(c.chatBehaviorCooldownMinutes) }, '冷却改好了') }, '应用')),
+          h(Row, { label: '每天最多', hint: '0 = 聊天时ta也不动' },
+            h('input', { className: 'ab-input sm', type: 'number', min: 0, max: 9999, value: c.chatBehaviorMaxPerDay ?? '', onChange: (e) => setBcfg({ ...c, chatBehaviorMaxPerDay: e.target.value }) }),
+            h('span', { className: 'ab-muted' }, '次'),
+            h(Btn, { small: true, disabled: busy === 'cfg', onClick: () => saveBehCfg({ chatBehaviorMaxPerDay: Number(c.chatBehaviorMaxPerDay) }, '上限改好了') }, '应用')),
+        ),
         // ---------- 被收走的图标（第二批）：hide_icon 的隔离区，一键放回 ----------
-        h(Card, { title: '被收走的图标', desc: '「收图标」不是删除：她把桌面图标剪切到插件数据目录的隔离区，文件原样留着。这里可以随时放回原位（原位置被占了会自动改名「名字(归还)」），超过「隔离保留天数」（默认 7 天）她也会自己放回去。' },
+        h(Card, { title: '被收走的图标', desc: '「收图标」不是删除：ta把桌面图标剪切到插件数据目录的隔离区，文件原样留着。这里可以随时放回原位（原位置被占了会自动改名「名字(归还)」），超过「隔离保留天数」（默认 7 天）ta也会自己放回去。' },
           quarErr
             ? h('div', { className: 'ab-flex' }, h('span', { className: 'ab-muted ab-small' }, '隔离区清单读不了：' + quarErr), h(Btn, { small: true, onClick: loadBehavior }, '重试'))
             : quar === null ? h(Empty, { icon: '⏳', text: '加载中…' })
@@ -1975,12 +2221,12 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                 ),
         ),
         // ---------- 关窗记录（第三批）：close_window 的账本 + 一键补偿道歉 ----------
-        h(Card, { title: '关窗记录', desc: '「关窗口」是高危动作：AI 只有在「允许 AI 关闭窗口」开着、且她心情低于 ' + (bh && bh.moodCloseWindowBelow != null ? bh.moodCloseWindowBelow : 35) + ' 时才会自己关；手动「试一下」不受心情限制，但同样要先开那个开关。关的方式等于点右上角 X（程序会自己问要不要保存）。DSH 自己的窗口、桌宠、资源管理器、全屏窗口永远不碰。' },
+        h(Card, { title: '关窗记录', desc: '「关窗口」是高危动作：AI 只有在「允许 AI 关闭窗口」开着、且ta心情低于 ' + (bh && bh.moodCloseWindowBelow != null ? bh.moodCloseWindowBelow : 35) + ' 时才会自己关；手动「试一下」不受心情限制，但同样要先开那个开关。关的方式等于点右上角 X（程序会自己问要不要保存）。DSH 自己的窗口、桌宠、资源管理器、全屏窗口永远不碰。' },
           h('div', { className: 'ab-flex', style: { marginBottom: 8 } },
             h('span', { className: 'ab-pill' }, '今天关了 ' + ((bh && bh.closeToday) || 0) + ' 个'),
             h('span', { className: 'ab-pill' }, bh && bh.closeWindowEnabled ? 'AI 关窗：已允许' : 'AI 关窗：不允许（默认）'),
             bh && bh.mood != null ? h('span', { className: 'ab-muted ab-small' }, '现在心情 ' + bh.mood + '（低于 ' + bh.moodCloseWindowBelow + ' 才会自己关）') : null,
-            bh && bh.apologyDue ? h(Btn, { small: true, onClick: apologize }, '让她道歉（心情回一点）') : null),
+            bh && bh.apologyDue ? h(Btn, { small: true, onClick: apologize }, '让ta道歉（心情回一点）') : null),
           (bh && Array.isArray(bh.closeLog) && bh.closeLog.length)
             ? h('table', { className: 'ab-table' },
               h('thead', null, h('tr', null, ['窗口', '时间', '结果', ''].map((x, i) => h('th', { key: i }, x)))),
@@ -1993,16 +2239,16 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                 h('td', null, h('span', { className: 'ab-muted ab-small' }, x.apologizedAt ? '已道歉' : (x.status === 'played' ? '还没道歉' : '—'))),
               ))),
             )
-            : h(Empty, { icon: '🪟', text: '还没关过任何窗口（她挺乖的）' }),
+            : h(Empty, { icon: '🪟', text: '还没关过任何窗口（ta挺乖的）' }),
         ),
         // ---------- 碎碎念：桌宠自己的气泡流（载体选 QQ 也照常生效，永不发 QQ） ----------
-        whisper ? h(Card, { title: '碎碎念', desc: '她自己在桌面上嘟囔的小气泡：跟「主动搭话」完全分开，载体选 QQ 时也照常出现；只上桌宠气泡，不会发到 QQ。到了点她会带着记忆自己想一句——工作区里会像「主动搭话（目的回合）」那样开一条「' + (whisper.turnTitle || '桌宠 · 碎碎念（自己的回合）') + '」的会话，能当场看到她的思考过程。间隔与时段跟着「主动搭话」那边的醒着时间。' },
-          h(Row, { label: '开启碎碎念', hint: whisper.thinking ? '她正在工作区那条会话里想这一句…' : whisper.carrier === 'pet' && whisper.pauseOnPetCarrier !== false ? '当前载体是桌宠，按下面的开关暂停中' : '到点她会自己冒一句话' },
+        whisper ? h(Card, { title: '碎碎念', desc: 'ta自己在桌面上嘟囔的小气泡：跟「主动搭话」完全分开，载体选 QQ 时也照常出现；只上桌宠气泡，不会发到 QQ。到了点ta会带着记忆自己想一句——工作区里会像「主动搭话（目的回合）」那样开一条「' + (whisper.turnTitle || '桌宠 · 碎碎念（自己的回合）') + '」的会话，能当场看到ta的思考过程。间隔与时段跟着「主动搭话」那边的醒着时间。' },
+          h(Row, { label: '开启碎碎念', hint: whisper.thinking ? 'ta正在工作区那条会话里想这一句…' : whisper.carrier === 'pet' && whisper.pauseOnPetCarrier !== false ? '当前载体是桌宠，按下面的开关暂停中' : '到点ta会自己冒一句话' },
             h(Switch, { on: whisper.enabled !== false, onChange: (v) => savePet({ whisperEnabled: v }, v ? '碎碎念开了' : '碎碎念关了') })),
-          h(Row, { label: '说什么', hint: '「她自己想一句」会走后台回合：先用记忆 + 当下的干活状态想，工作区能看到思考；失败自动回落文案池' },
+          h(Row, { label: '说什么', hint: '「ta自己想一句」会走后台回合：先用记忆 + 当下的干活状态想，工作区能看到思考；失败自动回落文案池' },
             h(Select, {
               value: whisper.source || 'model',
-              options: [{ value: 'model', label: '她自己想一句（推荐）' }, { value: 'pool', label: '用现成文案' }],
+              options: [{ value: 'model', label: 'ta自己想一句（推荐）' }, { value: 'pool', label: '用现成文案' }],
               onChange: (v) => savePet({ whisperSource: v }),
             })),
           h(Row, { label: '两次之间隔', hint: '在这个范围里随机（1~9999 分钟）；刚弹过「主动搭话」的气泡会让一让' },
@@ -2030,9 +2276,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
               h('div', { className: 'ab-spacer' }),
               h(Btn, { small: true, kind: 'primary', disabled: busy === 'wh', onClick: async () => {
                 setBusy('wh')
-                try { const r = await post('/panel/pet/whisper', {}); toast(r.message || (r.ok ? '她嘟囔了一句' : '没说出来'), r.ok ? 'ok' : 'err') }
+                try { const r = await post('/panel/pet/whisper', {}); toast(r.message || (r.ok ? 'ta嘟囔了一句' : '没说出来'), r.ok ? 'ok' : 'err') }
                 catch (e) { toast(e.message) } finally { setBusy(''); load() }
-              } }, busy === 'wh' ? '她想呢…' : '现在碎碎念一句'))),
+              } }, busy === 'wh' ? 'ta想呢…' : '现在碎碎念一句'))),
           h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } },
             '今天已碎碎念 ' + (whisper.today || 0) + '/' + (whisper.maxPerDay ?? '?') + ' 次'
             + (whisper.lastAt ? ' · 上次 ' + timeAgo(whisper.lastAt) : '')
@@ -2040,13 +2286,13 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             + (whisper.lastText ? ' · 「' + whisper.lastText + '」' : '')),
         ) : null,
         // ---------- 干活状态：DSH 会话事件 → 动画 + 结束提醒 ----------
-        h(Card, { title: '干活状态与提醒', desc: '她在桌面上跟着 DSH 的进度演：思考时托腮想事，干活时忙碌，等你确认时张望，完成后雀跃一下——顺手弹一句、发个系统通知。' },
+        h(Card, { title: '干活状态与提醒', desc: 'ta在桌面上跟着 DSH 的进度演：思考时托腮想事，干活时忙碌，等你确认时张望，完成后雀跃一下——顺手弹一句、发个系统通知。' },
           h(Row, { label: '状态动画', hint: '思考 / 干活 / 等确认 / 完成 / 出错 跟着会话自动切' },
             h(Switch, { on: workEnabled, onChange: (v) => savePet({ workStatusEnabled: v }) })),
           h(Row, { label: '现在的状态' },
             h('span', { className: 'ab-muted ab-small' }, work && work.state
               ? (work.label || work.state) + (work.task ? '：' + work.task : '') + '（' + timeAgo(work.at) + '）'
-              : '空闲（她自己在玩）')),
+              : '空闲（ta自己在玩）')),
           h(Row, { label: '完工弹一句气泡' }, h(Switch, { on: pet && pet.workBubble === false ? false : true, onChange: (v) => savePet({ workBubble: v }) })),
           h(Row, { label: '完工发系统通知', hint: 'Windows 右下角通知；不喜欢可以关掉只留气泡' }, h(Switch, { on: pet && pet.workNotify === false ? false : true, onChange: (v) => savePet({ workNotify: v }) })),
           h(Row, { label: '动画对应', hint: '按形象包里的「工作状态-*」自动对；可在 <包名>-config.json 的 events.workStatus 覆盖' },
@@ -2060,7 +2306,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       )
     }
 
-    const SOURCE = { tool: '她自己记的', auto: '每日整理', diary: '空间日记', panel: '你加的', event: '她的经历', import: '导入的' }
+    const SOURCE = { tool: 'ta自己记的', auto: '每日整理', diary: '空间日记', panel: '你加的', event: 'ta的经历', import: '导入的' }
     function Mood({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [mem, setMem] = useState(null)
@@ -2077,12 +2323,15 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       useEffect(() => { if (memOn) { load(''); loadIns() } }, [memOn])
       useEffect(() => { if (!memOn) return; const t = setTimeout(() => load(q), 250); return () => clearTimeout(t) }, [q])
       const last = st.memory && st.memory.lastConsolidate
-      const moodCard = !modOn(st, 'mood') ? h(ModOff, { name: '心情' }) : h(Card, { title: '心情', right: f.sw('mood.enabled'), desc: '被夸、被哄、被凶都会影响她的心情（对她说的话、主人的话影响更大），过一阵子慢慢回到平常。心情好时她话多、更爱发表情和语音、回得快、群里更爱插话；心情差时话少、回得慢、少发表情，还会带点小脾气。' },
+      const moodCard = !modOn(st, 'mood') ? h(ModOff, { name: '心情' }) : h(Card, { title: '心情', right: f.sw('mood.enabled'), desc: '被夸、被哄、被凶都会影响ta的心情（对ta说的话、主人的话影响更大），过一阵子慢慢回到平常。心情好时ta话多、更爱发表情和语音、回得快、群里更爱插话；心情差时话少、回得慢、少发表情，还会带点小脾气。' },
           h('div', { className: 'ab-flex', style: { marginBottom: 8 } }, h('b', null, st.mood.label), h('span', { className: 'ab-muted' }, st.mood.value + ' / 100'), st.mood.reason ? h('span', { className: 'ab-muted ab-small' }, '· 因为' + st.mood.reason) : null),
           h('div', { className: 'ab-mood' }, h('i', { style: { width: Math.max(4, st.mood.value) + '%' } })),
           h('div', { style: { marginTop: 10 } },
             h(Row, { label: '多久回到平常', hint: '半衰期' }, f.range('mood.halfLifeHours', 0.5, 24, 0.5, (v) => v + ' 小时')),
-            h(Row, { label: '用模型判断心情', hint: '每轮聊完用模型判一次（能分清开玩笑和真骂、她主动找你时的心意），更准；每轮多一次很短的模型调用。关着就按关键词' }, f.sw('mood.judge'))),
+            h(Row, { label: '平常是多少', hint: '基线：没人说话时心情会慢慢往这个值靠（默认 60）' }, f.range('mood.base', 10, 90, 1, (v) => v + ' / 100')),
+            h(Row, { label: '聊天流水留多久', hint: '0 = 整理完就删（默认）；-1 = 永久保留；其他数字 = 留这么多天。留得越久，本机存的聊天原文越多' }, f.num('memory.keepChatlogDays', { min: -1, max: 3650 })),
+            h(Row, { label: '整理时合并重复记忆', hint: '同一个人名下说的是一件事的条目并成一条。每个人多一次模型调用，默认关' }, f.sw('memory.mergeGroups')),
+            h(Row, { label: '用模型判断心情', hint: '每轮聊完用模型判一次（能分清开玩笑和真骂、ta主动找你时的心意），更准；每轮多一次很短的模型调用。关着就按关键词' }, f.sw('mood.judge'))),
           (st.mood.history || []).length ? h('div', { className: 'ab-list', style: { marginTop: 8 } }, st.mood.history.slice(0, 6).map((x, i) => h('div', { key: i, className: 'ab-li' },
             h('div', { className: 'meta' }, timeAgo(x.at)),
             h('div', { className: 'body' }, (x.to >= x.from ? '↑ ' : '↓ ') + x.from + ' → ' + x.to, h('span', { className: 'ab-muted ab-small' }, '  ' + x.reason))))) : null,
@@ -2091,13 +2340,13 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       return h('div', { className: 'ab-grid' },
         moodCard,
         h(ProfilesCard, { toast }),
-        h(Card, { title: '相处经验', desc: '她对每个人（和每个群）总结出来的相处之道：概括的、不琐碎的，比如「他累的时候不想多聊」。每次整理记忆时她会回顾一次，越来越懂你。聊天时只带上对当前这个人的那份。' },
-          ins === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : ins.length === 0 ? h(Empty, { icon: '🌱', text: '还没有总结出经验。多聊几天，整理记忆时她会慢慢总结。' }) :
+        h(Card, { title: '相处经验', desc: 'ta对每个人（和每个群）总结出来的相处之道：概括的、不琐碎的，比如「他累的时候不想多聊」。每次整理记忆时ta会回顾一次，越来越懂你。聊天时只带上对当前这个人的那份。' },
+          ins === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : ins.length === 0 ? h(Empty, { icon: '🌱', text: '还没有总结出经验。多聊几天，整理记忆时ta会慢慢总结。' }) :
             ins.map((p) => h(InsightCard, { key: p.key, p, toast, onSaved: loadIns, style: styles[p.key] || [] }))),
-        h(Card, { title: '说话方式', desc: '聊久了潜移默化学到的：每个人的说话习惯（她会自然地贴近一点），和她自己慢慢养成的说法。不会变成另一个人，只是越来越像「你们的」大肥鱼。' },
-          h(StyleEditor, { k: 'self', label: '她自己养成的说法', list: styles.self || [], toast, onSaved: loadIns }),
+        h(Card, { title: '说话方式', desc: '聊久了潜移默化学到的：每个人的说话习惯（ta会自然地贴近一点），和ta自己慢慢养成的说法。不会变成另一个人，只是越来越像「你们的」大肥鱼。' },
+          h(StyleEditor, { k: 'self', label: 'ta自己养成的说法', list: styles.self || [], toast, onSaved: loadIns }),
           Object.keys(styles).filter((k) => k !== 'self').length === 0 ? h('div', { className: 'ab-muted ab-small' }, '还没学到别人的说话习惯。整理记忆时会跟着相处经验一起总结（显示在上面每个人的相处经验下面）。') : null),
-        h(Card, { title: '记忆库', right: f.sw('memory.enabled'), desc: '长期记忆：她聊天时自己记的、每天从聊天里整理出来的、写过的空间日记、你手动加的。每一轮回复前，她会按对方正在说的话翻出最相关的几条。' },
+        h(Card, { title: '记忆库', right: f.sw('memory.enabled'), desc: '长期记忆：ta聊天时自己记的、每天从聊天里整理出来的、写过的空间日记、你手动加的。每一轮回复前，ta会按对方正在说的话翻出最相关的几条。' },
           h('div', { className: 'ab-grid ab-g4', style: { marginBottom: 12 } },
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.count : '–'), h('div', { className: 'l' }, '条长期记忆')),
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.auto : '–'), h('div', { className: 'l' }, '条来自每日整理' + (stats && stats.outdated ? '（另有 ' + stats.outdated + ' 条已过时）' : ''))),
@@ -2111,7 +2360,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Row, { label: '每轮最多想起几条' }, f.range('memory.recallCount', 0, 12, 1, (v) => v + ' 条')),
           h('div', { className: 'ab-section-title' }, '手动加一条'),
           h('div', { className: 'ab-flex' },
-            h('input', { className: 'ab-input', style: { flex: '2 1 260px' }, placeholder: '要她记住的事，例如：主人不吃香菜', value: adding.text, onChange: (e) => setAdding({ ...adding, text: e.target.value }) }),
+            h('input', { className: 'ab-input', style: { flex: '2 1 260px' }, placeholder: '要ta记住的事，例如：主人不吃香菜', value: adding.text, onChange: (e) => setAdding({ ...adding, text: e.target.value }) }),
             h('input', { className: 'ab-input', style: { flex: '1 1 120px' }, placeholder: '关于谁（可选）', value: adding.aboutName, onChange: (e) => setAdding({ ...adding, aboutName: e.target.value }) }),
             h(Select, { value: adding.importance, width: 120, onChange: (v) => setAdding({ ...adding, importance: v }), options: [{ value: 0.3, label: '随口一提' }, { value: 0.6, label: '比较重要' }, { value: 0.9, label: '非常重要' }] }),
             h(Btn, { small: true, kind: 'primary', disabled: !adding.text.trim(), onClick: async () => { const r = await post('/memory/add', adding); toast(r.ok ? '记住了' : r.message); setAdding({ text: '', aboutName: '', importance: 0.6 }); load() } }, '记住')),
@@ -2129,7 +2378,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [list, setList] = useState(null)
       const load = () => get('/profiles').then((r) => setList(r.list || []))
       useEffect(() => { load() }, [])
-      return h(Card, { title: '人物小档案', desc: '她对每个人的印象：是谁、什么关系、喜好、最近在忙什么。和谁聊天就带上谁的那份（群里带上正在说话的几个人），不用等对方提到关键词她才想起来。每次整理记忆时，记忆有变化的人会按新记忆重写；你也可以直接改。' },
+      return h(Card, { title: '人物小档案', desc: 'ta对每个人的印象：是谁、什么关系、喜好、最近在忙什么。和谁聊天就带上谁的那份（群里带上正在说话的几个人），不用等对方提到关键词ta才想起来。每次整理记忆时，记忆有变化的人会按新记忆重写；你也可以直接改。' },
         list === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : list.length === 0 ? h(Empty, { icon: '🌱', text: '还没有。关于一个人记住 3 条以上的事后，整理记忆时会写出来。' }) :
           h('div', { className: 'ab-list' }, list.map((p) => h(ProfileRow, { key: p.qq, p, toast, onChanged: load }))))
     }
@@ -2151,7 +2400,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [list, setList] = useState(null)
       const load = () => get('/memory/recalls').then((r) => setList(r.list || []))
       useEffect(() => { load() }, [])
-      return h(Card, { title: '最近想起了什么', desc: '每次回复前她会按对方说的话翻记忆。这里能看到最近几次想起了哪几条、是因为哪几个词想起来的；想不起来的那次也会列出来。', right: h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新') },
+      return h(Card, { title: '最近想起了什么', desc: '每次回复前ta会按对方说的话翻记忆。这里能看到最近几次想起了哪几条、是因为哪几个词想起来的；想不起来的那次也会列出来。', right: h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新') },
         !list ? h(Empty, { icon: '⏳', text: '加载中…' }) : list.length === 0 ? h(Empty, { icon: '🫧', text: '还没有记录（重启后从头记）。' }) :
           h('div', { className: 'ab-list' }, list.slice(0, 10).map((r, i) => h('div', { key: i, className: 'ab-li' },
             h('div', { className: 'meta' }, timeAgo(r.at), h('br'), h('span', { className: 'ab-small' }, String(r.where || '').replace(/^private:/, '私聊 ').replace(/^group:/, '群 '))),
@@ -2185,7 +2434,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         const r = await post('/memory/import/commit', { items })
         toast(r.message, 'ok'); setCands(null); setText(''); onDone()
       }
-      return h(Card, { title: '导入旧档案', desc: '以前写过的设定、聊天笔记、别的机器人的记忆文件（txt / md），贴进来或者上传。她会挑出值得记的，你勾选以后再存进记忆库；和已有记忆重复的会自动去掉。' },
+      return h(Card, { title: '导入旧档案', desc: '以前写过的设定、聊天笔记、别的机器人的记忆文件（txt / md），贴进来或者上传。ta会挑出值得记的，你勾选以后再存进记忆库；和已有记忆重复的会自动去掉。' },
         h('textarea', { className: 'ab-textarea', style: { minHeight: 110 }, placeholder: '把旧档案的文字粘贴到这里（最多 3 万字）', value: text, onChange: (e) => setText(e.target.value) }),
         h('div', { className: 'ab-flex', style: { marginTop: 8 } },
           h(Btn, { small: true, onClick: readFile }, '选择文件'),
@@ -2276,7 +2525,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           (s.separatorLinks || []).map((u) => h('div', { key: u, className: 'ab-flex', style: { marginTop: 4 } },
             h('code', { className: 'ab-small', style: { wordBreak: 'break-all', flex: 1 } }, u),
             h(Btn, { small: true, kind: 'ghost', onClick: () => { navigator.clipboard.writeText(u); toast('复制了', 'ok') } }, '复制')))) : null,
-        s.voices.length && !s.enabled ? h('div', { className: 'ab-note warn', style: { marginTop: 10 } }, '音色导入好了，但翻唱开关还没开（这一页最上面），打开并保存后她才会唱。') : null,
+        s.voices.length && !s.enabled ? h('div', { className: 'ab-note warn', style: { marginTop: 10 } }, '音色导入好了，但翻唱开关还没开（这一页最上面），打开并保存后ta才会唱。') : null,
         s.voices.length === 0 ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } }, '还没有音色。') :
           h('div', { className: 'ab-list', style: { marginTop: 10 } }, s.voices.map((v) => h('div', { key: v.id, className: 'ab-li' },
             h('div', { className: 'body' }, h('b', null, v.id), v.hasIndex ? h('span', { className: 'ab-muted ab-small' }, ' · 带 index') : null),
@@ -2353,7 +2602,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const sing = async (song) => { const r = await post('/song/request', { songId: song.id, song: song.name, pitch }); toast(r.message, r.ok ? 'ok' : 'err'); load() }
       const voices = s.voices.map((v) => ({ value: v.id, label: v.id, desc: v.hasIndex ? '带 .index' : '' }))
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '翻唱', right: f.sw('song.enabled'), desc: '让她用自己的声音唱歌：点歌 → 从网易云下载 → 分离人声和伴奏 → 用 RVC 换成她的声音 → 混音 → 发语音条。主人在 QQ 里说「唱首歌」，或者发 /sing 歌名 都行。' },
+        h(Card, { title: '翻唱', right: f.sw('song.enabled'), desc: '让ta用自己的声音唱歌：点歌 → 从网易云下载 → 分离人声和伴奏 → 用 RVC 换成ta的声音 → 混音 → 发语音条。主人在 QQ 里说「唱首歌」，或者发 /sing 歌名 都行。' },
           h('div', { className: cx('ab-note', s.ready ? '' : 'warn') }, s.message),
           h('div', { className: 'ab-checks', style: { marginTop: 12 } },
             SONG_PARTS.map(([k, label]) => h('div', { key: k, className: cx('ab-check', s.parts[k] && 'done') }, h('i', null, s.parts[k] ? '✓' : '·'), label)),
@@ -2380,7 +2629,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         h(VoiceImport, { s, toast, onChange: load }),
         h(Card, { title: '声音', desc: '用哪个音色唱、默认变调和语音条的长度。' },
           h(Row, { label: '音色' }, voices.length ? h(Select, { value: draft.song.voice || (voices[0] && voices[0].value), options: voices, onChange: (v) => setDraft(setPath(draft, 'song.voice', v)) }) : h('span', { className: 'ab-muted' }, '还没有模型')),
-          h(Row, { label: '默认变调', hint: '她自己点歌时会按原唱男声 / 女声定，这里是你在面板里试唱时的默认值' }, f.range('song.pitch', -12, 12, 1, (v) => (v > 0 ? '+' : '') + v + ' 半音')),
+          h(Row, { label: '默认变调', hint: 'ta自己点歌时会按原唱男声 / 女声定，这里是你在面板里试唱时的默认值' }, f.range('song.pitch', -12, 12, 1, (v) => (v > 0 ? '+' : '') + v + ' 半音')),
           h(Row, { label: '语音条最长', hint: '歌比这个长就截一段' }, f.range('song.maxVoiceSec', 30, 300, 10, (v) => v + ' 秒')),
           h(Row, { label: '截哪一段' }, f.choices('song.clipStart', [{ value: 'auto', label: '副歌附近', desc: '从全曲大约 30% 的地方开始' }, { value: 'head', label: '从头开始' }])),
           h(Row, { label: '人声音量' }, f.range('song.vocalVolume', 0.2, 2, 0.05, (v) => Math.round(v * 100) + '%')),
@@ -2394,7 +2643,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             h(Btn, { small: true, onClick: async () => { const r = await get('/song/account'); setAcct(r) } }, '检查登录'),
             acct ? h('span', { className: 'ab-small', style: { color: acct.ok ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, acct.ok ? '已登录：' + acct.nickname + (acct.vip ? '（会员）' : '（不是会员，只能下免费歌）') : acct.message) : null),
         ),
-        h(Card, { title: '试唱', desc: '搜一首歌让她唱，做好会发到你的 QQ 私聊。' },
+        h(Card, { title: '试唱', desc: '搜一首歌让ta唱，做好会发到你的 QQ 私聊。' },
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', style: { flex: '1 1 260px' }, placeholder: '歌名，可以带歌手：小幸运 田馥甄', value: q, onChange: (e) => setQ(e.target.value), onKeyDown: (e) => e.key === 'Enter' && search() }),
             h(Btn, { small: true, onClick: search, disabled: !q.trim() }, '搜索'),
@@ -2544,7 +2793,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             h(Seg, { value: kind, options: [{ value: 'private', label: '私聊' }, { value: 'group', label: '群聊' }], onChange: setKind }))),
         h(Row, { label: '发一条消息', hint: '看哪个模块接管、命令回什么（/开头是命令）' },
           h('input', { className: 'ab-input', value: text, placeholder: '比如：早安，或 /weather 北京', onChange: (e) => setText(e.target.value) })),
-        h(Row, { label: '她的回复', hint: '可选：假设她这样回，看经过各个模块改写后最后发出去什么（可以用 ||| 分条、<voice>…</voice>）' },
+        h(Row, { label: 'ta的回复', hint: '可选：假设ta这样回，看经过各个模块改写后最后发出去什么（可以用 ||| 分条、<voice>…</voice>）' },
           h('input', { className: 'ab-input', value: reply, placeholder: '比如：早呀|||今天也要加油', onChange: (e) => setReply(e.target.value) })),
         h('div', { className: 'ab-flex' }, h(Btn, { kind: 'primary', small: true, disabled: !text.trim() && !reply.trim(), onClick: run }, '模拟')),
         out ? h('div', { style: { marginTop: 8 } }, out.steps.map((s, i) => h('div', { key: i, className: 'ab-small' }, '· ' + s)), sentList(out.sent)) : null,
@@ -2558,8 +2807,125 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           : h('div', { className: 'ab-small ab-muted' }, '这个场合没有工具'))
     }
 
-    /** 扩展页：所有模块（内置的 + 自己写的）、新建、安全模式。 */
-    function Modules({ st, draft, toast, reload }) {
+    /** 写模块的教程：随插件带着，连不上 GitHub 也能看；复制后可以直接粘给 DSH。 */
+    const TUTORIAL_URL = 'https://github.com/accomplish07zrh-eng/dsh-aurabot-qq-mods/blob/main/docs/TUTORIAL.md'
+    function ModuleTutorial({ toast }) {
+      const [text, setText] = useState('')
+      const [err, setErr] = useState('')
+      const open = (e) => {
+        if (!e.target.open || text) return
+        get('/modules/tutorial').then((r) => (r.ok ? setText(r.text) : setErr(r.message)))
+      }
+      return h('details', { className: 'ab-card', onToggle: open },
+        h('summary', { style: { cursor: 'pointer', fontWeight: 620 } }, '想自己写一个？提交教程'),
+        h('p', { className: 'ab-desc', style: { marginTop: 8 } }, '从零写一个模块并提交到市场。不会写代码也行：复制全文粘给 DSH，告诉它你想要什么。'),
+        h('div', { className: 'ab-flex', style: { marginBottom: 10 } },
+          h(Btn, { small: true, kind: 'primary', disabled: !text, onClick: () => copy(text, toast, '教程复制好了') }, '一键复制'),
+          h('a', { className: 'ab-small', href: TUTORIAL_URL, target: '_blank', rel: 'noreferrer' }, '在 GitHub 上看')),
+        err ? h('div', { className: 'ab-note warn' }, err) : null,
+        text ? h('pre', { className: 'ab-small', style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 420, overflow: 'auto', margin: 0 } }, text) : (err ? null : h('div', { className: 'ab-small ab-muted' }, '加载中…')))
+    }
+
+    /** 模块市场：逛、搜、装、更新、卸载社区模块。安装前给用户看来源和能力，能力声明不是沙箱。 */
+    const CAP_LABEL = { network: '联网', filesystem: '读写本机文件', process: '启动其他程序', 'dynamic-code': '动态执行代码', 'plugin-config': '读写插件配置（含账号 Cookie）', 'plugin-internals': '使用插件内部接口' }
+    const CATEGORY_LABEL = { platform: '逛平台', social: '聊天互动', creative: '创作', desktop: '桌面', manage: '管理', tool: '工具' }
+    const capText = (m) => (m.capabilities || []).map((c) => CAP_LABEL[c] || c)
+    function Market({ st, toast, reload, go }) {
+      const [data, setData] = useState(null)
+      const [busy, setBusy] = useState('')
+      const [prog, setProg] = useState(null)
+      const [q, setQ] = useState('')
+      const [show, setShow] = useState('all')
+      const [cat, setCat] = useState('')
+      const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
+      useEffect(() => { load() }, [])
+      // 一直查进度：恢复备份、老用户迁移时模块在后台装，不是从这个页面点的
+      useEffect(() => {
+        let was = false
+        const tick = () => get('/modules/community/progress').then((r) => {
+          const now = r.progress || null
+          setProg(now)
+          if (was && !now) load()
+          was = Boolean(now)
+        })
+        const t = setInterval(tick, busy ? 300 : 1000)
+        tick()
+        return () => clearInterval(t)
+      }, [busy])
+      const percent = prog && prog.total ? Math.min(100, Math.round(prog.received / prog.total * 100)) : 0
+      const stageText = () => {
+        if (prog.stage === 'index') return '读取模块列表…'
+        if (prog.stage === 'install') return '解压安装…'
+        if (prog.stage === 'start') return '启动模块…'
+        return '下载中 ' + (prog.total ? percent + '%' : Math.round(prog.received / 1024) + ' KB')
+      }
+      const progText = (word) => (prog ? stageText() : word + '中…')
+      const STAGE_BAR = { index: 10, install: 90, start: 95 }
+      const progBar = prog ? h('div', { className: 'ab-card', style: { marginBottom: 12 } },
+        h('div', { className: 'ab-flex', style: { justifyContent: 'space-between' } }, h('b', null, '正在安装「' + (prog.name || prog.id) + '」'), h('span', { className: 'ab-muted ab-small' }, stageText())),
+        h('div', { style: { height: 6, borderRadius: 3, background: 'var(--ab-foam-2)', marginTop: 8, overflow: 'hidden' } },
+          h('div', { style: { height: '100%', width: (STAGE_BAR[prog.stage] || Math.max(12, 10 + percent * 0.8)) + '%', background: 'var(--ab-sea)', transition: 'width .3s' } }))) : null
+      const done = async (r) => {
+        toast(r.message, r.ok ? 'ok' : 'err')
+        await load()
+        reload()
+      }
+      const install = async (m) => {
+        const caps = capText(m).join('、') || '无'
+        const why = '来源：社区模块库 dsh-aurabot-qq-mods\n版本：' + m.version + '\n作者：' + m.author + '\n能力：' + caps + '\n\n能力声明不是沙箱：模块和插件在同一进程运行。继续吗？'
+        if (!confirm((m.installed ? '更新' : '安装') + '「' + m.name + '」？\n\n' + why)) return
+        if (m.replacesBuiltin && !confirm('「' + m.name + '」会替换同名内置模块，确定吗？')) return
+        setBusy(m.id)
+        try { await done(await post('/modules/community/install', { id: m.id, confirmReplace: Boolean(m.replacesBuiltin) })) } finally { setBusy('') }
+      }
+      const remove = async (m) => {
+        if (!confirm('卸载「' + m.name + '」？')) return
+        const purge = confirm('把它的数据和设置也清掉吗？\n确定 = 一起清掉；取消 = 留着，以后重装还能用')
+        setBusy(m.id)
+        try { await done(await post('/modules/community/remove', { id: m.id, purge })) } finally { setBusy('') }
+      }
+      const list = (data && data.list) || []
+      const counts = { all: list.length, installed: list.filter((m) => m.installed).length, update: list.filter((m) => m.update).length }
+      const word = q.trim().toLowerCase()
+      const cats = [...new Set(list.map((m) => m.category).filter(Boolean))]
+      const shown = list.filter((m) => (!cat || m.category === cat) && (show === 'all' || (show === 'installed' && m.installed) || (show === 'update' && m.update)) && (!word || (m.name + ' ' + m.id + ' ' + (m.description || '') + ' ' + (m.tags || []).join(' ')).toLowerCase().includes(word)))
+      const openSettings = (m) => {
+        const running = (st.modules || []).find((x) => x.id === m.id)
+        return running && running.tab ? () => go(running.tab) : null
+      }
+      const chip = (id, label) => h('button', { key: id, type: 'button', className: cx('ab-chip', show === id && 'on'), onClick: () => setShow(id) }, label, h('span', { className: 'n' }, counts[id]))
+      const card = (m) => {
+        const settings = m.installed ? openSettings(m) : null
+        const note = [m.delisted ? '已从市场下架' : '', m.foreign ? '有同名的自己写的文件夹，不会覆盖' : '', m.blocked].filter(Boolean).join(' · ')
+        return h('div', { key: m.id, className: 'ab-card', style: { display: 'flex', flexDirection: 'column' } },
+          h('h3', null, m.name, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
+          h('div', { className: 'ab-small ab-muted' }, 'v' + (m.installed || m.version) + (m.update ? ' → v' + m.version : '') + (CATEGORY_LABEL[m.category] ? ' · ' + CATEGORY_LABEL[m.category] : '') + (m.author ? ' · ' + m.author : '') + (m.license ? ' · ' + m.license : '')),
+          h('p', { className: 'ab-desc', style: { margin: '8px 0' } }, m.description),
+          capText(m).length ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 10 } }, '会用到：' + capText(m).join('、')) : null,
+          note ? h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, note) : null,
+          h('div', { className: 'ab-flex', style: { marginTop: 'auto' } },
+            !m.installed && !m.foreign && !m.delisted ? h(Btn, { small: true, kind: 'primary', disabled: Boolean(busy || m.blocked), onClick: () => install(m) }, busy === m.id ? progText('安装') : '安装') : null,
+            m.update ? h(Btn, { small: true, kind: 'primary', disabled: Boolean(busy || m.blocked), onClick: () => install(m) }, busy === m.id ? progText('更新') : '更新') : null,
+            settings ? h(Btn, { small: true, onClick: settings }, '去设置') : null,
+            m.installed ? h(Btn, { small: true, kind: 'ghost', disabled: Boolean(busy), onClick: () => remove(m) }, '卸载') : null))
+      }
+      return h('div', { className: 'ab-grid' },
+        progBar,
+        h(Card, { title: '模块市场', desc: '给ta装更多本事。模块由社区提供、维护者审核后上架；它们和插件在同一进程运行，能接触账号配置，装之前看清下面列的能力。', right: h(Btn, { small: true, kind: 'ghost', onClick: () => load(true) }, '刷新') },
+          h('div', { className: 'ab-flex' },
+            h('input', { className: 'ab-input', placeholder: '搜模块', value: q, onChange: (e) => setQ(e.target.value) }),
+            chip('all', '全部'), chip('installed', '已安装'), chip('update', '可更新')),
+          cats.length > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 10 } }, [''].concat(cats).map((c) => h('button', { key: c || 'any', type: 'button', className: cx('ab-chip', cat === c && 'on'), onClick: () => setCat(c) }, c ? CATEGORY_LABEL[c] || c : '全部分类'))) : null,
+          ((data && data.revoked) || []).map((r) => h('div', { key: r.id, className: 'ab-note err', style: { marginTop: 10 } }, '「' + r.id + '」' + r.version + ' 已撤回：' + r.reason + '。建议关闭或卸载。'))),
+        !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
+        data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
+        data && data.ok !== false && !shown.length ? h(Empty, { icon: '🐟', text: list.length ? '没有符合条件的模块' : '市场里还没有模块' }) : null,
+        shown.length ? h('div', { className: 'ab-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' } }, shown.map(card)) : null,
+        h(ModuleTutorial, { toast }))
+    }
+
+    /** 扩展页：所有模块（内置的 + 市场装的 + 自己写的）、安全模式；写模块的工具收在最下面。 */
+    function Modules({ st, draft, toast, reload, go }) {
       const [data, setData] = useState(null)
       const [newId, setNewId] = useState('')
       const [newName, setNewName] = useState('')
@@ -2570,7 +2936,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       if (!data) return h(Empty, { icon: '⏳', text: '加载中…' })
       const list = data.list || []
       const builtin = list.filter((m) => m.builtin)
-      const mine = list.filter((m) => !m.builtin)
+      const mine = list.filter((m) => !m.builtin && !m.community)
+      const fromCommunity = list.filter((m) => m.community)
       const props = { draft, setModules, toast, reload: () => { reload(); load() } }
       const create = async () => {
         const r = await post('/modules/create', { id: newId.trim(), name: newName.trim() })
@@ -2581,7 +2948,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         reload()
       }
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '扩展', desc: '她的每项本事都是一个模块：能单独关掉；能复制一份来改，改了就替换内置的；也能自己写新模块，让她学会你想要的任何事。自己写的东西放在下面这个文件夹，插件升级不会动；改完保存几秒内自动生效，不用重启。不会写代码？点「复制给 DSH 的话」，粘给 DSH，说你想要什么。' },
+        h(Card, { title: '已安装', right: h(Btn, { small: true, kind: 'primary', onClick: () => go('market') }, '逛模块市场'), desc: 'ta的每项本事都是一个模块：能单独关掉；能复制一份来改，改了就替换内置的；也能自己写新模块，让ta学会你想要的任何事。自己写的东西放在下面这个文件夹，插件升级不会动；改完保存几秒内自动生效，不用重启。不会写代码？点「复制给 DSH 的话」，粘给 DSH，说你想要什么。' },
           h('div', { className: 'ab-flex' },
             h('code', { className: 'ab-small', style: { wordBreak: 'break-all', flex: 1 } }, data.dir),
             h(Btn, { small: true, onClick: () => post('/modules/open').then((r) => toast(r.message)) }, '打开文件夹'),
@@ -2590,15 +2957,20 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Row, { label: '安全模式', hint: '打开后你写的模块一个都不加载，内置的全部恢复。出了问题先开它，看是不是你的模块引起的。' },
             h(Switch, { on: st.config.safeMode, onChange: async (v) => { const r = await post('/save', { safeMode: v }); toast(v ? '安全模式开了：只跑内置模块' : '安全模式关了', 'ok'); setModules(r.modules); reload() } })),
           st.config.safeMode ? h('div', { className: 'ab-note warn' }, '安全模式开着：你写的模块现在都没加载。') : null),
+        fromCommunity.length ? h(Card, { title: '从市场装的（' + fromCommunity.length + '）' }, h('div', null, fromCommunity.map((m) => h(ModuleRow, { key: m.id, m, ...props })))) : null,
+        mine.length ? h(Card, { title: '自己写的（' + mine.length + '）' }, h('div', null, mine.map((m) => h(ModuleRow, { key: m.id, m, ...props })))) : null,
+        h(Card, { title: '内置模块（' + builtin.length + '）', desc: '关掉的模块：ta就没有这项本事，相关的标签页也会藏起来。连接、权限、人格、聊天这些是核心，不能关。' },
+          h('div', null, builtin.map((m) => h(ModuleRow, { key: m.id, m, ...props })))),
+        h('details', { className: 'ab-card' },
+          h('summary', { style: { cursor: 'pointer', fontWeight: 620 } }, '写模块的工具'),
+          h('p', { className: 'ab-desc', style: { marginTop: 8 } }, '自己写模块或排查问题时才用得上。'),
+          h('div', { className: 'ab-grid' },
         h(Card, { title: '新建一个模块', desc: '从模板建一个能直接跑的例子（关键词自动回复 + 一个命令 + 一个工具），在它上面改。id 用小写英文，比如 weather。想改内置的本事，用下面内置模块那一行的「复制一份来改」。' },
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', style: { maxWidth: 180 }, placeholder: 'id，如 weather', value: newId, onChange: (e) => setNewId(e.target.value.toLowerCase()) }),
             h('input', { className: 'ab-input', placeholder: '名字，如 查天气', value: newName, onChange: (e) => setNewName(e.target.value) }),
             h(Btn, { kind: 'primary', small: true, disabled: !newId.trim(), onClick: create }, '新建'))),
-        mine.length ? h(Card, { title: '自己写的（' + mine.length + '）' }, h('div', null, mine.map((m) => h(ModuleRow, { key: m.id, m, ...props })))) : null,
-        h(Card, { title: '内置模块（' + builtin.length + '）', desc: '关掉的模块：她就没有这项本事，相关的标签页也会藏起来。连接、权限、人格、聊天这些是核心，不能关。' },
-          h('div', null, builtin.map((m) => h(ModuleRow, { key: m.id, m, ...props })))),
-        h(Simulate, { toast }),
+            h(Simulate, { toast }))),
       )
     }
 
@@ -2666,10 +3038,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const act = (path, label) => async () => { setBusy(label); const r = await post(path); setBusy(''); toast(r.message, r.ok ? 'ok' : 'err'); load(); loadShots() }
       const acct = s && s.account
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '刷 B 站', right: f.sw('bili.enabled'), desc: '她会定时去 B 站刷几个视频：从她的兴趣、记忆里你喜欢的东西和下面的关键词里挑方向去搜，读简介、字幕和热评，再按自己的性格决定评不评论、要不要私聊分享给你、记住什么。看过的、评过的都记成她的经历，聊天时会自然提起。你在 QQ 里发 B 站链接或分享卡片，她也能点进去看完再聊。' },
+        h(Card, { title: '刷 B 站', right: f.sw('bili.enabled'), desc: 'ta会定时去 B 站刷几个视频：从ta的兴趣、记忆里你喜欢的东西和下面的关键词里挑方向去搜，读简介、字幕和热评，再按自己的性格决定评不评论、要不要私聊分享给你、记住什么。看过的、评过的都记成ta的经历，聊天时会自然提起。你在 QQ 里发 B 站链接或分享卡片，ta也能点进去看完再聊。' },
           h(BiliCookie, { draft, setDraft }),
           h('div', { className: 'ab-flex', style: { marginTop: 4 } },
-            h(Btn, { small: true, onClick: async () => { const r = await get('/bili/account'); setS({ ...(s || {}), account: r }) } }, '检查登录'),
+            h(Btn, { small: true, onClick: async () => { await get('/bili/account'); load() } }, '检查登录'),
             acct ? h('span', { className: 'ab-small', style: { color: acct.isLogin ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, acct.isLogin ? '已登录：' + acct.uname : '没登录（只能看，不能评论）') : null),
         ),
         h(Card, { title: '怎么刷', desc: '只在「主动搭话」里设的醒着时间内刷。' },
@@ -2677,39 +3049,92 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Row, { label: '多久刷一轮' }, f.range('bili.intervalHours', 1, 24, 1, (v) => v + ' 小时')),
           h(Row, { label: '每天最多刷' }, f.range('bili.maxRunsPerDay', 0, 12, 1, (v) => v + ' 轮')),
           h(Row, { label: '一轮看几个视频' }, f.range('bili.perRun', 1, 6, 1, (v) => v + ' 个')),
-          h(Row, { label: '额外想看的方向', hint: '一行一个；另外还会参考她的兴趣和记忆' }, f.list('bili.keywords', { placeholder: '白米饭 做法\n猫咪\n游戏解说' })),
+          h(Row, { label: '额外想看的方向', hint: '一行一个；另外还会参考ta的兴趣和记忆' }, f.list('bili.keywords', { placeholder: '白米饭 做法\n猫咪\n游戏解说' })),
           h(Row, { label: '播放量门槛' }, f.num('bili.minViews', { min: 0 }), h('span', { className: 'ab-muted' }, '次以上')),
           h(Row, { label: '只看最近' }, f.num('bili.maxAgeDays', { min: 0 }), h('span', { className: 'ab-muted' }, '天内发的（0 = 不限）')),
         ),
-        h(Card, { title: '看画面（抽帧 + 视觉）', desc: '默认只读标题、简介、字幕和热评。打开后用 ffmpeg 抽帧交给视觉模型，截图保存到本机，可以在 QQ 聊天里让她挑一张发送。没有 ffmpeg、模型明确不支持图片或处理失败时，自动继续文字阅读。' },
-          h(Row, { label: '让她看画面', hint: '需要视觉模型 + ffmpeg；关掉就退回只看文字' }, f.sw('bili.vision')),
+        h(Card, { title: '评论、回复和分享', desc: '评论和回复要登录。试运行开着时只记日志不发。' },
+          h(Row, { label: '主人的 B 站昵称', hint: '填完整昵称。ta评论里写 @主人 时会 @ 这个号' }, f.text('bili.ownerName', { placeholder: '不填就 @ 不到你' })),
+          h(Row, { label: '自己发评论', hint: '只管ta自己刷视频时发不发；别人让ta发，看「权限」页的 B 站评论' }, f.sw('bili.comment'), h('span', { className: 'ab-muted' }, '每天最多'), f.num('bili.maxCommentsPerDay', { min: 0, max: 50 }), h('span', { className: 'ab-muted' }, '条')),
+          h(Row, { label: '回别人回ta的评论' }, f.sw('bili.reply'), h('span', { className: 'ab-muted' }, '每天最多'), f.num('bili.maxRepliesPerDay', { min: 0, max: 100 }), h('span', { className: 'ab-muted' }, '条')),
+          h(Row, { label: '看到好玩的分享给你', hint: '私聊发给主人，带视频链接' }, f.sw('bili.shareToOwner')),
+          h(Row, { label: '顺手点赞' }, f.sw('bili.like')),
+        ),
+        h(Card, { title: '看画面（抽帧 + 视觉）', desc: '默认只读标题、简介、字幕和热评。打开后用 ffmpeg 抽帧交给视觉模型，截图保存到本机，可以在 QQ 聊天里让ta挑一张发送。没有 ffmpeg、模型明确不支持图片或处理失败时，自动继续文字阅读。' },
+          h(Row, { label: '让ta看画面', hint: '需要视觉模型 + ffmpeg；关掉就退回只看文字' }, f.sw('bili.vision')),
           h(Row, { label: '每个视频抽几帧' }, f.range('bili.visionFrames', 2, 12, 1, (v) => v + ' 帧')),
-          h(Row, { label: '刷完顺手发张截图', hint: '概率；跟发一张表情包一样默认 35%，0 = 从不。截图都存在本机，你让她发她也能挑' }, f.range('bili.shotChance', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
+          h(Row, { label: '刷完顺手发张截图', hint: '概率；跟发一张表情包一样默认 35%，0 = 从不。截图都存在本机，你让ta发ta也能挑' }, f.range('bili.shotChance', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
           h(Row, { label: '截图库最多存', hint: '超过就自动删最旧的；下面的截图库里也能一张张手动删' }, f.num('bili.shotLibrary', { min: 20, max: 2000 }), h('span', { className: 'ab-muted' }, '张')),
           h(Row, { label: 'ffmpeg 路径', hint: '留空就自己在 PATH 里找；找不到就填绝对路径' }, f.text('bili.ffmpegPath', { placeholder: 'C:\\ffmpeg\\bin\\ffmpeg.exe' })),
           s && s.vision ? h('div', { className: 'ab-small', style: { marginTop: 4, color: s.vision.ffmpeg ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, (s.vision.ffmpeg ? '✓ 已找到 ffmpeg：' + s.vision.ffmpeg : '✗ 没找到 ffmpeg：抽帧会被跳过，装一个或者在上面填路径') + (s.shots ? '　·　手上存了 ' + s.shots.count + ' 张截图' : '')) : null,
         ),
         h(Card, { title: '截图库' + (shots ? '（' + shots.length + ' / ' + ((draft.bili && draft.bili.shotLibrary) || 300) + '）' : ''), right: h('div', { className: 'ab-flex' },
           h(Btn, { small: true, kind: 'ghost', onClick: loadShots }, '刷新')) },
-          !shots ? h(Empty, { icon: '⏳', text: '加载中…' }) : shots.length === 0 ? h(Empty, { icon: '🎬', text: '还没有截图。打开上面的「让她看画面」刷一轮 B 站，就会开始截。' }) :
+          !shots ? h(Empty, { icon: '⏳', text: '加载中…' }) : shots.length === 0 ? h(Empty, { icon: '🎬', text: '还没有截图。打开上面的「让ta看画面」刷一轮 B 站，就会开始截。' }) :
             h('div', { className: 'ab-shots' }, shots.map((it) => h(ShotCell, { key: it.file, it, onChanged: () => { loadShots(); load() }, toast }))),
         ),
-        h(Card, { title: '评论、回复和分享', desc: '评论和回复要登录。试运行开着时只记日志不发。' },
-          h(Row, { label: '自己发评论' }, f.sw('bili.comment'), h('span', { className: 'ab-muted' }, '每天最多'), f.num('bili.maxCommentsPerDay', { min: 0, max: 50 }), h('span', { className: 'ab-muted' }, '条')),
-          h(Row, { label: '回别人回她的评论' }, f.sw('bili.reply'), h('span', { className: 'ab-muted' }, '每天最多'), f.num('bili.maxRepliesPerDay', { min: 0, max: 100 }), h('span', { className: 'ab-muted' }, '条')),
-          h(Row, { label: '看到好玩的分享给你', hint: '私聊发给主人，带视频链接' }, f.sw('bili.shareToOwner')),
-          h(Row, { label: '顺手点赞' }, f.sw('bili.like')),
-        ),
-        h(Card, { title: '她刷过什么', right: h('div', { className: 'ab-flex' },
-          h(Btn, { small: true, onClick: act('/bili/replies', 'replies'), disabled: !!busy }, busy === 'replies' ? '正在看…' : '看看有没有人回她'),
+        h(Card, { title: 'ta刷过什么', right: h('div', { className: 'ab-flex' },
+          h(Btn, { small: true, onClick: act('/bili/replies', 'replies'), disabled: !!busy }, busy === 'replies' ? '正在看…' : '看看有没有人回ta'),
           h(Btn, { small: true, kind: 'primary', onClick: act('/bili/run', 'run'), disabled: !!busy }, busy === 'run' ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在刷…') : '现在刷一轮')) },
-          s && s.pauseReason ? h('div', { className: 'ab-note warn', style: { marginBottom: 8 } }, '今天先不发评论和回复了：' + s.pauseReason + '（明天自动恢复；Cookie 过期的话重新复制一份填上）') : null,
+          s && s.pauseReason ? h('div', { className: 'ab-note warn', style: { marginBottom: 8 } }, '今天先不发评论和回复了：' + s.pauseReason + '。登录失效请保存新 Cookie 后点「检查登录」；验证、风控或频率限制不会因登录成功而解除。') : null,
           s ? h('div', { className: 'ab-muted ab-small', style: { marginBottom: 8 } }, '今天自动刷了 ' + s.runs + ' 轮 · 评论 ' + s.comments + ' 条 · 回复 ' + s.replies + ' 条' + (s.lastRun ? ' · 上次 ' + timeAgo(s.lastRun) : '') + '（手动刷不占次数）') : null,
           !s ? h(Empty, { icon: '⏳', text: '加载中…' }) : s.history.length === 0 ? h(Empty, { icon: '📺', text: '还没刷过。点「现在刷一轮」试试。' }) :
             h('div', { className: 'ab-list' }, s.history.map((x, i) => h('div', { key: i, className: 'ab-li' },
               h('div', { className: 'meta' }, timeAgo(x.at), h('br'), BILI_KIND[x.kind] || x.kind),
               h('div', { className: 'body' }, x.bvid ? h('a', { href: 'https://www.bilibili.com/video/' + x.bvid, target: '_blank', rel: 'noreferrer' }, '《' + x.title + '》') : h('b', null, '《' + x.title + '》'), x.text ? h('div', { className: 'ab-muted' }, x.text) : null)))),
         ),
+        h(BiliDanmaku, { draft, setDraft, toast }),
+      )
+    }
+
+    /** 弹幕直接嵌在内置 B 站页，不依赖额外扩展面板。 */
+    function BiliDanmaku({ draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      const [video, setVideo] = useState('')
+      const [part, setPart] = useState(1)
+      const [seconds, setSeconds] = useState('')
+      const [text, setText] = useState('')
+      const [position, setPosition] = useState('scroll')
+      const [info, setInfo] = useState(null)
+      const [status, setStatus] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const load = () => get('/bili/danmaku/state').then(setStatus)
+      useEffect(() => { load() }, [])
+      useEffect(() => { setInfo(null) }, [video, part])
+      const action = async (kind) => {
+        setBusy(true)
+        try {
+          const response = await fetch(API + '/bili/danmaku/' + kind, {
+            method: 'POST', headers: { 'content-type': 'application/json', 'x-aurabot-bili-danmaku': '1' },
+            body: JSON.stringify({ video, part, seconds, text, position }),
+          })
+          const result = await response.json()
+          if (result.info) setInfo(result.info)
+          toast(result.message || (result.ok ? '视频信息已读取' : '读取未完成'), result.ok ? 'ok' : 'err')
+          await load()
+        } catch { toast('弹幕接口暂时无法连接，请先到 B 站确认是否发送，避免重复提交', 'err') }
+        finally { setBusy(false) }
+      }
+      return h(Card, { title: '视频弹幕', desc: '两个开关默认关闭，改完先保存设置。发送按钮会实际提交弹幕；试运行时不发送。沿用本页的 B 站登录。' },
+        h(Row, { label: '允许发送弹幕', hint: '关闭后手动、聊天工具和自动弹幕均不发送；聊天工具只接受主人私聊请求' }, f.sw('bili.danmakuEnabled')),
+        h(Row, { label: '刷完视频自己发弹幕', hint: '另行开启；每个视频每天最多一条自动弹幕' }, f.sw('bili.autoDanmaku')),
+        h(Row, { label: '每天最多提交弹幕', hint: '手动和自动共用次数上限，提交失败也计数' }, f.num('bili.maxDanmakuPerDay', { min: 1, max: 20 })),
+        h(Row, { label: '视频或番剧链接', hint: '支持 BV/av、ep单集、ss整季链接；短链接请先展开' }, h('input', { className: 'ab-input', value: video, placeholder: '视频链接、番剧链接或编号', onChange: (e) => setVideo(e.target.value) })),
+        h(Row, { label: '分P / 选集序号', hint: '普通视频填1；多段投稿选分P，ss整季链接选第几集；ep链接直接定位那一集' }, h('input', { className: 'ab-input sm', type: 'number', min: 1, value: part, onChange: (e) => setPart(e.target.value) })),
+        h(Row, { label: '出现时间（秒）', hint: '例如83表示01:23；按当前分P或单集计算' }, h('input', { className: 'ab-input sm', type: 'number', min: 0, step: 0.1, value: seconds, onChange: (e) => setSeconds(e.target.value) })),
+        h(Row, { label: '弹幕文字', hint: '一行，最多100字' }, h('input', { className: 'ab-input', value: text, onChange: (e) => setText(e.target.value) })),
+        h(Row, { label: '位置' }, h('select', { className: 'ab-input', value: position, onChange: (e) => setPosition(e.target.value) },
+          h('option', { value: 'scroll' }, '滚动'), h('option', { value: 'top' }, '顶部'), h('option', { value: 'bottom' }, '底部'))),
+        info ? h('p', { className: 'ab-note' }, `《${info.title}》 · ${info.kind === 'bangumi' ? '番剧单集' : '第' + info.part + 'P'} · ${info.duration}秒`) : null,
+        h('div', { className: 'ab-flex', style: { marginTop: 12 } },
+          h(Btn, { disabled: busy || !video, onClick: () => action('inspect') }, '检查视频（不发送）'),
+          h(Btn, { kind: 'primary', disabled: busy || !video || !text.trim() || seconds === '' || draft.bili?.danmakuEnabled !== true, onClick: () => action('send') }, busy ? '处理中…' : '发送弹幕')),
+        status?.ok ? h('p', { className: 'ab-small ab-muted' }, `今天已确认发送 ${status.sentToday} 条 · 已提交 ${status.attemptsToday}/${status.limit} 次 · 两次提交至少间隔30秒`) : null,
+        h('div', { className: 'ab-list' }, (status?.history || []).map((row, index) => h('div', { className: 'ab-li', key: index },
+          h('div', { className: 'meta' }, timeAgo(row.at), h('br'), row.auto ? '自己决定' : '主人要求'),
+          h('div', { className: 'body' }, h('b', null, row.title || row.video), ` · ${/^(ep|ss)/.test(row.video) ? '番剧单集' : '第' + row.part + 'P'} ${row.seconds}秒`, h('div', null, row.text),
+            h('div', { className: 'ab-small ab-muted' }, row.ok ? `已发送 · 弹幕ID ${row.id}` : row.message),
+            row.platformResponse ? h('details', null, h('summary', null, '平台响应'), h('pre', { className: 'ab-code' }, JSON.stringify(row.platformResponse, null, 2))) : null)))),
       )
     }
 
@@ -2767,7 +3192,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           acct.at ? h('span', { className: 'ab-muted' }, ' · ' + timeAgo(acct.at) + '查的') : null)
       const caps = (s && s.caps) || {}
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '刷抖音', right: f.sw('douyin.enabled'), desc: '她用一个专用浏览器（独立的登录资料，不碰你平时用的浏览器）刷抖音：定时打开推荐，一个个点开看，读标题、分类、抖音给的内容摘要和热评，再按自己的性格决定点不点赞、评不评论（特别想让你看的会在评论里 @你）、要不要在 QQ 上分享给你、记住什么。你在 QQ 里发抖音链接，她也能点开看完再聊。浏览器窗口放在屏幕外，不抢前台。总开关默认关：先扫码登录，再打开。' },
+        h(Card, { title: '刷抖音', right: f.sw('douyin.enabled'), desc: 'ta用一个专用浏览器（独立的登录资料，不碰你平时用的浏览器）刷抖音：定时打开推荐，一个个点开看，读标题、分类、抖音给的内容摘要和热评，再按自己的性格决定点不点赞、评不评论（特别想让你看的会在评论里 @你）、要不要在 QQ 上分享给你、记住什么。你在 QQ 里发抖音链接，ta也能点开看完再聊。浏览器窗口放在屏幕外，不抢前台。总开关默认关：先扫码登录，再打开。' },
           h(Row, { label: '抖音账号', hint: '建议用小号。扫一次码就行，登录状态存在专用浏览器里' },
             h('div', null,
               h('div', { className: 'ab-flex' },
@@ -2787,17 +3212,17 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
               h(Btn, { small: true, onClick: act('/douyin/window', 'win', { visible: false }), disabled: !!busy }, '收起窗口'))),
           h(Row, { label: '浏览器路径', hint: '留空 = 自动找 Edge（找不到再找 Chrome / Chromium）' }, f.text('douyin.browserPath', { size: 'wide', placeholder: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' })),
         ),
-        h(Card, { title: '主人抖音号', desc: '填你的抖音号或主页链接，点「核对」。核对过之后，她刷到特别想让你看的视频，会在评论里真的 @你（用抖音自己的 @ 选人，按你的账号 id 认人，你会收到抖音通知；认不出你就不发，不会发假 @）。改了输入要重新核对。' },
+        h(Card, { title: '主人抖音号', desc: '填你的抖音号或主页链接，点「核对」。核对过之后，ta刷到特别想让你看的视频，会在评论里真的 @你（用抖音自己的 @ 选人，按你的账号 id 认人，你会收到抖音通知；认不出你就不发，不会发假 @）。改了输入要重新核对。' },
           h(Row, { label: '你的抖音号 / 主页链接' }, f.text('douyin.owner.input', { size: 'wide', placeholder: '抖音号，或 https://www.douyin.com/user/…' })),
           h('div', { className: 'ab-flex', style: { marginTop: 4 } },
             h(Btn, { small: true, kind: 'primary', onClick: act('/douyin/confirm-owner', 'confirm', { input: ((draft.douyin || {}).owner || {}).input || '' }), disabled: !!busy }, busy === 'confirm' ? '核对中…' : '核对'),
             s && s.owner ? h('span', { className: 'ab-small', style: { color: 'var(--ab-ok)' } }, '已核对：' + s.owner.nickname) : h('span', { className: 'ab-small ab-muted' }, '还没核对（不核对就不会 @你）')),
         ),
-        h(Card, { title: '抖音私信', desc: '你在抖音上私信她，她会用自己的口气回（只认上面核对过的你，别人的私信不理）。让她找视频的话，她会尝试刷一轮再私信分享给你；这条流程仍需实际环境验证。只在「主动搭话」里设的醒着时间内回。' },
+        h(Card, { title: '抖音私信', desc: '你在抖音上私信ta，ta会用自己的口气回（只认上面核对过的你，别人的私信不理）。让ta找视频的话，ta会尝试刷一轮再私信分享给你；这条流程仍需实际环境验证。只在「主动搭话」里设的醒着时间内回。' },
           h(Row, { label: '回你的抖音私信' }, f.sw('douyin.ownerDm')),
           h(Row, { label: '多久看一次' }, f.num('douyin.dmPollMinutes', { min: 1, max: 60 }), h('span', { className: 'ab-muted' }, '分钟'), h(Btn, { small: true, onClick: act('/douyin/dms', 'dms'), disabled: !!busy }, busy === 'dms' ? '正在看…' : '现在看一次')),
         ),
-        h(Card, { title: '怎么刷', desc: '只在「主动搭话」里设的醒着时间内自己刷。主人在 QQ 里让她「去刷会儿抖音」也行。' },
+        h(Card, { title: '怎么刷', desc: '只在「主动搭话」里设的醒着时间内自己刷。主人在 QQ 里让ta「去刷会儿抖音」也行。' },
           h(Row, { label: '定时自己去刷' }, f.sw('douyin.autoBrowse')),
           h(Row, { label: '多久刷一轮' }, f.range('douyin.intervalHours', 1, 24, 1, (v) => v + ' 小时')),
           h(Row, { label: '每天最多刷' }, f.range('douyin.maxRunsPerDay', 0, 12, 1, (v) => v + ' 轮')),
@@ -2806,8 +3231,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Row, { label: '每个视频停留', hint: '真的在播放；停得越短越不像真人' }, f.num('douyin.dwellMin', { min: 3 }), h('span', { className: 'ab-muted' }, '～'), f.num('douyin.dwellMax', { min: 3 }), h('span', { className: 'ab-muted' }, '秒')),
           h(Row, { label: '分享到哪', hint: '抖音私信要先在上面核对你的抖音号；没核对或者发不出去时会改发 QQ' }, f.choices('douyin.shareTo', [
             { value: 'douyin', label: '抖音私信', desc: '在抖音里把视频分享给你（只有视频卡片）' },
-            { value: 'qq', label: 'QQ 私聊', desc: '她的话 + 视频链接' },
-            { value: 'both', label: '两边都发', desc: '抖音里收视频卡片，QQ 上看她说了什么' },
+            { value: 'qq', label: 'QQ 私聊', desc: 'ta的话 + 视频链接' },
+            { value: 'both', label: '两边都发', desc: '抖音里收视频卡片，QQ 上看ta说了什么' },
           ])),
           h(Row, { label: '分享给你', hint: '刷到好看的视频，分享给你的积极程度' }, f.choices('douyin.shareBias', [
             { value: 'proactive', label: '积极', desc: '好看有趣就分享' },
@@ -2824,7 +3249,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           h(Row, { label: '两次点赞 / 评论间隔' }, f.num('douyin.gate.minWriteGapSec', { min: 0, max: 600 }), h('span', { className: 'ab-muted' }, '秒')),
           h(Row, { label: '新号减半' }, f.num('douyin.gate.newAccountDays', { min: 0, max: 30 }), h('span', { className: 'ab-muted' }, '天')),
         ),
-        h(Card, { title: '她刷过什么', right: h('div', { className: 'ab-flex' },
+        h(Card, { title: 'ta刷过什么', right: h('div', { className: 'ab-flex' },
           h(Btn, { small: true, onClick: load }, '刷新'),
           h(Btn, { small: true, kind: 'primary', onClick: act('/douyin/run', 'run'), disabled: !!busy || Boolean(s && s.busy) }, s && s.busy ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在刷…') : '现在刷一轮')) },
           s && s.pauseReason ? h('div', { className: 'ab-note warn', style: { marginBottom: 8 } }, '今天先不点赞评论了：' + s.pauseReason + '。要验证的话点上面「显示浏览器窗口」处理，明天自动恢复。') : null,
@@ -2888,6 +3313,64 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         if (r.ok) setCookieText('')
         load()
       }
+      const [qrc, setQrc] = useState(null)
+      const [qrBusy, setQrBusy] = useState('')
+      const qrBegin = async () => {
+        setQrBusy('start')
+        const r = await post('/heybox/qr/start')
+        setQrBusy('')
+        setQrc(r)
+        toast(r.message || (r.ok ? '二维码出来了，用小黑盒 App 扫' : '拿不到二维码'), r.ok === false ? 'err' : 'ok')
+      }
+      const qrPoll = async () => {
+        setQrBusy('poll')
+        const r = await post('/heybox/qr/poll')
+        setQrBusy('')
+        toast(r.message || (r.state === 'ok' ? '登录成功' : '还没扫上'), r.state === 'ok' ? 'ok' : 'warn')
+        if (r.state === 'ok' && r.verified) setQrc(null)
+        load()
+      }
+      const riskOf = s && s.risk
+      const riskLeftMs = Math.max(0, Number(riskOf && riskOf.leftMs) || 0)
+      const clearRiskBtn = async () => {
+        setBusy('risk')
+        const r = await post('/heybox/risk/clear')
+        setBusy('')
+        toast(r.message || '好了', r.ok === false ? 'err' : 'ok')
+        load()
+      }
+      const verifyStep = async (path, body, name) => {
+        setBusy(name)
+        const r = await post(path, body)
+        setBusy('')
+        toast(r.message || (r.ok ? '好了' : '没成功'), r.ok === false ? 'err' : 'ok')
+        load()
+      }
+      const riskCard = () => h(Card, {
+        title: '访问限流 / 安全验证',
+        desc: '小黑盒对同一账号的读接口有频率限制：搜索最容易弹验证码，帖子详情次之。被挡下来之后ta不会硬试重试（重试只会让冷却更长），而是按阶梯等（5 分钟 → 20 分钟 → 1 小时 → 3 小时 → 8 小时）。想马上继续用就扫码：不用开浏览器，手机上扫一下就能换一个干净会话。',
+        right: h(Btn, { small: true, kind: 'ghost', onClick: clearRiskBtn, disabled: !!busy }, busy === 'risk' ? '处理中…' : '解除冷却'),
+      },
+        h(Row, { label: '现在的状态' },
+          riskLeftMs > 0
+            ? h('span', { className: 'ab-small', style: { color: 'var(--ab-warn)' } },
+              '冷却中，还要等 ' + Math.ceil(riskLeftMs / 60000) + ' 分钟' + (riskOf.reason === 'ratelimit' ? '（因操作太频繁）' : '（因安全验证）'))
+            : h('span', { className: 'ab-small', style: { color: 'var(--ab-ok)' } }, '正常，没在冷却')),
+        h(Row, { label: '接口限速', hint: '每档都带 ±20% 抖动，避免固定节拍' },
+          h('span', { className: 'ab-small ab-muted' }, '搜索 8 秒 · 帖详情 2.5 秒 · 信息流 1.2 秒 · 写操作 3 秒')),
+        h(Row, { label: '扫码登录（推荐）', hint: '不用开浏览器：用小黑盒 App 扫这个码就行。这也是被验证码挡住后最省事的恢复方式' },
+          h('div', null,
+            h('div', { className: 'ab-flex' },
+              h(Btn, { small: true, kind: 'primary', onClick: qrBegin, disabled: !!qrBusy }, qrBusy === 'start' ? '生成中…' : '生成二维码'),
+              qrc && qrc.ok ? h(Btn, { small: true, onClick: qrPoll, disabled: !!qrBusy }, qrBusy === 'poll' ? '查…' : '我扫完了，查结果') : null),
+            qrc && qrc.png ? h('div', { style: { marginTop: 8 } }, h('img', { src: qrc.png, style: { width: 200, height: 200, imageRendering: 'pixelated', border: '1px solid var(--ab-line)', borderRadius: 6 } })) : null,
+            qrc && qrc.ok ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 4 } }, qrc.message || '') : null)),
+        h(Row, { label: '浏览器手动验证', hint: '扫码不行时用：浏览器在后台打开，显示窗口后你自己点完验证，再按「验证完成」' },
+          h('div', { className: 'ab-flex' },
+            h(Btn, { small: true, disabled: !!busy, onClick: () => verifyStep('/heybox/verify/start', {}, 'verify') }, busy === 'verify' ? '打开中…' : '打开浏览器'),
+            h(Btn, { small: true, disabled: !!busy, onClick: () => verifyStep('/heybox/verify/show', { visible: true }, 'verify-show') }, '显示窗口'),
+            h(Btn, { small: true, kind: 'primary', disabled: !!busy, onClick: () => verifyStep('/heybox/verify/finish', {}, 'verify-end') }, busy === 'verify-end' ? '检查中…' : '验证完成'))),
+      )
       const acct = s && s.account
       const acctText = !acct || !acct.checkedAt ? h('span', { className: 'ab-small ab-muted' }, '还没检查过') :
         h('span', { className: 'ab-small', style: { color: acct.loggedIn ? 'var(--ab-ok)' : 'var(--ab-warn)' } },
@@ -2899,7 +3382,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       return h('div', { className: 'ab-grid' },
         h(Card, {
           title: '刷小黑盒', right: f.sw('heybox.enabled'),
-          desc: '用你的小黑盒账号逛游戏社区：定时看信息流、读帖子正文和热评，按性格决定点不点赞、评不评论；她自己会写帖子（先看热榜找角度，再看社区高赞帖在聊什么，配图走小黑盒图床），发完把链接报给你。写操作各有权限（「权限」页，默认仅主人），每天有额度上限。',
+          desc: '用你的小黑盒账号逛游戏社区：定时看信息流、读帖子正文和热评，按性格决定点不点赞、评不评论；ta自己会写帖子（先看热榜找角度，再看社区高赞帖在聊什么，配图走小黑盒图床），发完把链接报给你。写操作各有权限（「权限」页，默认仅主人），每天有额度上限。',
         },
           h(Row, { label: '小黑盒账号', hint: '从浏览器登录后把整串 Cookie 粘到下面。pkey 必须有；想让它能点赞评论发帖，还要有 x_xhh_tokenid（F12 → Application → Cookies 里能复制到）' },
             h('div', null,
@@ -2919,22 +3402,53 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                   s.hasToken ? '✓ 有 pkey 和 x_xhh_tokenid，读写都能用' : '⚠ 只有 pkey，没有 x_xhh_tokenid：点赞 / 评论 / 发帖大概率会被拒')
                 : null)),
         ),
+        riskCard(),
         h(Card, {
-          title: '她的逛法', desc: '只在「主动搭话」里设的醒着时间内自己逛。主人在 QQ 里让她「去逛逛小黑盒」也行。逛是只读的，不会乱点赞评论。',
+          title: 'ta的逛法', desc: '只在「主动搭话」里设的醒着时间内自己逛。主人在 QQ 里让ta「去逛逛小黑盒」也行。逛是只读的，不会乱点赞评论。',
         },
           h(Row, { label: '定时自己去逛' }, f.sw('heybox.autoBrowse')),
+          h(Row, { label: '只在谷时逛', hint: '避开工作日 9-12、14-18 两个高峰（那会儿模型排队久、单价高，逛一轮很费 token）。峰时ta会等，不占额度' },
+            f.sw('heybox.offPeakOnly')),
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '现在的时段', hint: '峰时段可以自己改；周末默认不算峰时' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small', style: { color: (s && s.peak && s.peak.now) ? 'var(--ab-warn)' : 'var(--ab-ok)' } },
+                (s && s.peak && s.peak.now) ? '峰时 · 等会儿再逛' : '谷时 · 可以逛'),
+              h('span', { className: 'ab-small ab-muted' }, s && s.peak ? '（' + s.peak.text + '）' : ''))) : null,
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '峰时段', hint: '默认 9-12 和 14-18（左闭右开）。改这两个数字就能挪到实际高峰' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small ab-muted' }, '上午'),
+              f.num('heybox.peakStartAM', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '–'),
+              f.num('heybox.peakEndAM', { min: 0, max: 24 }),
+              h('span', { className: 'ab-small ab-muted', style: { marginLeft: 8 } }, '下午'),
+              f.num('heybox.peakStartPM', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '–'),
+              f.num('heybox.peakEndPM', { min: 0, max: 24 }))) : null,
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '周末也算峰时', hint: '默认关：周末全天都能逛' },
+            f.sw('heybox.peakWeekend')) : null,
           h(Row, { label: '多久逛一圈' }, f.range('heybox.intervalHours', 1, 24, 1, (v) => v + ' 小时')),
           h(Row, { label: '一圈看几条' }, f.range('heybox.perRun', 1, 10, 1, (v) => v + ' 条')),
           h(Row, { label: '每天最多逛' }, f.range('heybox.maxRunsPerDay', 0, 12, 1, (v) => v + ' 轮')),
         ),
         h(Card, {
+          title: '分享给你',
+          desc: '逛到有意思的帖子，ta自己判断值不值得分享，值得就私聊发给你（带帖子链接）。和 B 站那边的分享是同一套逻辑。',
+        },
+          h(Row, { label: '私聊分享给我' }, f.sw('heybox.shareToOwner')),
+          h(Row, { label: '分享的积极程度', hint: 'ta自己的判断阈值：越保守越不舍得发' },
+            f.choices('heybox.shareBias', [
+              { value: 'stingy', label: '很保守', desc: '非特别好不发' },
+              { value: 'normal', label: '正常', desc: '觉得你会喜欢才发' },
+              { value: 'proactive', label: '积极', desc: '有趣就发，不太吝啬' },
+            ], { width: 200 })),
+          h(Row, { label: '每天最多分享' }, f.num('heybox.shareDaily', { min: 0, max: 10 }), h('span', { className: 'ab-muted' }, '条/天')),
+        ),
+        h(Card, {
           title: '每天上限',
-          desc: '小黑盒的帖详情和搜索接口查太勤会弹验证码（还可能连坐浏览器登录态），所以额度别设太大。搜索被挡时她会自动降级去翻信息流，不会反复硬试。',
+          desc: '小黑盒的帖详情和搜索接口查太勤会弹验证码（还可能连坐浏览器登录态），所以额度别设太大。搜索被挡时ta会自动降级去翻信息流，不会反复硬试。',
         },
           h(Row, { label: '点赞' }, f.num('heybox.likeDaily', { min: 0, max: 60 }), h('span', { className: 'ab-muted' }, '次/天')),
           h(Row, { label: '评论' }, f.num('heybox.commentDaily', { min: 0, max: 30 }), h('span', { className: 'ab-muted' }, '条/天')),
           h(Row, { label: '发帖' }, f.num('heybox.maxPostsPerDay', { min: 0, max: 5 }), h('span', { className: 'ab-muted' }, '篇/天（建议别超过 3）')),
-          h(Row, { label: '发帖风格', hint: '她写帖时按这个口吻来。也可以让她单次换：跟她说「用日记风格发一篇」' },
+          h(Row, { label: '发帖风格', hint: 'ta写帖时按这个口吻来。也可以让ta单次换：跟ta说「用日记风格发一篇」' },
             f.select('heybox.postStyle', [
               { value: 'diary', label: '大肥鱼日记', desc: '第一人称随手记，跟空间日记一个味，120-300字' },
               { value: 'news', label: '热搜文', desc: '报道新闻体，摆具体数字，200-800字' },
@@ -2952,7 +3466,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                 '逛 ' + (quota.browse || 0) + '/' + (limits.maxRunsPerDay || 0) +
                 ' · 赞 ' + (quota.like || 0) + '/' + (limits.likeDaily || 0) +
                 ' · 评 ' + (quota.comment || 0) + '/' + (limits.commentDaily || 0) +
-                ' · 帖 ' + (quota.post || 0) + '/' + (limits.maxPostsPerDay || 0)),
+                ' · 帖 ' + (quota.post || 0) + '/' + (limits.maxPostsPerDay || 0) + ' · 分享 ' + (quota.share || 0) + '/' + (limits.shareDaily || 0)),
               h(Btn, { small: true, kind: 'ghost', onClick: act('/heybox/clear-quota', 'quota') }, busy === 'quota' ? '清零中…' : '清零')))
             : null,
         ),
@@ -2960,7 +3474,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           title: '热榜预览', right: h('div', { className: 'ab-flex' },
             h(Btn, { small: true, onClick: load }, '刷新'),
             h(Btn, { small: true, kind: 'primary', onClick: loadHot, disabled: !!busy }, busy === 'hot' ? '拉取中…' : '看热榜')),
-          desc: '她写帖前会先看这个（热榜 → 搜社区 → 找具体素材）。这里只是让你看看现在有什么题，热榜里电竞和商业新闻不适合这个号。',
+          desc: 'ta写帖前会先看这个（热榜 → 搜社区 → 找具体素材）。这里只是让你看看现在有什么题，热榜里电竞和商业新闻不适合这个号。',
         },
           !hot ? h(Empty, { icon: '🔥', text: '点右上角「看热榜」，看看现在小黑盒在热议什么。' })
             : (hot.list || []).length === 0 ? h(Empty, { icon: '🔥', text: '热榜是空的，可能接口变了。' })
@@ -2968,8 +3482,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
               h('div', { className: 'meta' }, String(i + 1)), h('div', { className: 'body' }, x.text, x.tag ? h('span', { className: 'ab-muted' }, '  [' + x.tag + ']') : null)))),
         ),
         h(Card, {
-          title: '发帖自检（她发之前自己过一遍）',
-          desc: '这几条写在她的规则里，不满足就不发。你也可以照着看，她要发的帖哪条对不上就让改。',
+          title: '发帖自检（ta发之前自己过一遍）',
+          desc: '这几条写在ta的规则里，不满足就不发。你也可以照着看，ta要发的帖哪条对不上就让改。',
         },
           h('div', { className: 'ab-note', style: { marginBottom: 8, whiteSpace: 'pre-line' } },
             [
@@ -2983,7 +3497,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             '格式上的坑（已修在内核里）：帖子类型必须是「文章」(link_tag=11) 才能解析 HTML 并把图插在文字中间；分区 id 必须是真实存在的 7214 / 18745 / 806933，乱填会一直报「错误的帖子类型」。'),
         ),
         h(Card, {
-          title: '她逛过什么', right: h('div', { className: 'ab-flex' },
+          title: 'ta逛过什么', right: h('div', { className: 'ab-flex' },
             h(Btn, { small: true, onClick: load }, '刷新'),
             h(Btn, { small: true, kind: 'primary', onClick: act('/heybox/run', 'run'), disabled: !!busy }, busy === 'run' ? '正在逛…' : '现在逛一圈')),
         },
@@ -3019,8 +3533,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         load()
       }
       return h(Card, {
-        title: '她的画作' + (data ? '（显示最近 ' + data.items.length + ' 张 / 共 ' + data.total + ' 张）' : ''),
-        desc: '她画过的图都存在本机（不会自动删），这里只是面板里显示多少张。想看全部或者清理，点「打开文件夹」。',
+        title: 'ta的画作' + (data ? '（显示最近 ' + data.items.length + ' 张 / 共 ' + data.total + ' 张）' : ''),
+        desc: 'ta画过的图都存在本机（不会自动删），这里只是面板里显示多少张。想看全部或者清理，点「打开文件夹」。',
         right: h('div', { className: 'ab-flex' },
           h(Btn, { small: true, kind: 'ghost', onClick: load }, '刷新'),
           h(Btn, { small: true, kind: 'ghost', onClick: () => post('/image/open-folder').then((r) => toast(r.message, r.ok ? 'ok' : 'err')).catch(() => toast('打不开文件夹', 'err')) }, '打开文件夹')),
@@ -3029,7 +3543,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           f.num('imageGen.galleryShown', { min: 1, max: 50 }), h('span', { className: 'ab-muted' }, '张')),
         data && data.dir ? h('div', { className: 'ab-muted ab-small', style: { margin: '4px 0 8px', wordBreak: 'break-all' } }, '存图目录：' + data.dir) : null,
         !data ? h(Empty, { icon: '⏳', text: '加载中…' })
-          : data.items.length === 0 ? h(Empty, { icon: '🎨', text: '她还没画过图。在聊天里说「画一张……」，画好的图会出现在这里。' })
+          : data.items.length === 0 ? h(Empty, { icon: '🎨', text: 'ta还没画过图。在聊天里说「画一张……」，画好的图会出现在这里。' })
             : h('div', { className: 'ab-shots' }, data.items.map((it) => h(PaintCell, { key: it.file, it, onDelete: () => del(it.file) }))),
       )
     }
@@ -3107,7 +3621,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const setParams = (next) => setDraft(setPath(draft, 'imageGen.custom.params', next))
       const setP = (i, k, v) => setParams(params.map((p, j) => (j === i ? { ...p, [k]: v } : p)))
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '让她画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让她「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口，或登录 ChatGPT 使用实验性 Codex 订阅接法。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。' },
+        h(Card, { title: '让ta画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让ta「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口，或登录 ChatGPT 使用实验性 Codex 订阅接法。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。' },
           h(Row, { label: '接口格式', hint: '第二个适合 pollinations 这类「GET 一个地址就出图」的服务' },
             h(Seg, {
               value: isCodex ? 'codex' : isCustom ? 'custom' : 'openai',
@@ -3151,7 +3665,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           ),
           h(Row, { label: '默认构图', hint: isCodex ? '通过构图提示引导，实际尺寸由服务端选择，不保证严格比例' : '聊天工具可指定本次构图。服务不支持所选尺寸时会报告失败，请换一种构图；自定义接口需使用尺寸占位符' },
             f.select('imageGen.shape', [
-              { value: 'her', label: '让她选择', desc: isCodex ? '未指定时由服务端选择' : '未指定时沿用图片尺寸' },
+              { value: 'her', label: '让ta选择', desc: isCodex ? '未指定时由服务端选择' : '未指定时沿用图片尺寸' },
               { value: 'square', label: isCodex ? '方图 1:1' : '方图 1:1（1024 × 1024）' },
               { value: 'portrait', label: isCodex ? '竖图 2:3' : '竖图 2:3（1024 × 1536）' },
               { value: 'landscape', label: isCodex ? '横图 3:2' : '横图 3:2（1536 × 1024）' },
@@ -3160,12 +3674,89 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           !isCodex && (!c.shape || c.shape === 'her') ? h(Row, { label: '图片尺寸', hint: isCustom ? '接口地址 / 参数里可以用 {size} 或 {width}/{height}' : '未指定构图时沿用这个尺寸' },
             f.select('imageGen.size', [{ value: '1024x1024', label: '1024 × 1024', desc: '方图' }, { value: '768x1024', label: '768 × 1024', desc: '竖图' }, { value: '1024x768', label: '1024 × 768', desc: '横图' }, { value: '512x512', label: '512 × 512', desc: '小图，更快' }], { width: 200 })) : null,
           h(Row, { label: '固定风格', hint: '每次画都会加在描述前面' }, f.text('imageGen.stylePrompt', { size: 'wide', placeholder: '例如：日系二次元，柔和光线，蓝白配色' })),
-          h(Row, { label: '只给主人画', hint: '关掉后群友也能让她画（会花你的额度）' }, f.sw('imageGen.ownerOnly')),
-          h(Row, { label: '让她画完自己看一眼', hint: '开着才把画好的图传给她看（模型不支持看图时自动不传）；关掉就只回一句「画好了」，不传图' }, f.sw('imageGen.seeOwn')),
+          h(Row, { label: '只给主人画', hint: '关掉后群友也能让ta画（会花你的额度）' }, f.sw('imageGen.ownerOnly')),
+          h(Row, { label: '让ta画完自己看一眼', hint: '开着才把画好的图传给ta看（模型不支持看图时自动不传）；关掉就只回一句「画好了」，不传图' }, f.sw('imageGen.seeOwn')),
           isCustom ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '例子：地址填 https://image.pollinations.ai/prompt/{prompt}，再加 model=flux-anime、width=1080、height=1920、nologo=true 四个参数，GET 就会请求 …/prompt/<提示词>?model=flux-anime&width=1080&…') : null,
-          !c.enabled ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '还没开启。填好接口信息、打开右上角开关并保存后，她就会多一个「画图」能力。') : null,
+          !c.enabled ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '还没开启。填好接口信息、打开右上角开关并保存后，ta就会多一个「画图」能力。') : null,
         ),
         h(PaintGallery, { draft, setDraft, toast }),
+      )
+    }
+
+    /** 备份：打包数据目录，换电脑时导入，重启 DSH 后换上。 */
+    function Backup({ toast }) {
+      const [s, setS] = useState(null)
+      const [path, setPath] = useState('')
+      const [busy, setBusy] = useState(false)
+      const [over, setOver] = useState(false)
+      const fileRef = useRef(null)
+      const load = () => get('/backup/state').then(setS)
+      useEffect(() => { load() }, [])
+      const running = Boolean(s && s.job && s.job.running)
+      useEffect(() => {
+        if (!running) return
+        const t = setInterval(load, 1000)
+        return () => clearInterval(t)
+      }, [running])
+      const call = (p, body) => fetch(API + p, { method: 'POST', headers: { 'x-aurabot-backup': '1', 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => r.json())
+      const after = (r) => { toast(r.ok ? (r.message || ('备份已导入（' + r.files + ' 个文件），重启 DSH 后换上')) : r.message, r.ok ? 'ok' : 'err'); load() }
+      const upload = async (file) => {
+        if (!file) return
+        if (!confirm('导入「' + file.name + '」？\n\n重启 DSH 后，这台电脑上的配置、记忆、人设等会被备份里的内容替换，原来的文件留在 backups 文件夹。')) return
+        setBusy(true)
+        try { after(await fetch(API + '/backup/upload', { method: 'POST', headers: { 'x-aurabot-backup': '1' }, body: file }).then((r) => r.json())) } catch (e) { toast(e.message) } finally { setBusy(false) }
+      }
+      const size = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.ceil(n / 1024) + ' KB')
+      const job = s && s.job
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '备份', desc: '把配置、记忆、人设、表情、模块和ta的数据打成一个文件，放到新电脑上恢复。' },
+          h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, '备份文件里有账号凭证和聊天记录，别发给别人，也别传到公开的地方。'),
+          h('div', { className: 'ab-flex' },
+            h(Btn, { small: true, kind: 'primary', disabled: running, onClick: async () => { after(await call('/backup/create')) } }, running ? '打包中 ' + (job.done || 0) + ' / ' + (job.total || '…') : '立即备份'),
+            h(Btn, { small: true, onClick: async () => { const r = await call('/backup/open'); if (!r.ok) toast(r.message) } }, '打开备份文件夹')),
+          job && job.error ? h('div', { className: 'ab-note err', style: { marginTop: 10 } }, '备份失败：' + job.error) : null,
+          job && job.result ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 10 } }, '刚生成：' + job.result.name + '，' + job.result.files + ' 个文件' + (job.result.skipped.length ? '；有 ' + job.result.skipped.length + ' 个文件没能带上：' + job.result.skipped.slice(0, 5).join('、') : '')) : null,
+          s && s.list.length ? h('div', { style: { marginTop: 10 } }, s.list.slice(0, 8).map((b) => h('div', { key: b.name, className: 'ab-small' }, b.name + ' · ' + size(b.bytes)))) : null),
+        h(Card, { title: '恢复', desc: '在新电脑上先装好 DSH 和 Aurabot，再把备份拖进来。重启 DSH 后自动换上设置和数据、重新下载市场模块、放回 QQ 会话，原来的文件留在 backups 文件夹。' },
+          s && s.modules && s.modules.length ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 8 } }, '还没装回来的模块：' + s.modules.join('、') + '（下次启动再试）') : null,
+          s && s.pending ? h('div', { className: 'ab-note warn' }, '已导入 ' + s.pending.files + ' 个文件（备份于 ' + String(s.pending.createdAt || '').slice(0, 16).replace('T', ' ') + '），重启 DSH 后换上。',
+            h('div', { style: { marginTop: 8 } }, h(Btn, { small: true, kind: 'ghost', onClick: async () => { after(await call('/backup/cancel')) } }, '取消恢复'))) : [
+            h('input', { key: 'f', ref: fileRef, type: 'file', accept: '.zip', style: { display: 'none' }, onChange: (e) => { upload(e.target.files[0]); e.target.value = '' } }),
+            h('div', { key: 'b', className: cx('ab-drop', over && 'over'), onClick: () => fileRef.current && fileRef.current.click(),
+              onDragOver: (e) => { e.preventDefault(); setOver(true) }, onDragLeave: () => setOver(false),
+              onDrop: (e) => { e.preventDefault(); setOver(false); upload(e.dataTransfer.files[0]) } }, busy ? '导入中…' : '把备份 zip 拖到这里，或点这里选择文件'),
+            h('div', { key: 'p', className: 'ab-flex', style: { marginTop: 10 } },
+              h('input', { className: 'ab-input', placeholder: '文件很大时填完整路径，如 D:\\aurabot-backup.zip', value: path, onChange: (e) => setPath(e.target.value) }),
+              h(Btn, { small: true, disabled: busy || !path.trim(), onClick: async () => { if (!confirm('导入这个备份？重启 DSH 后会替换这台电脑上的数据。')) return; setBusy(true); try { after(await call('/backup/restore-path', { path })) } finally { setBusy(false) } } }, '导入')),
+          ]),
+        h(Card, { title: '不会带过去的', desc: '这些要在新电脑上重新弄一下。' },
+          h('div', { className: 'ab-small ab-muted' }, 'DSH 自己的设置和模型密钥、QQ 网关 SnowLuma 的登录、QQ 工作区以外的 DSH 会话；抖音和小黑盒的浏览器登录要重新扫码；日志和缓存不备份；翻唱环境和桌宠的 Electron 要重新安装；数据目录以外的路径（比如 ffmpeg、本地图片文件夹）在新电脑上要重新填。')))
+    }
+
+    /** 安全防护：SSRF 这类内置防护的强度。 */
+    function Security({ st, draft, setDraft }) {
+      const mode = (draft.security && draft.security.ssrfMode) || 'strict'
+      const picked = draft.update && draft.update.unstable
+      const unstable = typeof picked === 'boolean' ? picked : String(st.version).includes('-')
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '更新推送', desc: '插件有新版本时，面板会提示并给出更新命令。' },
+          h(Row, { label: '订阅不稳定版本', hint: '打开后也会收到 beta 和 rc 测试版，能早点用上新功能，但可能有问题；关掉只收正式版' }, h(Switch, { on: unstable, onChange: (v) => setDraft(setPath(draft, 'update.unstable', v)) }))),
+        h(Card, { title: 'SSRF 防护', desc: '限制 ta 下载图片、语音时能访问哪些地址 —— 防止有人用一条链接诱导 ta 去访问你电脑或内网里的服务（路由器管理页、云服务器的 169.254.169.254、本机端口之类）。' },
+          h(Row, { label: '防护强度', hint: '部署在服务器上、或者群里有陌生人时，用「严格」' },
+            h(Seg, {
+              value: mode,
+              onChange: (v) => setDraft(setPath(draft, 'security.ssrfMode', v)),
+              options: [{ value: 'strict', label: '严格' }, { value: 'loose', label: '宽松' }],
+            })),
+          mode === 'strict'
+            ? h('div', { className: 'ab-note' }, '严格：解析结果里只要有一个地址落在内网段（10./127./169.254./172.16-31/192.168./100.64-127/fd00::/8 等）就拒绝。最安全；但如果你的代理 DNS 会给公网域名塞一条 IPv6 假地址，正常图片也会被拦下来。')
+            : h('div', { className: 'ab-note warn' }, '宽松：只有解析结果全部是内网才拒绝。适合本机开着 fake-ip 代理、DNS 会给公网域名同时返回公网地址和 IPv6 ULA（fd00::/8）的情况。代价是「公网 + 内网混合返回」的域名会被放行 —— 别在服务器上开。'),
+          h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '严格模式下图片老是下不来时，先查一下这个域名是不是解析出了内网地址：nslookup -type=AAAA multimedia.nt.qq.com.cn'),
+        ),
+        h(Card, { title: '其它内置防护', desc: '这些是固定行为，暂时没有开关。' },
+          h('div', { className: 'ab-muted ab-small', style: { whiteSpace: 'pre-wrap' } },
+            ['· 只下载 http / https，并限制单张图片大小', '· 只从白名单里的会话收表情', '· 群管操作只认主人，对象不能是主人自己', '· 联动（bridge）默认关闭，开放时必须带密钥', '· 表情的改名 / 删除只对主人开放'].join('\n')),
+        ),
       )
     }
 
@@ -3214,10 +3805,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const body = [
         // 0. QQ 号
         h('div', null,
-          h('p', { className: 'ab-desc' }, '大肥鱼需要一个自己的 QQ 号（机器人号），还要知道谁是她的主人。'),
+          h('p', { className: 'ab-desc' }, '大肥鱼需要一个自己的 QQ 号（机器人号），还要知道谁是ta的主人。'),
           h(Row, { label: '机器人 QQ 号', hint: '强烈建议用小号：非官方 QQ 工具有被限制的风险' }, f.text('botQQ', { placeholder: '例如 123456789' })),
           h(Row, { label: '你的 QQ 号（主人）', hint: '群管、操作电脑这些只听主人的' }, f.text('ownerQQ', { placeholder: '你的大号' })),
-          h(Row, { label: '她怎么称呼你' }, f.text('ownerName', { placeholder: '主人' })),
+          h(Row, { label: 'ta怎么称呼你' }, f.text('ownerName', { placeholder: '主人' })),
           draft.botQQ && draft.ownerQQ && draft.botQQ === draft.ownerQQ ? h('div', { className: 'ab-note err' }, '机器人号和主人号不能是同一个。') : null),
         // 1. SnowLuma，或接已有的 OneBot 机器人
         external ? h('div', null,
@@ -3257,9 +3848,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           procs ? h('table', { className: 'ab-table', style: { marginTop: 10 } }, h('tbody', null, procs.map((p) => h('tr', { key: p.pid }, h('td', null, p.pid), h('td', null, p.uin || '识别不出'), h('td', null, p.nickname || ''), h('td', null, p.isBot ? h('span', { className: 'ab-badge' }, '机器人号') : h('span', { className: 'ab-muted ab-small' }, '不会碰')))))) : null),
         // 4. 完成
         h('div', null,
-          h('p', { className: 'ab-desc' }, '都准备好了！最后选一下她怎么上线：'),
+          h('p', { className: 'ab-desc' }, '都准备好了！最后选一下ta怎么上线：'),
           h(Choices, { value: live, onChange: setLive, options: [
-            { value: 'dry', label: '先试运行', desc: '她会照常思考，但只写进日志、不真的发出去。看几条没问题再在右上角关掉试运行' },
+            { value: 'dry', label: '先试运行', desc: 'ta会照常思考，但只写进日志、不真的发出去。看几条没问题再在右上角关掉试运行' },
             { value: 'live', label: '直接上线', desc: '马上开始真的回 QQ 消息' },
           ] }),
           h('div', { className: 'ab-flex', style: { marginTop: 12 } },
@@ -3268,6 +3859,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       return h('div', { className: 'ab-card', style: { padding: '20px 22px' } },
         h('div', { className: 'ab-flex', style: { marginBottom: 6 } }, h('h3', { style: { margin: 0, fontSize: 16 } }, '设置向导'), h('span', { className: 'ab-muted ab-small' }, '第 ' + (step + 1) + ' / ' + WIZ_STEPS.length + ' 步 · ' + WIZ_STEPS[step]), h('div', { className: 'ab-spacer' }),
           st.config.setupDone && onClose ? h(Btn, { small: true, kind: 'ghost', onClick: onClose }, '关闭向导') : null),
+        !st.config.setupDone ? h('details', { style: { marginTop: 10 } }, h('summary', { className: 'ab-small' }, '换电脑了？从备份恢复'), h('div', { style: { marginTop: 10 } }, h(Backup, { toast }))) : null,
         h('div', { className: 'ab-wiz-bar' }, WIZ_STEPS.map((s, i) => h('button', { key: s, type: 'button', className: cx('seg', i < step && 'done', i === step && 'on'), onClick: () => i <= step && go(i), title: s }, h('span', null, s)))),
         verified && !st.config.setupDone ? h('div', { className: 'ab-note', style: { marginTop: 12 } }, '机器人号已经连接并核对通过。', ' ', h(Btn, { small: true, onClick: useExisting }, '使用现有连接，进入面板')) : null,
         h('div', { style: { minHeight: 220, marginTop: 14 } }, body),
@@ -3364,7 +3956,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       // 标签页：内置的按模块在不在跑决定显示；自己写的模块有设置或面板的各占一页
       const mods = st.modules || []
       const running = (id) => { const m = mods.find((x) => x.id === id); return Boolean(m && m.running) }
-      const hasUi = (m) => m.running === 'user' && !m.builtin && ((m.settings || []).length || m.panel)
+      const hasUi = (m) => m.running === 'user' && !m.builtin && !TABS.some((t) => t.id === m.id) && ((m.settings || []).length || m.panel)
       // 写了 tab 的模块嵌进那个内置标签页；没写（或写的页不存在）的单独一页
       const intoTab = (m) => Boolean(m.tab && TABS.some((t) => t.id === m.tab))
       const extTabs = mods.filter((m) => hasUi(m) && !intoTab(m)).map((m) => ({ id: 'ext:' + m.id, label: m.name, ext: m.id }))
@@ -3373,10 +3965,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
         overview: Overview, connect: Connect, persona: Persona, access: Access, group: Group, model: Model, voice: Voice,
-        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, modules: Modules, logs: Logs,
+        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'] }
+      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }

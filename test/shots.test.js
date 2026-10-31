@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { dataDir } from '../src/core/store.js'
 
 // dataDir() 每次调用都读这个环境变量，所以测试之间换目录就能隔离
 process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-shots-'))
@@ -164,10 +165,10 @@ test('面板接口：libraryShots / shotFileOf / deleteShot 串起来', async ()
   assert.equal(bili.shotFileOf(file), '', '删掉后路径也没了')
 })
 
-test('config：shotLibrary 默认 300，越界会被夹住', () => {
+test('config：shotLibrary 默认 300，太小会被夹住', () => {
   assert.equal(normalize({}).bili.shotLibrary, 300)
-  assert.equal(normalize({ bili: { shotLibrary: 5000 } }).bili.shotLibrary, 2000)
-  assert.equal(normalize({ bili: { shotLibrary: 1 } }).bili.shotLibrary, 20)
+  assert.equal(normalize({ bili: { shotLibrary: 5000 } }).bili.shotLibrary, 5000)
+  assert.equal(normalize({ bili: { shotLibrary: 0 } }).bili.shotLibrary, 1)
   assert.equal(normalize({ bili: { shotLibrary: 'abc' } }).bili.shotLibrary, 300)
 })
 
@@ -271,9 +272,10 @@ test('B 站模块：截图库路由预览 / 删除、工具固定发当前会话
   const routes = new Map(), builders = []
   const fake = {
     config: () => cfg, lazy: () => null, log: { info() {}, warn() {}, debug() {} },
+    dataDir: (...parts) => dataDir('modules-data', 'bili', ...parts), onDispose() {},
     on() {}, every() {}, tool: (build) => builders.push(build), route: (p, handler) => routes.set(p, handler),
     core: {
-      hub: { sendImage: async (chatId, src) => { sent.push({ chatId, src }); return { message_id: 8 } } },
+      hub: { sendImage: async (chatId, src) => { sent.push({ chatId, src }); return { message_id: 8 } }, turnHasOwner: () => true, turnSendersAllOwner: () => true },
       http: { query: (req) => req.query, body: async (req) => req.body, send: (_res, status, body, type) => ({ status, body, type }) },
     },
   }

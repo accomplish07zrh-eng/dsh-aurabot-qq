@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import biliModule from '../src/modules/bili/index.js'
 import { normalize } from '../src/core/config.js'
+import { dataDir } from '../src/core/store.js'
 
 test('B站头像：last / 最近图片 / 网址、主人权限和开关在模块内正确解析', async () => {
   const cfg = normalize({ enabled: true, dryRun: true, ownerQQ: '10000001', bili: { enabled: true } })
@@ -12,6 +13,7 @@ test('B站头像：last / 最近图片 / 网址、主人权限和开关在模块
   biliModule.setup({
     config: () => cfg, lazy: () => null, log: { info() {}, debug() {}, warn() {} },
     on: (kind, fn) => events.set(kind, fn), tool: (fn) => builders.push(fn), every() {}, route() {},
+    dataDir: (...parts) => dataDir('modules-data', 'bili', ...parts), onDispose() {},
     core: { hub },
   })
   const chat = { kind: 'private', userId: '10000001', chatId: 'private:10000001' }

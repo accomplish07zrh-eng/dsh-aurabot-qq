@@ -15,6 +15,7 @@ const RING = 300
 export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, version, apiVersion, overview }) {
   const events = [] // 最近发生的事（收到的消息、她发出去的话、模块发的事件），别的程序轮询用
   let seq = 0
+  let disposed = false
   let toolOffs = []
   let toolNames = []
 
@@ -119,10 +120,18 @@ export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, versio
     ]
   }
 
-  function refresh() {
+  function clearTools() {
     for (const off of toolOffs) { try { off() } catch (error) {} }
     toolOffs = []
     toolNames = []
+  }
+  function dispose() {
+    disposed = true
+    clearTools()
+  }
+  function refresh() {
+    if (disposed) return
+    clearTools()
     if (!getConfig().bridge.dshTools) return
     const tools = ctx.get?.('tools')
     if (!tools || typeof tools.register !== 'function') {
@@ -177,7 +186,7 @@ export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, versio
   mods.listen('open/event', (type, data) => record(String(type), data && typeof data === 'object' ? { data } : { data: String(data) }))
 
   return {
-    ops, service, refresh, ensureToken, resetToken, authorized,
+    ops, service, refresh, dispose, ensureToken, resetToken, authorized,
     deniedTools: () => toolNames.slice(),
     examples: (base) => examples(base, getConfig().bridge.token),
   }

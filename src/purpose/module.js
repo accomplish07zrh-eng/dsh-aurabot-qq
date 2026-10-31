@@ -240,6 +240,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       } catch (error) {
         log.warn?.('目的：桌宠气泡投递出错：', error?.message)
       }
+      if (r && r.ok && r.via !== 'qq') hub.noteSaid?.(chatIdOf(getConfig()), text) // 气泡没法回，主人在 QQ 接话时她得知道说过什么
       if (r && r.ok) return r.via === 'qq' ? 'qq' : 'pet' // dispatch 内部竞态回落（极小概率）也只发了一处
       if (r && r.reason === 'focus') return 'silent' // 专注模式开着：不发也不回落
       return su.petFallbackToQQ ? 'qq' : 'silent'

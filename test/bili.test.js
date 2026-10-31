@@ -84,7 +84,7 @@ function fakes({ decisions, replyText = '是呀 我也觉得', cfgOver = {}, pos
     view: async ({ bvid }) => ({ bvid: bvid || 'BV1ccccccccc', aid: bvid === 'BV1bbbbbbbbb' ? 2 : 1, cid: 9, title: bvid === 'BV1bbbbbbbbb' ? '猫猫做饭' : '米饭大赛', author: 'UP主', play: 20000, desc: '简介' }),
     subtitle: async () => '大家好今天做饭',
     comments: async () => [{ name: '网友', text: '好香' }],
-    postComment: async (aid, message, o) => { if (postError) { posted.push({ failed: true }); throw postError } posted.push({ aid, message, ...(o || {}) }); return { rpid: 1 } },
+    postComment: async (aid, message, o) => { if (postError) { posted.push({ failed: true }); throw postError } posted.push({ aid, message, ...(o || {}) }); return { rpid: 1, missed: [] } },
     likeVideo: async () => {},
     setSign: async (sign) => { posted.push({ sign }) },
     replyFeed: async () => [{ id: 'f1', name: '路人甲', text: '你也爱吃米饭？', myText: '看饿了', oid: 1, root: 100, parent: 101, title: '米饭大赛', type: 1 }],
@@ -263,4 +263,28 @@ test('#6 换 B 站头像：先下载图片再 multipart 上传到 face/update；
   const { normalize: n2 } = await import('../src/core/config.js')
   assert.equal(n2({}).profilePerms.biliAvatar, 'owner')
   assert.equal(n2({ profilePerms: { biliAvatar: 'x' } }).profilePerms.biliAvatar, 'owner')
+})
+
+test('评论里的 @昵称 按昵称查到 mid 一起发，查不到的留作文字', async () => {
+  const { createBiliApi } = await import('../src/bili/api.js')
+  const posts = []
+  const json = (data) => ({ ok: true, status: 200, headers: { getSetCookie: () => [], get: () => '' }, json: async () => ({ code: 0, data }) })
+  const fetchImpl = async (url, opts = {}) => {
+    const u = String(url)
+    if (u.includes('/x/web-interface/nav')) return json({ wbi_img: { img_url: 'https://i/a.png', sub_url: 'https://i/b.png' } })
+    if (u.includes('/wbi/search/type')) {
+      const kw = new URL(u).searchParams.get('keyword')
+      return json({ result: kw === '大肥鱼' ? [{ uname: '<em class="keyword">大肥鱼</em>', mid: 123 }, { uname: '大肥鱼2', mid: 456 }] : [{ uname: kw + '2', mid: 789 }] })
+    }
+    if (u.includes('/reply/add')) { posts.push(new URLSearchParams(opts.body)); return json({ rpid: 9 }) }
+    return json({ b_3: 'x', b_4: 'y' })
+  }
+  const api = createBiliApi({ getCookie: () => 'SESSDATA=a; bili_jct=b', log: { debug() {} }, fetchImpl })
+  const r = await api.postComment(1, '＠大肥鱼 快看 @没这人 哈哈')
+  assert.deepEqual(r, { rpid: 9, at: ['大肥鱼'], missed: ['没这人'] })
+  assert.equal(posts[0].get('message'), '@大肥鱼 快看 @没这人 哈哈')
+  assert.deepEqual(JSON.parse(posts[0].get('at_name_to_mid')), { '大肥鱼': 123 })
+
+  await api.postComment(1, '没有艾特')
+  assert.equal(posts[1].has('at_name_to_mid'), false)
 })

@@ -5,17 +5,26 @@ const RECONNECT_MIN = 2000
 const RECONNECT_MAX = 30000
 // 网关短暂不可用（SnowLuma 刚被重启、端口还没释放）时，发消息别直接丢：等一会儿再试
 const RETRY_DELAYS = [1000, 3000, 5000]
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 export class OneBotError extends Error {
-  constructor(action, data, { transport = false } = {}) {
+  constructor(action, data, { transport = false, uncertain = false } = {}) {
     super(`${action} 失败：${data?.message || data?.wording || data?.retcode || '未知错误'}`)
     this.action = action
     this.data = data
     // transport = 根本没连上网关（可以重试）；业务错误（retcode 不为 0、超时但也可能已经发出去）不重试
     this.transport = transport
+    this.uncertain = uncertain
   }
 }
+
+/** 只有确定没连上或网关明确拒绝时，才能换一种方式发送。 */
+export function isDefiniteFailure(error) {
+  if (!(error instanceof OneBotError) || error.uncertain || /超时|timeout|timed?\s*out/i.test(String(error.data?.message || error.message))) return false
+  return error.transport || error.data?.status === 'failed' || (error.data?.retcode != null && Number(error.data.retcode) !== 0)
+}
+
+// fetch 失败不一定是没连上：连接建立后断开时，网关可能已经收到了请求。
+const notConnected = (error) => ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error?.cause?.code)
 
 /**
  * @param {object} o
@@ -31,7 +40,10 @@ export function createOneBotClient({ endpoint, onEvent, onState, log, retryDelay
   let backoff = RECONNECT_MIN
   let state = 'stopped'
   let echoSeq = 0
+  let stopGeneration = 0
+  let explicitlyStopped = false // 初次 start 前仍允许调用，stop 后须重新 start
   const pending = new Map()
+  const retryWaits = new Set()
 
   const setState = (s, detail) => {
     if (state === s) return
@@ -40,7 +52,7 @@ export function createOneBotClient({ endpoint, onEvent, onState, log, retryDelay
   }
 
   /** 走一次 HTTP 或 WS；网络层失败标成 transport，业务错误照原样抛。 */
-  async function callOnce(action, params, timeoutMs) {
+  async function callOnce(action, params, timeoutMs, generation) {
     const ep = endpoint()
     if (ep.httpUrl) {
       const ctrl = new AbortController()
@@ -51,13 +63,19 @@ export function createOneBotClient({ endpoint, onEvent, onState, log, retryDelay
         const r = await fetch(`${ep.httpUrl.replace(/\/+$/, '')}/${action}`, {
           method: 'POST', headers, body: JSON.stringify(params), signal: ctrl.signal,
         })
-        const j = await r.json().catch(() => ({ status: 'failed', retcode: r.status, message: `HTTP ${r.status}` }))
+        let j
+        try { j = await r.json() } catch (error) {
+          if (error.name === 'AbortError') throw error
+          throw new OneBotError(action, { message: `网关响应无法解析（HTTP ${r.status}）` }, { uncertain: true })
+        }
         if (j.status === 'ok' || j.retcode === 0) return j.data
         throw new OneBotError(action, j)
       } catch (error) {
         if (error instanceof OneBotError) throw error
         // 超时可能是"已经发出去了只是没等到回执"，重试会重复发消息 —— 不重试
-        if (error.name === 'AbortError') throw new OneBotError(action, { message: '超时' })
+        if (error.name === 'AbortError') throw new OneBotError(action, { message: '超时' }, { uncertain: true })
+        if (!notConnected(error)) throw new OneBotError(action, { message: describeNetError(error, ep) }, { uncertain: true })
+        if (generation !== stopGeneration) throw new OneBotError(action, { message: 'QQ 网关客户端已停止' })
         if (ws && ws.readyState === 1) {
           try { return await callWs(action, params, timeoutMs) } catch (wsError) { throw wsError }
         }
@@ -76,23 +94,33 @@ export function createOneBotClient({ endpoint, onEvent, onState, log, retryDelay
   }
 
   async function call(action, params = {}, { timeoutMs = 30000, retries = retryDelays.length } = {}) {
+    if (explicitlyStopped) throw new OneBotError(action, { message: 'QQ 网关客户端已停止' })
     const ep0 = endpoint()
     // 压根没配网关：立即失败，别让调用方白等重试（查群名之类的会立刻回退）
     if (!ep0.httpUrl && !ep0.wsUrl) {
       throw new OneBotError(action, { message: '还没配置 QQ 网关地址' }, { transport: true })
     }
     let lastError = null
+    const generation = stopGeneration
+    const stoppedError = () => new OneBotError(action, { message: 'QQ 网关客户端已停止' })
     for (let i = 0; i <= retries; i++) {
+      if (generation !== stopGeneration) throw stoppedError()
       try {
-        return await callOnce(action, params, timeoutMs)
+        return await callOnce(action, params, timeoutMs, generation)
       } catch (error) {
         lastError = error
+        if (generation !== stopGeneration) throw stoppedError()
         // 业务错误（比如没权限、参数不对）重试也没用
         if (!(error instanceof OneBotError) || !error.transport) throw error
         if (i === retries) break
         const wait = retryDelays[i] ?? retryDelays[retryDelays.length - 1]
         log?.warn?.(`${action}：网关暂时连不上，${wait / 1000}s 后重试（${i + 1}/${retries}）`)
-        await sleep(wait)
+        if (generation !== stopGeneration) throw stoppedError()
+        await new Promise((resolve) => {
+          const done = () => { clearTimeout(timer); retryWaits.delete(done); resolve() }
+          const timer = setTimeout(done, wait)
+          retryWaits.add(done)
+        })
       }
     }
     throw lastError
@@ -104,7 +132,7 @@ export function createOneBotClient({ endpoint, onEvent, onState, log, retryDelay
     return new Promise((resolve, reject) => {
       const t = setTimeout(() => {
         pending.delete(echo)
-        reject(new OneBotError(action, { message: '超时' }))
+        reject(new OneBotError(action, { message: '超时' }, { uncertain: true }))
       }, timeoutMs)
       pending.set(echo, { resolve, reject, t, action })
       ws.send(JSON.stringify({ action, params, echo }))
@@ -155,7 +183,7 @@ export function createOneBotClient({ endpoint, onEvent, onState, log, retryDelay
       if (ws === sock) ws = null
       for (const [k, p] of pending) {
         clearTimeout(p.t)
-        p.reject(new OneBotError(p.action, { message: '连接断开' }))
+        p.reject(new OneBotError(p.action, { message: '连接断开' }, { uncertain: true }))
         pending.delete(k)
       }
       if (!stopped) {
@@ -177,12 +205,16 @@ export function createOneBotClient({ endpoint, onEvent, onState, log, retryDelay
     call,
     start() {
       if (!stopped) return
+      explicitlyStopped = false
       stopped = false
       backoff = RECONNECT_MIN
       connect()
     },
     stop() {
       stopped = true
+      explicitlyStopped = true
+      stopGeneration++
+      for (const done of [...retryWaits]) done()
       clearTimeout(timer)
       setState('stopped')
       try { ws?.close() } catch (error) {}

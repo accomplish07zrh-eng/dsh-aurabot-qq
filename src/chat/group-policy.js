@@ -70,7 +70,9 @@ export function decideGroupReply(p) {
   }
   if (p.mentioned) return { reply: true, mode: 'must', reason: '被 @' }
   if (p.repliedToBot) return { reply: true, mode: 'must', reason: '引用了她的消息' }
-  const hit = (pol.wakeWords || []).find((w) => w && text.includes(w))
+  // @ 了别人（没 @ 她）：不算在叫她，但仍走正常插话判断
+  const atOther = !p.mentioned && p.atOthers === true
+  const hit = atOther ? undefined : (pol.wakeWords || []).find((w) => w && text.includes(w))
   if (hit) return { reply: true, mode: 'must', reason: `叫到了「${hit}」` }
   const rel = typeof p.relevance === 'number' ? p.relevance : 1
 

@@ -7,9 +7,9 @@
 你可以：
 
 - **加新模块**：给她新本事（查天气、接智能家居、关键词回复、对接自己的服务……）
-- **关掉内置模块**：面板「扩展」页一个开关
+- **关掉内置模块**：面板「已安装」页一个开关
 - **替换内置模块**：写一个**同名**的模块，内置的就不加载了，用你的
-- **复制内置模块来改**：面板「扩展」页点「复制一份来改」，内置模块的源码会复制到 `modules/<id>/`，改完保存就生效
+- **复制内置模块来改**：面板「已安装」页点「复制一份来改」，内置模块的源码会复制到 `modules/<id>/`，改完保存就生效
 
 ## 目录
 
@@ -46,7 +46,7 @@ export default {
 }
 ```
 
-保存后几秒内自动加载，不用重启。面板「扩展」页能看到它在不在跑、有没有报错。
+保存后几秒内自动加载，不用重启。面板「已安装」页能看到它在不在跑、有没有报错。
 
 - 入口文件叫 `index.mjs`（或 `index.js`，但要是 ES 模块写法）
 - 文件夹名以 `_` 或 `.` 开头的不加载（可以拿来放草稿）
@@ -268,7 +268,7 @@ api.tool(({ chat, level, sessionId }) => {
 ## 面板
 
 **自动表单**：写了 `settings`，面板会多一个这个模块的标签页，自动生成设置表单，用户改完点保存。
-定义里写了 `tab: '内置标签页'`（`voice` `stickers` `imagegen` `diary` `speakup` `mood` `song` `bili` `douyin` `local` `group` `model` `persona` `access` `connect` `overview`），设置和面板就放进那一页的最下面，不单独占一页。比如给翻唱加功能的模块写 `tab: 'song'`。
+定义里写了 `tab: '内置标签页'`（`voice` `stickers` `imagegen` `diary` `speakup` `mood` `song` `bili` `local` `group` `model` `persona` `access` `connect` `overview`），设置和面板就放进那一页的最下面，不单独占一页。比如给翻唱加功能的模块写 `tab: 'song'`。
 
 ```js
 settings: [
@@ -312,21 +312,23 @@ return function Panel({ settings, save, toast }) {
 | `mood` | 心情 | `state()` `label()` `nudge(变化量, 原因)` `effects()` `contextLine()` |
 | `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `topicScore(文字)` `profiles()` `consolidate()` …… |
 | `qq-tools` | 基础 QQ 工具 | （只有工具：`qq_chat_history`、`qq_send_message`、`qq_send_file`） |
-| `group-admin` | 群管 | （只有工具：`qq_group_admin`） |
 | `imagegen` | 生图 | `enabled()` `generate(描述) → Buffer` |
 | `diary` | 空间日记 | `writeDiary()` `post(正文, { images, visibility })` `remove(tid)` `history()` `nextTime()` |
 | `qzone-social` | 空间互动 | `run({ force })` `state()` |
 | `speakup` | 主动搭话 | `fire(原因)` `state()` |
 | `bili` | B 站 | `watch(链接)` `comment(链接, 文字)` `run()` `checkReplies()` `account()` `state()` |
-| `douyin` | 刷抖音 | `run` `browse` `watch` `likeVideo` `commentVideo` `confirmOwner` `account` `loginStep` `showWindow` `state`；工具 `douyin_watch` / `douyin_browse` / `douyin_like` / `douyin_comment` |
 | `song` | 翻唱 | `request({ song, pitch, chatId })` `search(关键词)` `status()` `install()` |
 
 聊天中枢需要的时候会去找 `stickers`（发表情、偷表情）、`voice`（发语音）、`mood`（心情影响表情 / 语音频率）、`memory`（群聊插话判断）。
 这几个被关掉，对应的事就不做（想发语音时改发文字）；被替换，就用你的——所以替换时**导出的函数名要和上表一样**。
 
+## 社区模块
+
+插件能从社区库 `dsh-aurabot-qq-mods` 安装模块，装好后就是 `modules/<id>/` 里的一个普通模块，多一个记录来源的 `.aurabot-source.json`。想发布自己的模块，看那个仓库的贡献指南。桌宠、抖音、小黑盒、群管也在社区库里。
+
 ## 替换内置模块
 
-1. 面板「扩展」页，在要替换的内置模块那一行点「复制一份来改」
+1. 面板「已安装」页，在要替换的内置模块那一行点「复制一份来改」
 2. `modules/<id>/` 里出现 `index.mjs` 和它用到的实现文件（比如 `qzone.js`），开头注释写着从哪个版本复制的
 3. 改，保存。几秒内面板显示「用的是你的版本」
 4. 想临时用回内置的：那一行的「用内置的」开关；想彻底不要了：删掉文件夹
@@ -337,7 +339,7 @@ return function Panel({ settings, save, toast }) {
 
 ## 测试
 
-不用上 QQ 也能试：面板「扩展」页的「模拟测试」——
+不用上 QQ 也能试：面板「已安装」页的「模拟测试」——
 
 - **模拟一条消息**：选你是主人还是别人、私聊还是群聊，写一句话，看它会被哪个模块接管、命令回了什么；再写一句「她的回复」，看经过各个模块改写后最后会发出去什么
 - 你的模块加的 `/命令` 在模拟里**会执行**（看 `run` 回了什么）
@@ -358,12 +360,12 @@ return function Panel({ settings, save, toast }) {
 
 - **你的文件**：`modules/` 里的东西插件升级不碰
 - **`api.*` 和内置模块导出表**：同一个扩展接口版本（现在是 v{{API}}）里**只加不改**。哪天不得不改，接口版本升到 2，更新说明里写清楚怎么迁移；插件会拒绝加载版本对不上的模块，并在面板上告诉你原因，不会默默出错
-- **`api.core`、`api.lib`、`api.dsh`**：插件内部和 DSH 的东西，全开放但可能随版本变。用了它们的模块，升级后留意面板「扩展」页的报错
+- **`api.core`、`api.lib`、`api.dsh`**：插件内部和 DSH 的东西，全开放但可能随版本变。用了它们的模块，升级后留意面板「已安装」页的报错
 - **复制出来改的内置模块**：是你的分叉。内置的版本更新了，面板会提示「内置版本更新了」，你可以对照着把新改动合进去，或者删掉文件夹用回内置的
 
 ## 排查问题
 
-- 面板「扩展」页：每个模块在不在跑、用的是内置的还是你的、启动报错、运行中最近的报错
+- 面板「已安装」页：每个模块在不在跑、用的是内置的还是你的、启动报错、运行中最近的报错
 - 面板「日志」页：模块的日志按模块 id 分类
-- **安全模式**：「扩展」页打开后，你写的模块一个都不加载，内置的全部恢复。用来判断「是我的模块的问题还是插件的问题」
-- 不会写？在「扩展」页点「复制给 DSH 的话」，粘给 DSH，写上你想要什么，它会读这份说明帮你写
+- **安全模式**：「已安装」页打开后，你写的模块一个都不加载，内置的全部恢复。用来判断「是我的模块的问题还是插件的问题」
+- 不会写？在「已安装」页点「复制给 DSH 的话」，粘给 DSH，写上你想要什么，它会读这份说明帮你写

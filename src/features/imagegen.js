@@ -131,14 +131,18 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
     if (!base || !c.model) throw new Error('还没填生图服务地址或模型')
     const headers = { 'content-type': 'application/json' }
     if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
-    const r = await fetch(`${base}/images/generations`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }),
-      signal: AbortSignal.timeout(180000),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}`)
+    // response_format、image_size 不是每家都认（官方 OpenAI 就不认）：被拒了去掉再发。被拒的请求没出图，重发不会多画
+    const body = { model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }
+    let r, j
+    for (;;) {
+      r = await fetch(`${base}/images/generations`, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(180000) })
+      j = await r.json().catch(() => ({}))
+      if (r.ok) break
+      const message = j?.error?.message || j?.message || `HTTP ${r.status}`
+      const bad = r.status === 400 && ['response_format', 'image_size'].find((k) => k in body && message.includes(k))
+      if (!bad) throw new Error(message)
+      delete body[bad]
+    }
     const item = (j.data || j.images || [])[0] || {}
     let buf
     if (item.b64_json) buf = Buffer.from(item.b64_json, 'base64')

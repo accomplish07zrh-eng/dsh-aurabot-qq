@@ -2,6 +2,7 @@
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel } from '../core/llm.js'
+import { cleanText, clipText } from '../core/text.js'
 
 // ---------------- 心情 ----------------
 // 0~100，基线 60。聊天里的话按关键词推一推，随时间按半衰期回到基线。
@@ -45,7 +46,10 @@ export function scoreText(text) {
   return Math.max(-20, Math.min(20, d))
 }
 
-export function decayed(value, at, halfLifeHours, now = Date.now(), base = 60) {
+/** 心情基线的兜底值：没有配置时用它（和上游原来的 60 一致）。改基线只改配置项 mood.base。 */
+export const MOOD_BASE = 60
+
+export function decayed(value, at, halfLifeHours, now = Date.now(), base = MOOD_BASE) {
   const h = Math.max(0, (now - at) / 3600_000)
   return base + (value - base) * Math.pow(0.5, h / halfLifeHours)
 }
@@ -64,13 +68,18 @@ export function parseMoodJudge(out) {
   }
 }
 
-export function createMood({ getConfig, dsh }) {
+export function createMood({ getConfig, dsh, log }) {
   const file = () => dataDir('mood.json')
-  const load = () => readJson(file(), () => ({ value: 65, at: Date.now(), reason: '', history: [] }))
+  /** 当前配置的基线：衰减、初始值、兜底、判断提示词四处统一读它。 */
+  const base = () => {
+    const v = Number(getConfig().mood?.base)
+    return Number.isFinite(v) && v >= 10 && v <= 90 ? v : MOOD_BASE
+  }
+  const load = () => readJson(file(), () => ({ value: base(), at: Date.now(), reason: '', history: [] }))
   const save = (s) => writeJson(file(), s)
   const current = () => {
     const s = load()
-    return Math.round(decayed(s.value, s.at, getConfig().mood.halfLifeHours))
+    return Math.round(decayed(s.value, s.at, getConfig().mood.halfLifeHours, Date.now(), base()))
   }
   /** 推一下心情（d 可正可负），记下原因。 */
   function nudge(d, reason) {
@@ -79,15 +88,18 @@ export function createMood({ getConfig, dsh }) {
     const before = current()
     s.value = Math.max(5, Math.min(100, before + d))
     s.at = Date.now()
+    reason = cleanText(reason)
     s.reason = reason
-    s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason }, ...(s.history || [])].slice(0, 20)
+    // 保留 200 条：20 条只够两小时，出问题查不到原因（实测需要回溯半天以上）
+    s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason }, ...(s.history || [])].slice(0, 200)
     save(s)
+    try { log?.debug?.(`心情 ${before} → ${Math.round(s.value)}（${d > 0 ? '+' : ''}${d}）：${reason}`) } catch (error) {}
   }
   return {
     current,
     label: () => moodLabel(current()),
     state: () => ({ ...load(), value: current(), label: moodLabel(current()) }),
-    effects: () => (getConfig().mood.enabled ? moodEffects(current()) : moodEffects(60)),
+    effects: () => (getConfig().mood.enabled ? moodEffects(current()) : moodEffects(base())),
     nudge,
     /**
      * 聊天里的一句话。direct = 是对她说的（私聊、@她、叫她）；owner = 主人说的。
@@ -98,7 +110,7 @@ export function createMood({ getConfig, dsh }) {
       const d0 = scoreText(text)
       if (!d0) return
       const d = Math.round(d0 * (direct ? 1 : 0.3) * (owner ? 1.5 : 1))
-      nudge(d, `${who || '有人'}说「${String(text).slice(0, 20)}」`)
+      nudge(d, `${who || '有人'}说「${clipText(text, 20)}」`)
     },
     /**
      * 模型判心情（可选）：一轮聊完，看「对方说的 + 她回的」判断心情往哪走。没把握的（confidence < 0.6）不算。
@@ -112,7 +124,7 @@ export function createMood({ getConfig, dsh }) {
       try {
         const out = await askModel(dsh, {
           cfg: getConfig(),
-          system: '你在判断聊天角色「大肥鱼」聊完一轮后的心情变化。她现在心情 ' + v + '/100（60 是平常）。' + scene + '。只看这一轮真正影响她心情的东西：被夸、被关心、被惦记会开心；被凶、被冷落、被嫌弃会难过；开玩笑的「讨厌~」「笨蛋」不算真骂。只输出 JSON：{"delta": -15~15 的整数, "reason": "十几个字的理由", "confidence": 0~1 你有多确定}。没什么影响就 delta 为 0。',
+          system: '你在判断聊天角色「大肥鱼」聊完一轮后的心情变化。她现在心情 ' + v + '/100（' + base() + ' 是平常）。' + scene + '。只看这一轮真正影响她心情的东西：被夸、被关心、被惦记会开心；被凶、被冷落、被嫌弃会难过；开玩笑的「讨厌~」「笨蛋」不算真骂。只输出 JSON：{"delta": -15~15 的整数, "reason": "十几个字的理由", "confidence": 0~1 你有多确定}。没什么影响就 delta 为 0。',
           text: `${origin === 'speak-up' ? '她主动说' : who + '说'}：${String(userText || '').slice(0, 600)}\n她回：${String(reply || '').slice(0, 600)}`,
           maxTokens: 400,
           temperature: 0.2,
@@ -133,7 +145,7 @@ export function createMood({ getConfig, dsh }) {
       const label = moodLabel(v)
       const style = MOOD_STYLE[label]
       if (!style) return ''
-      return `（你现在${label}${s.reason ? '，因为' + s.reason : ''}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
+      return `（你现在${label}${s.reason ? '，因为' + cleanText(s.reason) : ''}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
     },
   }
 }
@@ -156,7 +168,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
 
   // 每次换个由头，免得句句都是「在干嘛」
   const ANGLES = [
-    '分享一件你今天（编也行，符合你的人设）遇到的小事或想到的东西',
+    '分享一件你今天遇到的小事或想到的东西',
     '接着你们上次聊的话题，问问后来怎么样了',
     '想起记忆里关于对方的一件事，顺口提一句或关心一下',
     '问问对方现在在干嘛、吃了没、累不累',
@@ -172,16 +184,52 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
     const angle = ANGLES[Math.floor(Math.random() * ANGLES.length)]
     const prompt = nudge
       ? `【系统提醒，不是${owner}说的话】你刚才跟${owner}说「${String(hub.lastBotToOwner?.text || '').slice(-60)}」，${owner}已经 ${idle} 分钟没回了。可以轻轻追一句（比如「人呢」「睡着啦？」，或者换个话题），别催、别抱怨；觉得${owner}在忙就只回 [沉默]。`
-      : `【系统提醒，不是${owner}说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和${owner}私聊了，想主动找${owner}说点什么。这次的由头可以是：${angle}。用你自己的口气，一两句就好，别用模板、别解释为什么来找；实在不想说就只回 [沉默]。`
+      : `【系统提醒，不是${owner}说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和${owner}私聊了，想主动找${owner}说点什么。这次的由头可以是：${angle}。优先用手里真实的素材（最近做过的事、记忆里的、聊天流水里能查到的），没有真实素材就别硬找，也不要编；用你自己的口气，一两句就好，别用模板、别解释为什么来找；实在不想说就只回 [沉默]。`
     log.info(`主动搭话（${reason}）`)
     await hub.pushToSession({ chatId: `private:${cfg.ownerQQ}`, kind: 'private', userId: cfg.ownerQQ, nickname: owner }, [{ type: 'text', text: prompt }], '')
+  }
+
+  /** 找白名单里的人：不提主人的事，这是她和对方自己的聊天。 */
+  async function fireFriend(qq) {
+    const idle = Math.round((Date.now() - (hub.lastPrivateAt?.(qq) || 0)) / 60000)
+    const angle = ANGLES[Math.floor(Math.random() * ANGLES.length)]
+    const prompt = `【系统提醒，不是对方说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和这位朋友私聊了，想主动找对方说点什么。这次的由头：${angle}。只说你和对方之间的事，别提主人或别人的私事。`
+    log.info(`主动搭话（白名单 ${qq}）`)
+    await hub.pushToSession({ chatId: `private:${qq}`, kind: 'private', userId: qq, nickname: qq }, [{ type: 'text', text: prompt }], '')
+  }
+
+  /** 白名单：每人单独算次数和间隔，一分钟最多找一个人，不一口气群发。 */
+  async function tickFriends(cfg, s) {
+    const c = cfg.speakUp
+    const h = new Date().getHours()
+    if (!(h >= c.awakeFrom && h < c.awakeTo)) return false
+    const today = new Date().toDateString()
+    s.friends = s.friends || {}
+    for (const qq of c.allow || []) {
+      if (qq === String(cfg.ownerQQ) || isMuted?.(`private:${qq}`)) continue
+      const f = s.friends[qq] || (s.friends[qq] = {})
+      if (f.day !== today) Object.assign(f, { day: today, count: 0 })
+      if (!f.nextAt) schedule(f, c)
+      if (Date.now() - (hub.lastPrivateAt?.(qq) || 0) > c.idleMinutes * 60_000 && f.count < c.maxPerDay && Date.now() >= f.nextAt) {
+        f.count++
+        schedule(f, c)
+        save(s)
+        await fireFriend(qq)
+        return true
+      }
+    }
+    return false
   }
 
   async function tick() {
     const cfg = getConfig()
     const c = cfg.speakUp
     if (!cfg.enabled || !c.enabled) return
-    if (isMuted?.(`private:${cfg.ownerQQ}`)) return // 主人在私聊里让她闭嘴了
+    if (isMuted?.(`private:${cfg.ownerQQ}`)) { // 主人在私聊里让她闭嘴了：只管主人这边，白名单照旧
+      const s = load()
+      if (!(await tickFriends(cfg, s))) save(s)
+      return
+    }
     const s = load()
     const today = new Date().toDateString()
     if (s.day !== today) Object.assign(s, { day: today, count: 0 })
@@ -206,7 +254,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
       await fire()
       return
     }
-    save(s)
+    if (!(await tickFriends(cfg, s))) save(s)
   }
 
   return { tick, fire, state: load }

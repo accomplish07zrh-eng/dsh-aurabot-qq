@@ -3,6 +3,8 @@
 
 import { randomUUID } from 'node:crypto'
 
+process.env.AURABOT_REGISTRY_URL ||= 'http://127.0.0.1:9/index.json' // 测试不碰真的社区库
+
 export function createFakeDsh({ brain }) {
   const disposers = []
   const listeners = new Map()
@@ -63,7 +65,7 @@ export function createFakeDsh({ brain }) {
             return result
           }
           const reply = await brain({ preset, text, images, ctxText, persona, callTool, toolNames: [...tools.keys()] })
-          turns.push({ sessionId, preset, userText: text, images: images.length, reply, toolCalls: calls, ctxText })
+          turns.push({ source: msg.source, sessionId, preset, userText: text, images: images.length, reply, toolCalls: calls, ctxText })
           emit('session/event', session, { type: 'assistant/message', data: { turn: myTurn, message: { content: [{ type: 'text', text: reply }] } } })
           emit('session/event', session, { type: 'turn/end', data: { turn: myTurn, reason: { kind: 'completed' } } })
         })
@@ -114,8 +116,9 @@ export function createFakeDsh({ brain }) {
     llm: {
       listProviders: () => ['fake'],
       async listModels() { return ['fake-1', 'm-pdef', 'm-gdef', 'm-owner', 'm-g777'].map((id) => ({ id, name: id })) },
-      async *stream() {
-        yield { type: 'text-delta', text: '可爱的小鲸鱼 #开心 #卖萌' }
+      async *stream({ system } = {}) {
+        const text = system?.includes('整理长期记忆') ? '[]' : '可爱的小鲸鱼 #开心 #卖萌'
+        yield { type: 'text-delta', text }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
     },
@@ -157,5 +160,5 @@ export function createFakeDsh({ brain }) {
     return { status, raw: () => out, json: () => JSON.parse(out) }
   }
 
-  return { ctx, routes, variables, agents, workspaces, turns, logs, call, dispose: () => disposers.reverse().forEach((d) => { try { d() } catch (e) {} }) }
+  return { ctx, emit, routes, variables, agents, workspaces, turns, logs, call, dispose: () => disposers.reverse().forEach((d) => { try { d() } catch (e) {} }) }
 }

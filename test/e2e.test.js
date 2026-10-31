@@ -1,7 +1,7 @@
 // 端到端：假 DSH 宿主 + 假 QQ 网关，跑通 Aurabot 整条链路。
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startMockOneBot } from './helpers/mock-onebot.js'
@@ -49,7 +49,7 @@ async function brain({ preset, text, images, callTool }) {
   if (text.includes('换头像测试')) { const r = await callTool('qq_set_avatar', { image: 'https://example.com/a.png' }); return r ? r.message : '没这个工具' }
   if (text.includes('本地头像测试')) { const r = await callTool('qq_set_avatar', { image: 'C:/Users/a/secret.png' }); return r ? r.message : '没这个工具' }
   if (text.includes('慢慢想') && !text.includes('补充')) { await sleep(2500); return '想好了' }
-  if (text.includes('引用测试') && text.startsWith('【群聊')) { const n = (text.match(/\[(\d+)\][^\n]*引用测试/) || [])[1]; return n ? `<reply:${n}>收到这条啦\n别的我就不挨个回了` : '没看到编号' }
+  if (text.includes('引用测试') && text.includes('【群聊')) { const n = (text.match(/\[(\d+)\][^\n]*引用测试/) || [])[1]; return n ? `<reply:${n}>收到这条啦\n别的我就不挨个回了` : '没看到编号' }
   if (text.includes('第一句') && text.includes('第二句')) return '两句我都看到啦'
   if (text.includes('画一只')) { const r = await callTool('qq_draw_image', { prompt: '一只蓝色小鲸鱼' }); return r && r.ok ? '画好啦' : '画不了' }
   if (text.includes('【写空间日记】')) return '今天主人夸我可爱，开心得尾巴甩来甩去。晚饭吃了一大碗白米饭，满足～明天也要元气满满地陪大家聊天呀'
@@ -112,6 +112,8 @@ before(async () => {
   writeFileSync(outsideFilePath, '不在工作区里的文件')
   mock = await startMockOneBot({ selfId: BOT })
   mkdirSync(dataDir, { recursive: true })
+  mkdirSync(join(dataDir, 'modules', 'group-admin'), { recursive: true })
+  copyFileSync(new URL('./helpers/group-admin.mjs', import.meta.url), join(dataDir, 'modules', 'group-admin', 'index.mjs')) // 群管已搬到社区库，这里当成已安装
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
     enabled: true,
     dryRun: false,
@@ -189,7 +191,7 @@ test('系统会话超时会及时返回，晚到的回复不会发到 QQ', async
   const start = Date.now()
   await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '慢慢想', { timeoutMs: 50 }), /等太久/)
   assert.ok(Date.now() - start < 1500)
-  await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '下一轮', { timeoutMs: 50 }), /上一轮还没结束/)
+  await assert.rejects(api.hub.runSystemTurn('timeout-test', '超时测试', '下一轮', { timeoutMs: 50 }), /冷却中/)
   // key：同一个模块的多种后台用途各走一条会话（桌宠的「碎碎念」和「行为大脑」就是这种关系）。
   // 上面那条还挂着没结束，这里换 key 必须能立刻跑起来——不再撞「上一轮还没结束」。
   const before = fake.workspaces[0].sessionIds.length
@@ -1185,6 +1187,8 @@ test('慢工具卡住超过 1.5 秒先发一条「正在做」提示，不让主
   }
   const t = await until(async () => { const x = await turn(); return x.reply === '慢工具好了' ? x : null }, 25000)
   assert.equal(t.reply, '慢工具好了')
+  // 模型回完不等于已发出：等最终回复真的到网关再比先后
+  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg' && JSON.stringify(c.params.message).includes('慢工具好了')), 8000)
   const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg').map((c) => c.params.message)
   const texts = sent.map((m) => (m || []).filter((s) => s.type === 'text').map((s) => s.data.text).join(''))
   const noticeAt = texts.findIndex((x) => /还在忙/.test(x))
@@ -1192,6 +1196,31 @@ test('慢工具卡住超过 1.5 秒先发一条「正在做」提示，不让主
   assert.ok(noticeAt >= 0, '慢工具卡住时要先发提示：' + JSON.stringify(texts))
   assert.ok(doneAt > noticeAt, '提示要比最终回复先到：' + JSON.stringify(texts))
   rmSync(modsDir, { recursive: true, force: true })
+})
+
+test('来源章标明说话人：主人 owner，别人 guest，后台任务 none（#145）', async () => {
+  const last = async (push) => {
+    const n = fake.turns.length
+    push()
+    await until(() => fake.turns.length > n, 8000)
+    return fake.turns.at(-1).source
+  }
+  assert.deepEqual((await last(() => mock.push(priv(OWNER, text('来源章测试'))))).speaker, { role: 'owner', chat: 'private' })
+  assert.deepEqual((await last(() => mock.push(grp('557', OWNER, [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' 来源章测试 主人在群里' } }], '主人')))).speaker, { role: 'owner', chat: 'group' })
+  assert.deepEqual((await last(() => mock.push(grp('557', '999', [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' 来源章测试 群友' } }], '群友')))).speaker, { role: 'guest', chat: 'group' })
+  assert.deepEqual((await last(() => api.hub.runSystemTurn('source-test', '来源章', '后台任务', { timeoutMs: 5000 }).catch(() => {}))).speaker, { role: 'none' })
+})
+
+test('DSH 要授权时通知主人私聊，同一请求只发一次（#136）', async () => {
+  const before = mock.calls.length
+  const ask = { type: 'approval/asked', data: { id: 'approval-1', toolName: 'pwsh', reason: '要跑命令' } }
+  fake.emit('session/event', { id: 's', title: '测试会话' }, ask)
+  fake.emit('session/event', { id: 's', title: '测试会话' }, ask)
+  await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg'))
+  await sleep(100)
+  const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg' && String(c.params.user_id) === OWNER)
+  assert.equal(sent.length, 1)
+  assert.match(JSON.stringify(sent[0].params.message), /要授权.*pwsh.*没法代答/)
 })
 
 test('主人私聊里这一轮的说话人记录丢了，也按主人算（#90 兜底）', async () => {

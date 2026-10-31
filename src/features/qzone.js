@@ -26,13 +26,13 @@ export function planDiaryTimes({ timesPerDay, windowStart, windowEnd, minGapMinu
   return Array.from({ length: n }, (_, i) => a + Math.floor((span / n) * (i + 0.5)))
 }
 
-export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage }) {
+export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage, composeDiary }) {
   const file = () => dataDir('diary.json')
   const state = () => readJson(file(), () => ({ plan: { day: '', times: [], done: [] }, history: [] }))
   const save = (s) => writeJson(file(), s)
   let busy = false
 
-  async function post(content, { images = [], visibility } = {}) {
+  async function post(content, { images = [], visibility, beforeSend } = {}) {
     const cfg = getConfig()
     const text = String(content || '').trim()
     if (!text) return { ok: false, message: '说说是空的' }
@@ -45,9 +45,11 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage })
       return { ok: true, tid: '', dryRun: true, visibility: audience.visibility, label: audience.label, target_uins: audience.target_uins || [] }
     }
     const imgs = []
-    for (const src of images) {
+    const imageIndexes = []
+    for (const [index, src] of images.entries()) {
       try {
-        imgs.push('base64://' + (await fetchImage(src, { maxBytes: 8 * 1024 * 1024 })).toString('base64'))
+        imgs.push('base64://' + (await fetchImage(src, { maxBytes: 1024 * 1024 * 1024 })).toString('base64'))
+        imageIndexes.push(index)
       } catch (error) {
         log.warn('说说配图读不到，跳过：', error.message)
       }
@@ -57,10 +59,11 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage })
       const latest = getConfig()
       audience = resolveAudience(latest, visibility)
       if (!latest.enabled || latest.dryRun) return { ok: false, message: '发布前开关已变化，本次未发布。' }
+      beforeSend?.()
       const r = await onebot.call('send_qzone_msg', { content: text, ugc_right: audience.ugc_right, ...(audience.target_uins ? { target_uins: audience.target_uins } : {}), ...(imgs.length ? { images: imgs } : {}) }, { timeoutMs: 60000 })
       const tid = String(r?.tid ?? r?.id ?? r ?? '')
       log.info(`发了一条说说（${audience.label}，tid ${tid || '?'}）`)
-      return { ok: true, tid, visibility: audience.visibility, label: audience.label, target_uins: audience.target_uins || [] }
+      return { ok: true, tid, visibility: audience.visibility, label: audience.label, target_uins: audience.target_uins || [], imageCount: imgs.length, imageIndexes }
     } catch (error) {
       log.warn('发说说失败：', error.message)
       return { ok: false, message: error.message }
@@ -141,13 +144,34 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage })
   }
 
   /** 写一篇并发出去。 */
-  async function writeDiary({ visibility } = {}) {
+  async function writeDiary({ visibility, preview = false } = {}) {
     if (busy) return { ok: false, message: '上一篇还在写' }
     busy = true
     try {
       const cfg = getConfig().diary
       // 名单/范围不合法就别让模型白写一篇再失败
       try { resolveAudience(getConfig(), visibility) } catch (error) { return { ok: false, message: error.message } }
+      if (cfg.rich?.enabled === true && composeDiary) {
+        const draft = await composeDiary({ history: state().history })
+        const audience = resolveAudience(getConfig(), visibility)
+        const details = { text: draft.text, media: draft.media, warnings: draft.warnings, visibility: audience.visibility, label: audience.label }
+        if (preview) return { ok: true, preview: true, ...details }
+        draft.beforeSend?.()
+        const r = await post(draft.text, { images: draft.images, visibility, beforeSend: draft.beforeSend })
+        const s = state()
+        s.history.unshift({
+          at: Date.now(), text: draft.text, ok: r.ok, tid: r.tid || '', dryRun: Boolean(r.dryRun),
+          visibility: r.visibility || audience.visibility, target_uins: r.target_uins || [],
+          error: r.ok ? '' : r.message, media: (r.imageIndexes || []).map((index) => draft.media[index]),
+          imageCount: r.imageCount || 0, warnings: draft.warnings,
+        })
+        s.history = s.history.slice(0, 100)
+        save(s)
+        if (r.ok && !r.dryRun) {
+          try { onDiary?.(draft.text) } catch (error) {}
+        }
+        return { ...details, ...r, images: r.imageCount || 0 }
+      }
       const now = new Date()
       const excerpt = todayExcerpt()
       const prompt = [
@@ -156,7 +180,7 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage })
         `请用你自己的口吻写一条 QQ 空间说说，第一人称，${cfg.minChars}~${cfg.maxChars} 个字，像真人随手发的动态：可以写今天发生的小事、心情、想吃的白米饭。`,
         '不要分条、不要 |||、不要 <voice>/<sticker> 标记、不要 Markdown、不要加引号，只输出说说正文本身。',
       ].join('\n\n')
-      let text = await hub.runSystemTurn('diary', '空间日记', prompt)
+      let text = await hub.runSystemTurn('diary', '空间日记', prompt, ...(preview ? [{ noTools: true, key: 'preview' }] : []))
       text = String(text || '').replace(/\|\|\|/g, ' ').replace(/<[^>]+>/g, '').replace(/^["「“]|["」”]$/g, '').trim()
       if (text.length > cfg.maxChars + 20) text = text.slice(0, cfg.maxChars + 20)
       if (!text || text === '[沉默]') return { ok: false, message: '她这次没写出来' }
@@ -169,6 +193,10 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage })
         } catch (error) { log.warn('日记配图没挑成：', error.message) }
       }
       if (images.length) log.info(`日记配图：${images[0]}`)
+      if (preview) {
+        const audience = resolveAudience(getConfig(), visibility)
+        return { ok: true, preview: true, text, media: [], visibility: audience.visibility, label: audience.label, warnings: ['当前为原有日记流程；预览展示正文，原有配图发布时仍按原规则挑选。'] }
+      }
       let r = await post(text, { visibility, images })
       // 配图发不出去（比如空间不认这张图）不能把整篇日记憋回去：退回只发文字，日记照发
       if (!r.ok && images.length) {

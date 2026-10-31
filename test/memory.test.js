@@ -52,7 +52,7 @@ before(async () => {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-mem-'))
   ;({ createMemoryStore } = await import('../src/features/memory.js'))
   ;({ normalize } = await import('../src/core/config.js'))
-  cfg = normalize({ model: { provider: 'p', model: 'm' } })
+  cfg = normalize({ model: { provider: 'p', model: 'm' }, ownerQQ: '10000001', ownerName: '主人' })
   mem = createMemoryStore({ dsh, getConfig: () => cfg, hub, log: { info() {}, warn() {}, debug() {} } })
 })
 
@@ -227,24 +227,32 @@ test('人物小档案：按这个人的记忆写，聊天时常驻；群里带�
   const g = mem.contextFor({ kind: 'group', groupId: '7', chatId: 'group:7' }, 's7')
   assert.match(g, /你对正在说话的人的印象：小明——小明是主人/)
   assert.equal(await mem.buildProfile('99999999'), false, '记忆太少不写')
-  hubState.speakers = []
   hubState.text = ''
+  hubState.speakers = []
 })
 
-test('短句（「嗯嗯」）想不起东西时，连上一句一起找', () => {
+test('短句（「嗯嗯」）：群里不翻无主记忆，主人私聊仍可连同上一句找', () => {
   hubState.text = '嗯嗯'
   hubState.prev = '你还记得阿强喜欢干啥吗 钓鱼'
-  const ctx = mem.recallHint({ kind: 'group', groupId: '8', chatId: 'group:8' }, '嗯嗯', '你还记得阿强喜欢干啥吗 钓鱼')
-  assert.match(ctx, /阿强喜欢钓鱼/)
-  assert.ok(mem.recalls()[0].hits.some((h) => h.why.includes('（上一句）')))
+  // 群聊：F4 收紧后，没有 about 的旧档案不再进入社交回忆
+  const group = mem.recallHint({ kind: 'group', groupId: '8', chatId: 'group:8' }, '嗯嗯', '你还记得阿强喜欢干啥吗 钓鱼')
+  assert.doesNotMatch(group, /阿强喜欢钓鱼/)
+  // 主人私聊：仍保留短句回退能力
+  hubState.text = '嗯嗯'
+  hubState.prev = '你还记得阿强喜欢干啥吗 钓鱼'
+  const priv = mem.recallHint({ kind: 'private', userId: '10000001', chatId: 'private:10000001' }, '嗯嗯', '你还记得阿强喜欢干啥吗 钓鱼')
+  assert.ok(priv.length > 0, '主人私聊仍应能带出相关记忆提示')
   hubState.text = ''
   hubState.prev = ''
+  hubState.speakers = []
 })
 
 test('相关记忆提示有长度上限（#79：上下文增长优化）', () => {
   for (let i = 0; i < 20; i++) mem.add({ text: '测试记忆第' + i + '条，内容是阿花喜欢的东西和周末计划', about: '30000003', aboutName: '阿花', importance: 0.5, source: 'tool' })
+  hubState.speakers = ['30000003']
   const hint = mem.recallHint({ kind: 'group', groupId: '555', chatId: 'group:555' }, '阿花喜欢什么 周末计划')
   assert.ok(hint.length > 0 && hint.length <= 350, 'hint 长度 ' + hint.length)
+  hubState.speakers = []
 })
 
 const groupLog = (gid, who, text, t) => ({ chatId: 'group:' + gid, who, text, t })

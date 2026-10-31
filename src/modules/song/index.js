@@ -40,7 +40,7 @@ export default {
       required: ['song'],
       slow: '好，我这就去弄，稍等一会儿（做好了发你）。',
       execute: async ({ song: name, pitch }) => {
-        if (api.config().song.ownerOnly && !hub.turnHasOwner(sessionId)) return { ok: false, message: '只有主人能点歌' }
+        if (api.config().song.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能点歌' }
         return song.request({ song: name, pitch, chatId: chat.chatId })
       },
     }) : []))

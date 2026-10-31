@@ -25,6 +25,29 @@ function execOf (command, { name = 'pwsh', sid = 'sid-owner' } = {}) {
   return { name, arguments: { command }, agent: { session: { id: sid } } }
 }
 
+test('卸载立即结束待确认命令，旧回调不能再放行', async () => {
+  const { guard } = makeGuard({ timeoutMs: 60000 })
+  let ran = false
+  const result = guard.preExecute(execOf('shutdown /s /t 0'), () => { ran = true })
+  assert.equal(guard.pendingCount, 1)
+  guard.dispose()
+  assert.equal((await result).kind, 'deny')
+  assert.equal(guard.pendingCount, 0)
+  assert.equal(guard.handleReply(ownerChat, owner, '确认'), false)
+  assert.equal((await guard.preExecute(execOf('git status'), () => { ran = true })).kind, 'deny')
+  assert.equal(ran, false)
+})
+
+test('刚确认即卸载，也不能执行等待中的旧命令', async () => {
+  const { guard } = makeGuard()
+  let ran = false
+  const result = guard.preExecute(execOf('shutdown /s /t 0'), () => { ran = true })
+  assert.equal(guard.handleReply(ownerChat, owner, '确认'), true)
+  guard.dispose()
+  assert.equal((await result).kind, 'deny')
+  assert.equal(ran, false)
+})
+
 test('危险命令识别：致命模式命中，普通命令不误伤', () => {
   for (const cmd of [
     'rm -rf /',
@@ -105,4 +128,17 @@ test('非主人会话里的危险命令：直接拦，不打扰主人；重复�
   assert.equal(delivered.length, 1)
   guard.handleReply(ownerChat, owner, '取消')
   await p1
+})
+
+test('H04：等待确认期间关闭 dangerConfirm，旧确认不能执行', async () => {
+  const { guard, cfg } = makeGuard({ timeoutMs: 60000 })
+  let ran = false
+  const p = guard.preExecute(execOf('shutdown /s /t 0'), () => { ran = true; return 'NEXT' })
+  await sleep(20)
+  assert.equal(guard.pendingCount, 1)
+  cfg.security.dangerConfirm = false
+  assert.equal(guard.handleReply(ownerChat, owner, '确认'), false, '关闭后不能消费旧确认')
+  const result = await p
+  assert.equal(result.kind, 'deny')
+  assert.equal(ran, false, '关闭确认后旧命令不能执行')
 })

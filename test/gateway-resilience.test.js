@@ -109,6 +109,63 @@ test('重试用完还失败：报错里写清楚连不上网关（不像原来�
   } finally { h.restore() }
 })
 
+test('stop 立即结束所有重试等待，重启后旧请求也不能继续', async () => {
+  let waits = 0, ready
+  const waiting = new Promise((resolve) => { ready = resolve })
+  const h = client(async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }) }, {
+    retryDelays: [10_000],
+    log: { ...silent, warn() { if (++waits === 2) ready() } },
+  })
+  try {
+    const first = h.c.call('send_private_msg', {}).catch((error) => error)
+    const second = h.c.call('send_group_msg', {}).catch((error) => error)
+    await waiting
+    h.c.stop()
+    await assert.rejects(() => h.c.call('after_stop', {}), /已停止/)
+    assert.equal(h.calls.length, 2)
+    h.c.start()
+    let timer
+    const result = await Promise.race([
+      Promise.all([first, second]),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('重试等待没有立即结束')), 500) }),
+    ]).finally(() => clearTimeout(timer))
+    assert.ok(result.every((error) => error instanceof OneBotError && /已停止/.test(error.message)))
+    assert.equal(h.calls.length, 2)
+  } finally { h.c.stop(); h.restore() }
+})
+
+test('重试日志触发 stop 时不会留下新的等待', async () => {
+  let h
+  h = client(async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }) }, {
+    retryDelays: [10_000], log: { ...silent, warn() { h.c.stop() } },
+  })
+  try {
+    const error = await h.c.call('send_private_msg', {}).catch((error) => error)
+    assert.match(error.message, /已停止/)
+    assert.equal(h.calls.length, 1)
+  } finally { h.c.stop(); h.restore() }
+})
+
+test('请求在途时 stop，连接失败后不再重试', async () => {
+  let enter, release
+  const entered = new Promise((resolve) => { enter = resolve })
+  const gate = new Promise((resolve) => { release = resolve })
+  const h = client(async () => {
+    enter()
+    await gate
+    throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })
+  })
+  try {
+    const work = h.c.call('send_private_msg', {}).catch((error) => error)
+    await entered
+    h.c.stop()
+    release()
+    const error = await work
+    assert.match(error.message, /已停止/)
+    assert.equal(h.calls.length, 1)
+  } finally { release(); h.c.stop(); h.restore() }
+})
+
 test('业务错误不重试（retcode 不为 0 直接抛）', async () => {
   const h = client(async () => new Response(JSON.stringify({ status: 'failed', retcode: 1404, message: '没权限' }), { status: 200 }))
   try {
@@ -123,4 +180,33 @@ test('超时不重试（可能已经发出去了，重试会重复）', async ()
     await assert.rejects(() => h.c.call('send_private_msg', {}), /超时/)
     assert.equal(h.calls.length, 1, '超时只调一次')
   } finally { h.restore() }
+})
+
+test('读取 HTTP 回执时超时仍然报告超时，不按业务失败处理', async () => {
+  const h = client(async () => ({ status: 200, json: async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }) } }))
+  try {
+    await assert.rejects(() => h.c.call('send_private_msg', {}), (err) => {
+      assert.equal(err.uncertain, true)
+      assert.match(err.message, /超时/)
+      return true
+    })
+    assert.equal(h.calls.length, 1)
+  } finally { h.restore() }
+})
+
+test('连接建立后断开或回执无法解析：结果不确定，不自动重试', async () => {
+  for (const fetchImpl of [
+    async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }) },
+    async () => new Response('不是 JSON', { status: 200 }),
+  ]) {
+    const h = client(fetchImpl)
+    try {
+      await assert.rejects(() => h.c.call('send_private_msg', {}), (err) => {
+        assert.equal(err.uncertain, true)
+        assert.equal(err.transport, false)
+        return true
+      })
+      assert.equal(h.calls.length, 1)
+    } finally { h.restore() }
+  }
 })

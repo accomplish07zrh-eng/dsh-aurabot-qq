@@ -1,8 +1,9 @@
-// B 站网页端接口：搜视频、看视频信息 / 字幕 / 评论、发评论、看别人的回复。
+// B 站网页端接口：搜视频、看视频信息 / 字幕 / 评论、发评论 / 弹幕、看别人的回复。
 // 登录靠用户在面板里填的 Cookie（SESSDATA、bili_jct）；部分接口要 WBI 签名，buvid3 没有就自己申请一个。
-// 只做看和评论，不碰改资料、关注、私信这类账号层面的操作。
+// 登录凭证由配置提供，接口不刷新或保存账号。
 
 import { createHash } from 'node:crypto'
+import { bangumiEpisode, videoPart, danmakuParams, danmakuResponse } from './danmaku.js'
 
 export const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'
 const MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52]
@@ -64,7 +65,7 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
     return Object.entries(c).map(([k, v]) => `${k}=${v}`).join('; ')
   }
 
-  async function req(url, { method = 'GET', form, multipart, timeoutMs = 20000 } = {}) {
+  async function req(url, { method = 'GET', form, multipart, timeoutMs = 20000, signal, envelope = false } = {}) {
     const headers = { 'user-agent': UA, referer: 'https://www.bilibili.com/', origin: 'https://www.bilibili.com', cookie: cookieHeader() }
     let body
     if (multipart) {
@@ -73,8 +74,10 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
       headers['content-type'] = 'application/x-www-form-urlencoded'
       body = new URLSearchParams(form).toString()
     }
-    const r = await fetchImpl(url, { method, headers, body, signal: AbortSignal.timeout(timeoutMs) })
+    const timeout = AbortSignal.timeout(timeoutMs)
+    const r = await fetchImpl(url, { method, headers, body, signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
     const j = await r.json().catch(() => ({ code: r.status, message: 'HTTP ' + r.status }))
+    if (envelope) return j
     if (j.code !== 0) {
       const e = new Error(`B 站返回 ${j.code}${j.message ? '：' + j.message : ''}`)
       e.code = j.code
@@ -180,12 +183,35 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
     return (d.replies || []).slice(0, limit).map((r) => ({ rpid: r.rpid, name: r.member?.uname, mid: r.mid, text: String(r.content?.message || '').slice(0, 200), like: r.like, replies: r.rcount || 0 }))
   }
 
+  /** 按昵称精确找用户，找不到返回 0。 */
+  async function findUser(name) {
+    await ensureBuvid()
+    const d = await req(await signed('https://api.bilibili.com/x/web-interface/wbi/search/type', { search_type: 'bili_user', keyword: name }))
+    return (d.result || []).find((u) => stripHtml(u.uname) === name)?.mid || 0
+  }
+
+  /** 把文字里的 @昵称 换成接口要的 { 昵称: mid }；光写文字 B 站不算 @。查不到的留作普通文字。 */
+  async function resolveAts(message) {
+    const names = [...new Set([...message.matchAll(/@([^\s@:：,，。!！?？]+)/g)].map((m) => m[1]))]
+    const map = {}
+    for (const name of names) {
+      try {
+        const mid = await findUser(name)
+        if (mid) map[name] = mid
+      } catch (error) { log?.debug?.(`查 B 站用户「${name}」失败：`, error.message) }
+    }
+    return { map, missed: names.filter((n) => !map[n]) }
+  }
+
   /** 发评论；root/parent 不传就是一级评论。要登录。 */
-  async function postComment(aid, message, { root, parent } = {}) {
+  async function postComment(aid, rawMessage, { root, parent } = {}) {
     const csrf = parseCookie(getCookie()).bili_jct
     if (!csrf) throw new Error('没登录 B 站（Cookie 里要有 bili_jct）')
-    const d = await req('https://api.bilibili.com/x/v2/reply/add', { method: 'POST', form: { type: 1, oid: aid, message, plat: 1, csrf, ...(root ? { root, parent: parent || root } : {}) } })
-    return { rpid: d.rpid }
+    const message = String(rawMessage).replace(/＠/g, '@')
+    const { map, missed } = await resolveAts(message)
+    const at = Object.keys(map)
+    const d = await req('https://api.bilibili.com/x/v2/reply/add', { method: 'POST', form: { type: 1, oid: aid, message, plat: 1, csrf, ...(root ? { root, parent: parent || root } : {}), ...(at.length ? { at_name_to_mid: JSON.stringify(map) } : {}) } })
+    return { rpid: d.rpid, at, missed }
   }
 
   /** 点赞视频。要登录。 */
@@ -237,5 +263,47 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
     return r.headers.get('location') || ''
   }
 
-  return { nav, search, popular, view, playurl, subtitle, comments, postComment, likeVideo, setSign, setFace, replyFeed, resolveShort }
+  /** 只读检查弹幕目标；番剧接口返回 result，普通视频按 pages 选出当前 CID。 */
+  async function danmakuInfo(video, part, { signal } = {}) {
+    if (/^(ep|ss)/.test(video)) {
+      const param = video.startsWith('ep') ? 'ep_id' : 'season_id'
+      const body = await req(`https://api.bilibili.com/pgc/view/web/season?${param}=${video.slice(2)}`, { envelope: true, signal })
+      return bangumiEpisode(body, video, part)
+    }
+    await ensureBuvid()
+    const params = video.startsWith('av') ? { aid: video.slice(2) } : { bvid: video }
+    const data = await req(await signed('https://api.bilibili.com/x/web-interface/wbi/view', params), { signal })
+    return videoPart(data, part)
+  }
+
+  let dmSequence = Date.now()
+  async function postDanmaku(info, text, progress, mode, { beforePost, signal } = {}) {
+    const csrf = parseCookie(getCookie()).bili_jct
+    if (!csrf) throw Object.assign(new Error('Cookie 里缺少 bili_jct'), { code: -111 })
+    const url = await signed('https://api.bilibili.com/x/v2/dm/post', {
+      web_location: 1315873, csrf, ...danmakuParams(),
+    })
+    signal?.throwIfAborted()
+    // 签名可能等待网络；在最后一次 await 后再检查开关、登录态和配额。
+    beforePost?.()
+    const body = await req(url, { method: 'POST', signal, envelope: true, form: {
+      color: 16777215, fontsize: 25, pool: 0, mode, type: 1,
+      oid: info.cid, aid: info.aid, msg: text, progress, rnd: ++dmSequence,
+      plat: 1, checkbox_type: 0, colorful: '', gaiasource: 'main_web',
+      polaris_app_id: 100, polaris_platform: 5, spmid: '333.788.0.0', from_spmid: '333.788.0.0',
+      statistics: JSON.stringify({ appId: 100, platform: 5, abtest: '', version: '' }), csrf,
+    } })
+    const response = danmakuResponse(body)
+    if (body.code !== 0) throw Object.assign(new Error(`B 站返回 ${body.code}`), { code: body.code, platformResponse: response })
+    return { ...response.data, platformResponse: response }
+  }
+
+  return { nav, search, popular, view, playurl, subtitle, comments, postComment, likeVideo, setSign, setFace, replyFeed, resolveShort, danmakuInfo, postDanmaku }
+}
+
+/** 固定本次登录凭证；实际提交前由调用者核验它是否仍是当前凭证。 */
+export async function prepareDanmaku({ cookie, video, part, signal, beforePost }) {
+  const client = createBiliApi({ getCookie: () => cookie })
+  const info = await client.danmakuInfo(video, part, { signal })
+  return { info, post: (text, progress, mode) => client.postDanmaku(info, text, progress, mode, { signal, beforePost }) }
 }

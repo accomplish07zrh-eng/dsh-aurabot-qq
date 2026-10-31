@@ -3,6 +3,7 @@
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { createBiliApi, findVideoId, parseCookie } from './api.js'
+import { loginSessionKey, recoverLoginPause } from './login-pause.js'
 import { lookWithVision, visionState } from './vision.js'
 import { createShotStore, shotPath, clockOf } from './shots.js'
 
@@ -39,7 +40,7 @@ export function digestOf(v, { subtitle = '', comments = [], vision = '' } = {}) 
   ].filter(Boolean).join('\n')
 }
 
-export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vision: see = lookWithVision }) {
+export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vision: see = lookWithVision, afterBrowse }) {
   const cfg = () => getConfig().bili
   const api = injected || createBiliApi({ getCookie: () => cfg().cookie, log })
   const shots = createShotStore({ max: () => getConfig().bili.shotLibrary })
@@ -48,7 +49,8 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
   const save = (s) => writeJson(file(), s)
   const today = (s) => { if (s.day !== dayKey()) Object.assign(s, { day: dayKey(), runs: 0, comments: 0, replies: 0 }) ; return s }
   let busy = false
-  let login = { at: 0, value: { isLogin: false, uname: '' } }
+  let stopped = false
+  let login = { at: 0, key: '', value: { isLogin: false, uname: '' } }
 
   const owner = () => getConfig().ownerName || '主人'
   // 能不能发评论 / 回复：Cookie 里要有 bili_jct，今天也没因为风控之类暂停
@@ -63,11 +65,19 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
   const record = (s, item) => { s.history.unshift({ at: Date.now(), ...item }); s.history = s.history.slice(0, 40) }
 
   async function account(force = false) {
-    if (!force && Date.now() - login.at < 10 * 60_000) return login.value
+    const key = loginSessionKey(cfg().cookie)
+    if (!force && key === login.key && Date.now() - login.at < 10 * 60_000) return login.value
     try {
-      login = { at: Date.now(), value: await api.nav() }
+      const value = await api.nav()
+      if (stopped || key !== loginSessionKey(cfg().cookie)) return { isLogin: false, uname: '', error: '登录态已变化，请重新检查' }
+      login = { at: Date.now(), key, value }
+      const s = load()
+      if (recoverLoginPause(s, { isLogin: value.isLogin, sessionKey: key, day: dayKey() })) {
+        save(s)
+        log.info('B 站登录核验通过，已解除登录失效导致的评论暂停')
+      }
     } catch (error) {
-      login = { at: Date.now(), value: { isLogin: false, uname: '', error: error.message } }
+      login = { at: Date.now(), key, value: { isLogin: false, uname: '', error: error.message } }
     }
     return login.value
   }
@@ -170,6 +180,12 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     return r
   }
 
+  /** 她写 @主人 时换成主人的 B 站昵称，名字后面要有空格才算结束。 */
+  const atOwner = (text) => {
+    const name = String(cfg().ownerName || '').trim()
+    return name ? String(text).replace(/[@＠]主人\s*/g, `@${name} `) : String(text)
+  }
+
   /** 刷一轮。force = 面板里手动点的（不占每天的次数）。 */
   async function run({ force = false } = {}) {
     const c = cfg()
@@ -220,7 +236,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
         if (comment && !isSilence(comment) && commented < commentLeft && canPost(s)) {
           try {
             if (getConfig().dryRun) log.info(`试运行：本来要在 B 站《${v.title}》下评论：${comment}`)
-            else await api.postComment(v.aid, comment.slice(0, 200))
+            else await api.postComment(v.aid, atOwner(comment).slice(0, 200))
             commented++
             s.comments++
             memory?.addEvent?.({ text: `在B站《${v.title}》下评论：${comment.slice(0, 60)}`, tags: ['B站'], importance: 0.4 })
@@ -264,6 +280,10 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       }
       if (!force) s.runs++
       s.lastRun = Date.now()
+      if (afterBrowse) {
+        try { await afterBrowse(looked.map(({ info }) => ({ bvid: info.bvid, title: info.title, text: felt.get(info.bvid) || '' }))) }
+        catch (error) { log.debug('本轮弹幕未完成：', error.message) }
+      }
       log.info(`刷了一轮 B 站：看了 ${looked.length} 个，评论 ${commented} 条，分享 ${shared} 个，截图 ${shotSent} 张`)
       return { ok: true, message: `看了 ${looked.length} 个视频，评论 ${commented} 条，分享给你 ${shared} 个${shotSent ? '，还发了张截图' : ''}`, watched: looked.length, commented, shared, shots: shotSent }
     } catch (error) {
@@ -329,14 +349,15 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
   }
 
   /** 在某个视频下发评论（主人让她发的）。 */
-  async function comment(text, message) {
+  async function comment(text, rawMessage) {
+    const message = atOwner(rawMessage)
     const w = await watch(text)
     if (!w.ok) return w
     if (getConfig().dryRun) return { ok: true, message: `试运行：本来要在《${w.title}》下评论：${message}` }
-    await api.postComment(w.aid, String(message).slice(0, 200))
+    const r = await api.postComment(w.aid, String(message).slice(0, 200))
     memory?.addEvent?.({ text: `在B站《${w.title}》下评论：${String(message).slice(0, 60)}`, tags: ['B站'], importance: 0.45 })
     const s = load(); record(s, { kind: 'comment', title: w.title, bvid: w.bvid, text: message }); save(s)
-    return { ok: true, message: `评论发出去了（《${w.title}》）` }
+    return { ok: true, message: `评论发出去了（《${w.title}》）${r?.missed?.length ? `；没找到 ${r.missed.join('、')}，这几个没 @ 上` : ''}` }
   }
 
   /** 改自己的 B 站签名（权限在模块里查）。 */
@@ -380,6 +401,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
   return {
     run, checkReplies, watch, comment, setSign, setAvatar, tick, account, sendShot, listShots,
     libraryShots, shotFileOf, deleteShot,
+    dispose() { stopped = true },
     state: () => {
       const s = today(load())
       return { runs: s.runs, comments: s.comments, replies: s.replies, lastRun: s.lastRun, history: s.history.slice(0, 20), canPost: canPost(s), pauseReason: s.pauseDay === dayKey() ? s.pauseReason : '', vision: visionState(cfg()), shots: { count: shots.count() } }
