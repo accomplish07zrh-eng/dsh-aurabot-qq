@@ -53,17 +53,22 @@ export function matchSticker(items, query) {
   return bestScore >= 1.5 ? best : null
 }
 
-/** 自动配表情：先按回复里的词匹配，匹配不到随机挑一张。 */
+/** 打了这个标签的表情不参与自动配（太吓人、容易误会的梗图靠手动发）。 */
+export const NEVER_RANDOM = '不随机'
+
+/** 自动配表情：先按回复里的词匹配，匹配不到随机挑一张；带「不随机」标签的不参与。 */
 export function pickForReply(items, replyText) {
   if (!items.length) return null
-  const words = DEFAULT_TAGS.concat(items.flatMap((i) => i.tags || []))
+  const pool = items.filter((i) => !(i.tags || []).includes(NEVER_RANDOM))
+  if (!pool.length) return null // 全被打上标签时，这一轮就不自动配
+  const words = DEFAULT_TAGS.concat(pool.flatMap((i) => i.tags || []))
   for (const w of words) {
     if (w && String(replyText).includes(w)) {
-      const m = matchSticker(items, w)
+      const m = matchSticker(pool, w)
       if (m) return m
     }
   }
-  return items[Math.floor(Math.random() * items.length)]
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 /** 超过上限时该清掉哪张：只看偷来的，最少被发过的里最老的那张。 */
