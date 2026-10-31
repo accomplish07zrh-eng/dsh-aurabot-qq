@@ -1410,6 +1410,52 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     typing.delete(key)
   }
 
+  // 新会话第一次收到消息时，补看最近几条历史（默认关，开 chat.seedHistory 才生效）
+  const historySeeded = new Set()
+
+  /** 把 OneBot 的历史消息拍平成「谁：内容」。 */
+  function flatHistory(list) {
+    const out = []
+    for (const m of Array.isArray(list) ? list : []) {
+      const who = m?.sender?.card || m?.sender?.nickname || m?.nickname || String(m?.user_id || m?.sender?.user_id || '')
+      let text = ''
+      const seg = m?.message ?? m?.raw_message ?? ''
+      if (typeof seg === 'string') text = seg
+      else if (Array.isArray(seg)) text = seg.map((s) => (s?.type === 'text' ? (s.data?.text || '') : s?.type === 'image' ? '[图片]' : s?.type === 'face' ? '[表情]' : '')).join('')
+      text = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+      if (!who && !text) continue
+      out.push(`${who}：${text}`)
+    }
+    return out
+  }
+
+  /** 只在这个会话第一次说话时，把最近的历史补给她的上下文。 */
+  async function seedHistoryOnce(sessionId, chat, content) {
+    const key = sessionKey(sessionId)
+    if (historySeeded.has(key)) return content
+    historySeeded.add(key)
+    try {
+      const cfg = getConfig()
+      if (!cfg.enabled || cfg.dryRun) return content
+      if (!cfg.chat?.seedHistory) return content
+      const count = Math.min(50, Math.max(1, Number(cfg.chat?.seedHistoryCount) || 20))
+      const tgt = targetOf(chat.chatId)
+      if (!tgt) return content
+      const r = tgt.kind === 'group'
+        ? await onebot.call('get_group_msg_history', { group_id: Number(tgt.id), count }, { timeoutMs: 8000 })
+        : await onebot.call('get_friend_msg_history', { user_id: Number(tgt.id), count }, { timeoutMs: 8000 })
+      const list = Array.isArray(r) ? r : (r?.messages || [])
+      const lines = flatHistory(list).slice(-count)
+      if (!lines.length) return content
+      log.info(`${chat.chatId}：新会话，补看最近 ${lines.length} 条历史`)
+      const block = `【你刚上线，先补看最近 ${lines.length} 条${tgt.kind === 'group' ? '群' : '私聊'}记录】\n${lines.join('\n')}\n【补看结束，接着回下面这条】`
+      return [{ type: 'text', text: block }, ...content]
+    } catch (error) {
+      log.debug?.('补历史失败（不影响正常回复）：', error.message)
+      return content
+    }
+  }
+
   async function pushToSession(chat, content, senderId, opts = {}) {
     const { agent, sessionId } = await agentFor(chat)
     const key = sessionKey(sessionId)
@@ -1455,6 +1501,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (opts.wantVoice) st.wantVoice = true
     if (!opts.steer) st.autoReply = opts.autoReply || null
     turnState.set(key, st)
+    content = await seedHistoryOnce(sessionId, chat, content)
     const admitted = await admit(agent, content)
     startTyping(key, chat)
     const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND } }
