@@ -33,6 +33,38 @@ export default {
           return { ok: true, message: lines.join('\n') }
         },
       })]
+      // 跨天搜聊天流水：只读。qq_chat_history 只能翻当前聊天最近 50 条，
+      // 想找几天前说过的一句话没有入口，这里按关键词翻本地流水（按天存的那份）。
+      tools.push(defineTool({
+        name: 'qq_search_chatlog',
+        description: '在本地聊天流水里按关键词跨天搜旧对话（只读）。记不清以前说过什么、对方提过的人名约定梗，先搜这个再答；想找「几天前那句话」时比 qq_chat_history 管用。',
+        properties: {
+          query: str('要搜的关键词，空格分隔表示每个词都要出现'),
+          days: int('往回搜多少天，默认 30；0 表示全部'),
+          chat: str('只看某个聊天，填 private:QQ号 或 group:群号；不填就是全部'),
+        },
+        required: ['query'],
+        execute: async ({ query, days, chat: only }) => {
+          const words = String(query || '').trim().split(/\s+/).filter(Boolean)
+          if (!words.length) return { ok: false, message: '关键词是空的' }
+          const all = hub.chatLogDays?.() || []
+          const n = Number(days)
+          const from = Number.isFinite(n) && n > 0 ? all.slice(-n) : all
+          const hits = []
+          for (const day of from) {
+            for (const l of hub.chatLogOf?.(day) || []) {
+              if (only && l.chatId !== only) continue
+              const t = String(l.text || '')
+              if (!words.every((w) => t.includes(w))) continue
+              const hhmm = new Date(l.t).toTimeString().slice(0, 5)
+              hits.push(`${day.slice(5)} ${hhmm} [${l.chatId}] ${l.who}：${t.slice(0, 120)}`)
+            }
+          }
+          if (!hits.length) return { ok: true, message: `搜了 ${from.length} 天的流水，没找到「${words.join(' ')}」。` }
+          const tail = hits.slice(-40)
+          return { ok: true, message: `找到 ${hits.length} 条，最近 ${tail.length} 条：\n${tail.join('\n')}` }
+        },
+      }))
       // 发文件：只给主人私聊（full）挂，群里/别人没有本机文件能力；面板「聊天」页可以关掉
       if (level === 'full' && api.config().files?.enabled) tools.push(defineTool({
         name: 'qq_send_file',
