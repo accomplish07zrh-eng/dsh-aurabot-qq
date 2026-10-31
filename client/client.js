@@ -106,6 +106,29 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-card{background:var(--ab-card);border:1px solid var(--ab-line);border-radius:14px;padding:16px 18px}
 .ab-card h3{margin:0 0 4px;font-size:14px;font-weight:620;display:flex;align-items:center;gap:8px}
 .ab-card .ab-desc{color:var(--ab-sub);font-size:12.5px;margin:0 0 12px}
+/* 「关于」页：三张通栏大卡 + 两张可折叠门帘 */
+.ab-about-lead{grid-column:1/-1;padding:20px 22px;border-radius:16px;box-shadow:var(--ab-shadow)}
+.ab-about-lead h3{font-size:16px;margin-bottom:6px}
+.ab-about-lead p{line-height:1.65;font-size:13.5px;margin:0}
+.ab-about-sum{grid-column:1/-1;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);padding:0 20px;box-shadow:var(--ab-shadow)}
+.ab-about-sum summary{cursor:pointer;padding:14px 0;font-weight:600;font-size:14px;color:var(--ab-text);list-style:none;display:flex;align-items:center;gap:10px;user-select:none}
+.ab-about-sum summary::-webkit-details-marker{display:none}
+.ab-about-sum summary .chev{margin-left:auto;color:var(--ab-dim);font-size:12px;transition:transform .15s}
+.ab-about-sum[open] summary .chev{transform:rotate(90deg)}
+.ab-about-sum .inner{padding:14px 0 18px;border-top:1px solid var(--ab-line)}
+.ab-about-chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--ab-line-2);border-radius:999px;padding:6px 14px;font-size:13px;background:var(--ab-foam);font-weight:560}
+.ab-about-chip b{color:var(--ab-deep);font-variant-numeric:tabular-nums}
+/* 核心开发者：上头像、下名字，竖排居中。头像拉不到时露出首字母，不留破图 */
+.ab-devs{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:16px}
+.ab-dev{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:18px 12px 14px;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card-2);min-width:0}
+.ab-dev .av{position:relative;width:64px;height:64px;border-radius:50%;overflow:hidden;flex:none;display:flex;align-items:center;justify-content:center;background:var(--ab-foam);border:1px solid var(--ab-line-2);font-weight:650;font-size:22px;color:var(--ab-deep)}
+.ab-dev .av img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.ab-dev .who{min-width:0;width:100%}
+.ab-dev .nm{display:block;font-weight:600;font-size:13.5px;color:var(--ab-text);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ab-dev .nm:hover{color:var(--ab-sea);text-decoration:underline}
+/* contrib.rocks 自动更新的贡献者头像墙 */
+.ab-contrib{display:block;margin:0 0 14px}
+.ab-contrib img{display:block;max-width:100%;height:auto}
 .ab-stat{padding:14px 16px}
 .ab-stat .n{font-size:24px;font-weight:650;color:var(--ab-deep);font-variant-numeric:tabular-nums}
 .ab-stat .l{color:var(--ab-sub);font-size:12px}
@@ -522,6 +545,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'heybox', label: '小黑盒', flag: 'heybox.enabled' },
       { id: 'local', label: '本地接口' },
       { id: 'modules', label: '扩展' },
+      { id: 'about', label: '关于' },
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
@@ -535,7 +559,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['persona', 'group', 'speakup', 'mood'] },
       { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'stickers', 'imagegen', 'song', 'pet'] },
       { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin', 'heybox'] },
-      { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'local', 'modules', 'logs'] },
+      { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'local', 'modules', 'about', 'logs'] },
     ]
     // 自己写的模块：名字像逛平台的放「平台」，其余放「系统」（排在「日志」前面）
     const PLATFORM_EXT = /逛|刷|B站|抖音|小红书|闲鱼|淘宝|微博|知乎|贴吧|快手|触站|小黑盒/
@@ -545,7 +569,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', persona: '人设 性格 设定 头像', access: '主人 白名单 权限 群管 改资料',
       group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', stickers: '表情 小黄脸 gif 商城表情',
       imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
-      bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', modules: '扩展 模块 插件', logs: '日志 报错',
+      bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', modules: '扩展 模块 插件', about: '关于 关于我们 版本 许可 鸣谢 开源', logs: '日志 报错',
     }
     const navIcon = (d) => h('svg', { viewBox: '0 0 24 24', 'aria-hidden': true }, h('path', { d }))
 
@@ -690,6 +714,76 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ),
         ),
         h(RecentLogs, { go }),
+      )
+    }
+
+    /** 「关于」页：三张通栏大卡（这是谁 / 加入我们 / 核心开发者），贡献者与许可默认折叠。
+     *  只读展示，没有设置项。「核心开发者」写死三个人；「贡献者」里的头像墙走 contrib.rocks 自动更新，
+     *  文字名单取自 GitHub contributors 与版本说明（含没有 commit 的反馈者）。 */
+    function About({ st }) {
+      const repo = 'https://github.com/accomplish07zrh-eng/dsh-aurabot-qq'
+      const gh = (name) => h('a', { key: 'gh-' + name, href: 'https://github.com/' + name, target: '_blank', rel: 'noreferrer' }, '@' + name)
+      // GitHub contributors API（按提交数排序）+ 版本说明里记录的 issue 报告 / 反馈者（没有 commit，单列）
+      const coders = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao', 'GitNekopedia', 'Chsw-CC', 'chsw']
+      const reporters = ['cxin21', 'zhuyi314', '38213063', 'HuaGyuu', 'CYyare', 'yunxirumo', 'XiongYachao']
+      const kv = (rows) => h('div', { className: 'ab-kv' }, rows.flatMap(([k, v]) => [h('span', { key: k }, k), h('span', { key: k + '-v' }, v)]))
+      const copyGroup = (e) => { try { navigator.clipboard.writeText('554850395'); e.target.textContent = '已复制'; setTimeout(() => { e.target.textContent = '复制' }, 1500) } catch (error) {} }
+      // 核心开发者：仓库创建者 + 两位主要贡献者（只展示头像与名字，不标具体模块）
+      const devs = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao']
+      const dev = (n) => h('div', { key: 'dev-' + n, className: 'ab-dev' },
+        h('div', { className: 'av' }, n.slice(0, 1).toUpperCase(),
+          h('img', { src: 'https://github.com/' + n + '.png?size=96', alt: n, loading: 'lazy', referrerPolicy: 'no-referrer', onError: (e) => { e.currentTarget.style.display = 'none' } })),
+        h('div', { className: 'who' },
+          h('a', { className: 'nm', href: 'https://github.com/' + n, target: '_blank', rel: 'noreferrer', title: n }, '@' + n)))
+      const fold = (title, open, children) => h('details', { key: title, className: 'ab-about-sum' },
+        h('summary', null, title, h('i', { className: 'chev', 'aria-hidden': true }, '▶')),
+        h('div', { className: 'inner' }, children))
+      return h('div', { className: 'ab-grid' },
+        h(Card, { className: 'ab-about-lead', title: 'Aurabot · 住在 QQ 里的 AI 伙伴「大肥鱼」🐟', desc: 'v' + st.version + ' · 面板 API v' + (st.apiVersion || '?') },
+          h('p', null, '一个 DeepSeek Harness 插件，经 SnowLuma（OneBot v11 网关）接入 QQ。聊天、语音、表情包、日记、B 站、桌宠这些本事都来自内置模块体系（18 个），再加「扩展」页里自己写的第三方模块。'),
+          h('div', { className: 'ab-flex', style: { marginTop: 14 } },
+            h('a', { key: 'repo', className: 'ab-btn sm', href: repo, target: '_blank', rel: 'noreferrer' }, 'GitHub 仓库'),
+            h('a', { key: 'doc', className: 'ab-btn sm', href: repo + '/blob/main/docs/USER-MANUAL.md', target: '_blank', rel: 'noreferrer' }, '用户手册'),
+          ),
+        ),
+        h(Card, { className: 'ab-about-lead', title: '加入我们', desc: '交流、报 bug、提代码都在这儿。' },
+          h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 12 } },
+            h('span', { key: 'qq', className: 'ab-about-chip' }, '协作 / 交流 QQ 群 ', h('b', null, '554850395'),
+              h('button', { key: 'cp', type: 'button', className: 'ab-btn sm', onClick: copyGroup }, '复制')),
+            h('a', { key: 'issue', className: 'ab-btn sm', href: repo + '/issues', target: '_blank', rel: 'noreferrer' }, '报 bug / 提需求'),
+            h('a', { key: 'pr', className: 'ab-btn sm', href: repo + '/pulls', target: '_blank', rel: 'noreferrer' }, '提代码（PR）'),
+          ),
+          h('p', { className: 'ab-muted ab-small', style: { marginTop: 12 } }, '提 issue / PR 前先翻一下有没有重复；群里问问题时尽量带上「日志」页的报错和版本号。'),
+        ),
+        h(Card, { className: 'ab-about-lead', title: '核心开发者', desc: '从第一行代码到现在，主要靠这三位在写。' },
+          h('div', { className: 'ab-devs' }, devs.map(dev)),
+          h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '仓库由 @accomplish07zrh-eng 创建；点名字进 GitHub 主页，其余帮忙的见下面「贡献者」。'),
+        ),
+        fold('贡献者（' + (coders.length + reporters.length) + ' 人）', false,
+          h('div', null,
+            // 头像墙由 contrib.rocks 按仓库提交记录自动生成，有新人提交就会自己更新，不用改代码
+            h('a', { key: 'wall', className: 'ab-contrib', href: repo + '/graphs/contributors', target: '_blank', rel: 'noreferrer', title: '在 GitHub 上查看贡献者列表' },
+              h('img', { src: 'https://contrib.rocks/image?repo=accomplish07zrh-eng/dsh-aurabot-qq', alt: '贡献者头像墙', loading: 'lazy', referrerPolicy: 'no-referrer', onError: (e) => { e.currentTarget.style.display = 'none' } })),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 0, marginBottom: 12 } }, '上面这排头像由 contrib.rocks 按提交记录自动更新，有新人提交就会自己变（加载不出来就点它，跳 GitHub 看）。下面按「写代码的 / 报问题提建议的」分开列。'),
+            h('div', { style: { marginBottom: 8 } }, h('b', { style: { fontSize: 13 } }, '写代码的')),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8 } },
+              coders.map((n) => h('span', { key: n, className: 'ab-pill' }, gh(n)))),
+            h('div', { style: { margin: '12px 0 8px' } }, h('b', { style: { fontSize: 13 } }, '报问题、提建议的')),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8 } },
+              reporters.map((n) => h('span', { key: n, className: 'ab-pill' }, gh(n)))),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '名单来自 GitHub contributors 与版本说明（CHANGELOG.md）；「导航布局」「群头衔回复过滤」两个社区扩展的思路也做进了面板和聊天中枢，一并谢过。'),
+          )),
+        fold('许可与鸣谢', false,
+          h('div', null,
+            kv([
+              ['插件代码', h('span', { key: 'mit' }, 'MIT License（见仓库 LICENSE）')],
+              ['「大肥鱼」形象', h('span', { key: 'cc' }, 'CC BY-NC-SA 4.0（署名 · 非商业 · 相同方式共享）')],
+              ['桌宠客户端', h('span', { key: 'pet' }, '移植自 '), gh('PC2005-cloud'), h('span', { key: 'pet2' }, ' 的 dsh-pet（MIT）')],
+              ['参考插件', h('span', { key: 'yuu' }, gh('Yuuyuko-uu'), ' 的 dsh-qq-bridge / speak-up / mood / memory（MIT，只借鉴踩坑经验）')],
+              ['其他署名', h('span', { key: 'tp' }, 'qq-bridge / QSH、surfcore purpose-engine 等，见 THIRD-PARTY-NOTICES.md')],
+            ]),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '素材包体积大（50MB+），不进本仓库：放独立素材仓 dsh-aurabot-qq-mods 的 pet-pack/，插件缺包时会按设置里的地址自动下载落位。'),
+          )),
       )
     }
 
@@ -3373,7 +3467,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
         overview: Overview, connect: Connect, persona: Persona, access: Access, group: Group, model: Model, voice: Voice,
-        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, modules: Modules, logs: Logs,
+        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, modules: Modules, about: About, logs: Logs,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
       const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'] }
