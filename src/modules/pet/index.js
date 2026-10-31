@@ -67,6 +67,7 @@ export default {
     behaviorIconQuarantineDays: 7,     // 隔离区自动归还天数（第二批生效）
     behaviorDisabledActions: '',       // 逗号分隔动作名：不进入 AI 动作表（手动按钮不受影响）
     behaviorWindowWhitelist: '',       // 窗口操作白名单，空=仅普通窗口（第三批生效）
+    petScale: 1,                       // 人物大小倍率（0.5~2.0，1 = 原始 240px；客户端按窗口宽等比缩放）
   },
   settings: [
     { key: 'carrier', label: '主动搭话载体', type: 'select', options: [{ value: 'qq', label: 'QQ 私聊' }, { value: 'pet', label: '桌宠气泡' }], hint: 'pet 时桌宠不在线会按下面的开关回落到 QQ；两边永不双发' },
@@ -95,6 +96,7 @@ export default {
     { key: 'behaviorIconQuarantineDays', label: '图标隔离归还天数', type: 'number', min: 1, max: 365, hint: '被收走的图标超过这么多天自动放回原位' },
     { key: 'behaviorDisabledActions', label: '禁用 AI 动作', type: 'textarea', hint: '这些动作不进入 AI 动作表（手动按钮不受影响）。逗号分隔动作名，如：hide_icon,steal_cursor' },
     { key: 'behaviorWindowWhitelist', label: '窗口操作白名单', type: 'textarea', hint: '一行一个进程/标题关键词；留空 = 只碰普通窗口。DSH 自己的窗口、桌宠、资源管理器永远不碰' },
+    { key: 'petScale', label: '人物大小（倍）', type: 'number', min: 0.5, max: 2, hint: '桌宠整体缩放倍率：0.5 = 一半大，2 = 两倍大，1 = 原始大小。内置模块的表单不渲染，实际走面板「桌宠」卡的大小滑条' },
   ],
 
 
@@ -240,6 +242,12 @@ export default {
       try { writeJsonAtomic(focusFile(), data) } catch (error) { api.log.warn('写 focus.json 失败：', String(error.message || error)) }
       emit('focus', { enabled: data.enabled })
       return data
+    }
+
+    /** 人物大小倍率（0.5~2.0）：读不到 / 坏值一律回落 1（原始大小），别让配置坏了把桌宠缩没。 */
+    function petScale() {
+      const s = Number(api.settings().petScale)
+      return Number.isFinite(s) && s > 0 ? Math.min(2, Math.max(0.5, s)) : 1
     }
 
     // ---------- pet pack（换形象，仿 dsh-pet 目录约定；运行数据只写数据目录） ----------
@@ -1979,7 +1987,7 @@ export default {
       const s = api.settings()
       api.core.http.send(res, 200, {
         ok: true, name: 'aurabot-pet', version: api.version,
-        online: online(), focus: focusOn(), bootId, seq,
+        online: online(), focus: focusOn(), scale: petScale(), bootId, seq,
         carrier: s.carrier, modality: s.modality, fallbackToQQ: s.petFallbackToQQ !== false,
         pack: activePack(), playbackCount: playbacks.length,
         work: { ...workSnapshot(), label: WORK_STATE_LABEL[workSnap.state] || '' }, // 当前她在干什么（思考中/干活中/完成…）
@@ -2001,6 +2009,8 @@ export default {
         focus: focusOn(),
         moods: ['very-happy', 'happy', 'neutral', 'low', 'sad'],
         pack: packView(), // 动画池/权重/事件映射/物理参数 + 干活状态/碎碎念动画映射；null = 没素材，客户端走静态形象
+        // 人物大小倍率（0.5~2.0）：客户端按它整窗等比缩放（setZoomFactor + setSize），物理/拖拽共用窗口宽反推
+        scale: petScale(),
         work: { ...workSnapshot(), label: WORK_STATE_LABEL[workSnap.state] || '' },
         whisper: (({ enabled, source }) => ({ enabled, source }))(whisperStatus()),
         // 行为层：客户端的**反应层**（点击/勾引/摸摸/鼠标闲置）是本地直接演的，不看这一份的话
@@ -2261,7 +2271,7 @@ export default {
         const s = api.settings()
         const w = workSettings()
         return {
-          ...online(), focus: focusOn(), carrier: s.carrier, modality: s.modality, bootId, seq,
+          ...online(), focus: focusOn(), scale: petScale(), carrier: s.carrier, modality: s.modality, bootId, seq,
           pack: activePack(), playbackCount: playbacks.length,
           work: { ...workSnapshot(), label: WORK_STATE_LABEL[workSnap.state] || '' },
           workEnabled: w.enabled, workBubble: w.bubble, workNotify: w.notify,

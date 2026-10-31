@@ -342,13 +342,25 @@
       stage.setPointerCapture(e.pointerId)
     })
   })
+  // 拖拽移动节流（修「拖动掉帧」）：高回报率鼠标下 pointermove 一秒能来几百上千次，
+  // 每次都同步 IPC + 主进程 setPosition 会把窗口线程打满。这里只记最新目标，
+  // 用 requestAnimationFrame 每帧最多发一次 pet:move，视觉不丢帧、主进程负载减一个数量级。
+  let movePending = null        // 最新目标 {x,y}（还没发出去的那次）
+  let moveFlushQueued = false   // 本帧是否已排队
+  const flushMove = () => {
+    moveFlushQueued = false
+    if (!movePending || !dragging) { movePending = null; return }
+    window.petBridge && window.petBridge.moveTo(movePending.x, movePending.y)
+    movePending = null
+  }
   stage.addEventListener('pointermove', (e) => {
     if (!dragging) return
     dragging.trail.push({ t: Date.now(), x: e.clientX, y: e.clientY })
     if (dragging.trail.length > 64) dragging.trail.shift()
     const dx = e.screenX - dragging.start.px
     const dy = e.screenY - dragging.start.py
-    window.petBridge && window.petBridge.moveTo(dragging.base.x + dx, dragging.base.y + dy)
+    movePending = { x: dragging.base.x + dx, y: dragging.base.y + dy }
+    if (!moveFlushQueued) { moveFlushQueued = true; requestAnimationFrame(flushMove) }
   })
   const endDrag = (e) => {
     if (!dragging) return

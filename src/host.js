@@ -578,6 +578,8 @@ export function apply(ctx) {
       // 面板口径：间隔 1~9999 分钟、每日上限 0~9999 次（0 = 不发）
       if (Number.isFinite(b[k])) patch[k] = k === 'whisperMaxPerDay' ? Math.min(9999, Math.max(0, Math.floor(b[k]))) : Math.min(9999, Math.max(1, Math.floor(b[k])))
     }
+    // 人物大小倍率：0.5~2.0，步进 0.05；坏值忽略（别把桌宠缩没了）
+    if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
     // 行为大脑的模块级设置（AI 自己改不了，只有主人能改）。pet 是**内置模块**，
     // 它的 settings schema 不会渲染成表单（面板只给「用户自己复制出来的模块」生成），

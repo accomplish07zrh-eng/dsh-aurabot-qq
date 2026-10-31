@@ -128,6 +128,22 @@ function pushPackToRenderer() {
   win.webContents.executeJavaScript(js).catch(() => {})
 }
 let lastWorkKey = ''
+// 人物大小倍率（服务端 /config 的 scale，0.5~2.0）：整窗等比缩放 = setSize + setZoomFactor，
+// 布局（舞台/气泡/字体）随 zoom 一起缩，物理身体盒由 bodyBox 按窗口宽反推，天然对上。
+const BASE_W = 280, BASE_H = 430 // createWindow 的原始窗口尺寸（缩放的基准）
+let curScale = 1
+function applyScale(s) {
+  if (!win || win.isDestroyed()) return
+  const v = Math.min(2, Math.max(0.5, Number(s) || 1))
+  if (Math.abs(v - curScale) < 0.01) return
+  curScale = v
+  try {
+    win.setResizable(true) // 创建时是 resizable:false，编程改尺寸前临时放开
+    win.setSize(Math.round(BASE_W * v), Math.round(BASE_H * v))
+    win.setResizable(false)
+    win.webContents.setZoomFactor(v)
+  } catch {}
+}
 async function refreshConfig() {
   try {
     const cfg = await apiGet('/config')
@@ -135,6 +151,7 @@ async function refreshConfig() {
       const changed = JSON.stringify(pack) !== JSON.stringify(cfg.pack || null)
       pack = cfg.pack || null
       focusOn = cfg.focus === true
+      applyScale(cfg.scale)
       // 行为层配置：总开关 + 鼠标闲置分钟数，本地缓存，读不到用默认
       const b = cfg.behavior || {}
       behaviorCfg = {
@@ -258,11 +275,17 @@ const THROW_MAX_MS = 10000  // 一次抛掷最多算 10 秒，之后强制落地
 const BODY = { left: 20, bottom: 16, width: 240, height: 240 } // 与 index.html 的 #stage 一致（1:1 素材）
 let thrower = null          // 抛掷循环定时器句柄（非空 = 正在飞）
 
-/** 可见身体（#stage）在窗口内的盒子：offsetX/offsetY 是身体左上角相对窗口左上角的偏移。 */
+/** 可见身体（#stage）在窗口内的盒子：offsetX/offsetY 是身体左上角相对窗口左上角的偏移。
+ *  人物大小可调（petScale）后窗口按比例变，身体盒也要跟着变：按窗口宽 / 280（基准宽）反推倍率。 */
 function bodyBox(w, h) {
-  const width = Math.min(BODY.width, w)
-  const height = Math.min(BODY.height, Math.max(32, h - BODY.bottom))
-  return { width, height, offsetX: Math.max(0, Math.min(BODY.left, w - width)), offsetY: Math.max(0, h - BODY.bottom - height) }
+  const s = Math.min(2, Math.max(0.5, w / BASE_W)) // 实际缩放倍率（窗口宽是唯一可靠来源，别信缓存）
+  const bw = Math.round(BODY.width * s)
+  const bh = Math.round(BODY.height * s)
+  const offX = Math.round(BODY.left * s)
+  const offY = Math.round(BODY.bottom * s)
+  const width = Math.min(bw, w)
+  const height = Math.min(bh, Math.max(32, h - offY))
+  return { width, height, offsetX: Math.max(0, Math.min(offX, w - width)), offsetY: Math.max(0, h - offY - height) }
 }
 function stopThrow() {
   if (thrower) { clearTimeout(thrower); thrower = null }
@@ -278,6 +301,17 @@ function clampWindowToArea() {
   const ny = Math.round(Math.min(Math.max(wy, area.y), area.y + area.height - h))
   if (nx !== Math.round(wx) || ny !== Math.round(wy)) win.setPosition(nx, ny)
 }
+// 逃生网（自愈「跑到屏幕外」）：每 30s 查一次，窗口可见面积不足 20%（基本看不见了）
+// 才拉回最近工作区。正常的贴边摆放 / 跨屏 / 压任务栏不受打扰；历史 bug 逃出去的也能自己回来。
+setInterval(() => {
+  if (!win || win.isDestroyed()) return
+  const [wx, wy] = win.getPosition()
+  const [w, h] = win.getSize()
+  const d = virtualDesktopBounds()
+  const visW = Math.max(0, Math.min(wx + w, d.x + d.w) - Math.max(wx, d.x))
+  const visH = Math.max(0, Math.min(wy + h, d.y + d.h) - Math.max(wy, d.y))
+  if (visW * visH < w * h * 0.2) clampWindowToArea()
+}, 30_000)
 function startThrow(vx, vy) {
   if (!win || win.isDestroyed()) return
   stopThrow()
@@ -1488,10 +1522,25 @@ setInterval(() => {
 }, 400)
 
 // ---------- IPC（渲染页拖拽/甩抛 → 主进程） ----------
+/** 所有显示器 bounds 的并集（虚拟桌面）：拖拽允许跨屏走，但窗口绝不能跑出所有屏之外。
+ *  （用户反馈「桌宠跑到屏幕外」的直接原因：拖拽通道原来没有任何边界钳制。） */
+function virtualDesktopBounds() {
+  const ds = screen.getAllDisplays ? screen.getAllDisplays() : [screen.getPrimaryDisplay()]
+  const x = Math.min(...ds.map((d) => d.bounds.x))
+  const y = Math.min(...ds.map((d) => d.bounds.y))
+  const r = Math.max(...ds.map((d) => d.bounds.x + d.bounds.width))
+  const b = Math.max(...ds.map((d) => d.bounds.y + d.bounds.height))
+  return { x, y, w: r - x, h: b - y }
+}
 ipcMain.on('pet:move', (_e, { x, y }) => {
   stopThrow()
   if (!win || !Number.isFinite(x) || !Number.isFinite(y)) return
-  win.setPosition(Math.round(x), Math.round(y))
+  const [w, h] = win.getSize()
+  const d = virtualDesktopBounds()
+  // 夹进虚拟桌面：窗口整体留在屏幕可及范围里（松手后甩抛/落地再把身体精确夹回工作区）
+  const nx = Math.round(Math.min(Math.max(x, d.x), d.x + d.w - w))
+  const ny = Math.round(Math.min(Math.max(y, d.y), d.y + d.h - h))
+  win.setPosition(nx, ny)
 })
 ipcMain.on('pet:throw', (_e, { vx, vy }) => startThrow(Number(vx) || 0, Number(vy) || 0))
 ipcMain.on('pet:throw-stop', () => stopThrow())

@@ -1719,6 +1719,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [bh, setBh] = useState(null)
       // 行为与安全的本地编辑态：数字/白名单要「应用」才提交（开关即点即存）。null = 还没动过，直接用服务端值。
       const [bcfg, setBcfg] = useState(null)
+      // 人物大小倍率的本地编辑态（0.5~2，点「保存」才下发）
+      const [scVal, setScVal] = useState(null)
       const [bhErr, setBhErr] = useState('')
       const [quar, setQuar] = useState(null)
       const [quarErr, setQuarErr] = useState('')
@@ -1741,7 +1743,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const state = !pet ? '未安装' : online ? '在线' : '离线'
       const dotCls = !pet ? '' : online ? 'ok' : 'err'
       const carrier = purpose?.carrier || 'qq'
-      const focus = Boolean(pet && (pet.focus?.enabled ?? pet.focusEnabled))
+      // 服务端 status() 的 focus 是布尔值（不是 {enabled} 对象）：这里按布尔读，
+      // 修「面板专注模式永远显示关闭、看起来打不开」（2026-10-31 用户反馈）
+      const focus = Boolean(pet && pet.focus === true)
       const heart = pet && (pet.lastSeenAt || pet.heartbeatAt || pet.presence?.lastSeenAt)
       const moods = Array.isArray(pet?.moods) && pet.moods.length ? pet.moods : PET_MOODS
       const moodLabel = (m) => typeof m === 'string' ? (PET_MOODS.find((x) => x.key === m) || { label: m }).label : (m.label || m.key)
@@ -1851,6 +1855,12 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             : '主动搭话走 QQ 私聊，桌宠只显示气泡不发')),
         h(Row, { label: '专注模式', hint: '开着时她不弹气泡、也不主动搭话（学习/开会不被打扰）' },
           h(Switch, { on: focus, onChange: async (v) => { setBusy('focus'); try { const r = await post('/panel/pet/focus', { enabled: v }); if (!r.ok) toast(r.message || '没成功', 'err'); else toast(v ? '专注模式开了' : '专注模式关了', 'ok') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })),
+        h(Row, { label: '人物大小', hint: '0.5~2 倍，1 = 原始大小。拖滑块或在框里填数都可以，点保存后桌宠会自己整窗缩放（拖拽/甩抛物理跟着对齐），不用重启' },
+          h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+            h('input', { type: 'range', min: 0.5, max: 2, step: 0.05, style: { flex: 1, minWidth: 120, accentColor: 'var(--ab-sea, #2a86c6)' }, value: Number(scVal == null ? (pet?.scale || 1) : scVal), onChange: (e) => setScVal(e.target.value) }),
+            h('input', { className: 'ab-input', type: 'number', min: 0.5, max: 2, step: 0.05, style: { width: 84 }, value: scVal == null ? (pet?.scale || 1) : scVal, onChange: (e) => setScVal(e.target.value) }),
+            h('span', { className: 'ab-muted ab-small', style: { whiteSpace: 'nowrap' } }, '倍'),
+            h(Btn, { small: true, disabled: busy === 'scale', onClick: async () => { const v = Number(scVal == null ? (pet?.scale || 1) : scVal); if (!(v >= 0.5 && v <= 2)) { toast('大小要填 0.5 ~ 2 之间的数', 'err'); return } setBusy('scale'); try { await savePet({ petScale: Math.round(v * 20) / 20 }, '人物大小已保存'); setScVal(null) } finally { setBusy(''); load() } } }, busy === 'scale' ? '保存中…' : '保存'))),
         clientBad ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } },
           h('div', null, '⚠ 客户端和插件版本对不上：' + (clientInfo.message || '需要重新生成')),
           clientInfo.missing && clientInfo.missing.length ? h('div', { className: 'ab-small', style: { marginTop: 4 } }, '缺文件：' + clientInfo.missing.join('、') + '（缺 behavior.js 时行为层整个不生效，只打日志）') : null,
