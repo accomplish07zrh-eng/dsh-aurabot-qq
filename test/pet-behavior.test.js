@@ -38,7 +38,8 @@ function startModule({ settings = {} } = {}) {
     __petTestHooks: {},
     log: { info() {}, warn() {}, debug() {}, error() {} },
     dataDir: (...parts) => join(process.env.AURABOT_DATA_DIR, 'modules-data', 'pet', ...parts),
-    config: () => ({ ownerQQ: OWNER }),
+    // 全天醒着：安静时段按真实时钟判（默认醒 8~23），不钉死的话这些用例一到 23:00 就集体误红
+    config: () => ({ ownerQQ: OWNER, speakUp: { awakeFrom: 0, awakeTo: 24 } }),
     settings: () => ({ ...s }),
     saveSettings: (patch) => { Object.assign(s, patch); return { ...s } },
     route: (path, handler) => { routes.set(path, handler) },

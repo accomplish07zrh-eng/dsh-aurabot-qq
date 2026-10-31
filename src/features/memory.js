@@ -123,12 +123,15 @@ export function memoryLine(it, now = Date.now()) {
 }
 
 /**
- * 该不该忘掉：每日整理自动提炼出来的、不太重要、已经淡了的（见 retention），忘掉。
+ * 该不该忘掉：自动提炼的按遗忘曲线淡了忘掉（见 retention）；桌宠行为回执只留 3 天，到期清掉。
  * 她自己记的、你加的、经历和日记不自动忘。
  */
 export function shouldForget(m, now = Date.now()) {
   // 过时的留半年（面板里能看到、能恢复），之后清掉
   if (m.invalidAt) return now - m.invalidAt > 180 * 86400_000
+  // 桌宠行为回执（source='pet'，比如「执行了 wander 动作」）只留 3 天：
+  // 写下来是给后续几天聊天的，过了就没什么用了，不然每个琐碎动作都永久占着记忆库。
+  if (m.source === 'pet') return now - (m.at || 0) > 3 * 86400_000
   if (m.source !== 'auto') return false
   if ((Number(m.importance) || 0) >= 0.6) return false
   return retention(m, now) < 0.05
