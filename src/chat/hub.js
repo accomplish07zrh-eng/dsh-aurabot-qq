@@ -61,6 +61,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const saveMap = (m) => writeJson(mapFile(), m)
 
   const mounted = new Map() // sessionKey → { agent, offs, chatId, toolsKey }  按会话记，agent 对象换了也能清掉旧工具（#90）
+  const mounts = new Set() // 可遍历的挂载记录：插件卸载时要撤掉仍存活会话里的注册
   const toolDisposers = new Map() // `${sessionKey}|${工具名}` → disposer，防注册表里残留同名工具时挂不上（#90）
   const sessionToChat = new Map() // sessionKey → chatId
   const turnState = new Map() // sessionKey → { lastTurn, text, images, senders:Set, system?: {resolve, reject} }
@@ -131,10 +132,35 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   const slowNoticeSent = new Set() // sessionKey → 这一轮已经发过「正在做」提示（慢工具，issue #74）
+  const slowTimers = new Map() // timer → sessionKey，轮次结束、替换挂载、卸载时一并撤销
+  const pauses = new Set() // 拆条间隔：卸载时立即结束，后面的消息不再投递
+  const replyWaits = new Set() // 正在等回复的后台轮次：卸载时立即拒绝，不用等模型或超时
   const faces = createFaces({ onebot, log }) // QQ 系统表情：<face:名字> ↔ 编号
   const titleFilter = createTitleFilter({ getConfig, onebot, log }) // 勾选的群里，头衔是某个词的成员（别的机器人）不理
   const groupMembers = new Map() // groupId → { at, list }  群成员（真 @ 时按名字找人，缓存 10 分钟）
   const saidElsewhere = new Map() // chatId → [{ at, text }]  别处安排她在这里发的话，下次这个聊天交给她时补进去
+
+  let disposed = false
+  const disposedError = () => Object.assign(new Error('Aurabot 插件已卸载'), { code: 'AURABOT_DISPOSED' })
+  const assertActive = () => { if (disposed) throw disposedError() }
+
+  // 拆条间隔可在卸载时立即结束，后面的消息不再投递。
+  function pause(ms) {
+    if (disposed) return Promise.resolve()
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); pauses.delete(done); resolve() }
+      const timer = setTimeout(done, ms)
+      pauses.add(done)
+    })
+  }
+
+  function clearSlowNotices(key) {
+    for (const [timer, sid] of slowTimers) {
+      if (key !== undefined && sid !== key) continue
+      clearTimeout(timer)
+      slowTimers.delete(timer)
+    }
+  }
 
   async function membersOf(groupId) {
     const hit = groupMembers.get(groupId)
@@ -341,7 +367,15 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
   }
 
+  function unmount(rec) {
+    mounts.delete(rec)
+    for (const off of rec.offs.splice(0).reverse()) {
+      try { if (typeof off === 'function') off() } catch (error) { log.warn('注销会话挂载失败：', error.message) }
+    }
+  }
+
   function mount(agent, chat, level) {
+    assertActive()
     const sid = sessionKey(agent.session?.id ?? agent.id)
     const tools = level !== 'chat' && typeof buildTools === 'function' ? buildTools({ chat, level, sessionId: sid }) : []
     const denied = (() => { try { return hooks?.deniedTools?.() || [] } catch (error) { return [] } })()
@@ -353,7 +387,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const prev = mounted.get(sid)
     // 工具清单变了（比如面板里开了生图）就整套重挂；同一个 agent 且没变就别动（改工具会让前缀缓存失效）
     if (prev && prev.agent === agent && prev.chatId === chat.chatId && prev.toolsKey === toolsKey) return
-    if (prev) for (const off of prev.offs) { try { if (typeof off === 'function') off() } catch (error) {} }
+    if (prev) unmount(prev)
     const offs = []
     // 联动工具是给 DSH 其他会话用的，她自己的 QQ 会话里不该有（陌生人的会话更不行）
     if (denied.length) {
@@ -372,18 +406,23 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
               ...base,
               async execute(args, exec) {
                 let fired = false
+                const isCurrent = () => !disposed && running.has(chat.chatId)
                 const timer = setTimeout(() => {
+                  slowTimers.delete(timer)
                   if (fired) return
                   fired = true
+                  if (!isCurrent()) return
                   if (slowNoticeSent.has(sid)) return
                   slowNoticeSent.add(sid)
-                  sendText(chat.chatId, notice, undefined, [], undefined).catch((error) => log.debug('慢工具提示没发出去：', error.message))
+                  sendText(chat.chatId, notice, undefined, [], undefined, { isCurrent }).catch((error) => log.debug('慢工具提示没发出去：', error.message))
                 }, 1500)
+                slowTimers.set(timer, sid)
                 timer.unref?.()
                 try {
                   return await tool.execute(args, exec)
                 } finally {
                   clearTimeout(timer)
+                  slowTimers.delete(timer)
                 }
               },
             }
@@ -418,7 +457,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     } catch (error) {
       log.debug('挂上下文失败：', error.message)
     }
-    mounted.set(sid, { agent, chatId: chat.chatId, offs, toolsKey })
+    const rec = { agent, chatId: chat.chatId, offs, toolsKey }
+    mounted.set(sid, rec)
+    mounts.add(rec)
   }
 
   // ---------- 发到 QQ ----------
@@ -427,7 +468,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return kind === 'group' ? { kind: 'group', id } : kind === 'private' ? { kind: 'private', id } : null
   }
 
-  async function sendSegments(chatId, message, note, { force = false } = {}) {
+  async function sendSegments(chatId, message, note, { force = false, isCurrent = null } = {}) {
+    if (disposed) return null
     const cfg = getConfig()
     const tgt = targetOf(chatId)
     if (!tgt) return null
@@ -441,6 +483,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         log.warn('扩展模块改写发送内容出错：', error.message)
       }
     }
+    if (disposed || (isCurrent && !isCurrent())) return null
     const cap = captureStore.getStore()
     if (cap) {
       cap.push({ chatId, note, message })
@@ -477,13 +520,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   const mention = (userId, segs = []) => (userId && !segs.some((s) => s.type === 'at' && String(s.data?.qq) === String(userId)) ? [{ type: 'at', data: { qq: String(userId) } }, { type: 'text', data: { text: ' ' } }] : [])
 
-  async function sendText(chatId, text, replyId, missed, userId) {
+  async function sendText(chatId, text, replyId, missed, userId, opts = {}) {
     // 文字里的 <face:名字> 换成 QQ 系统表情，和文字在同一条消息里；系统表情关着就去掉标签
     let segs = getConfig().stickers.faces ? textToSegments(text, faces.idOf) : [{ type: 'text', data: { text: stripFaceTags(text) } }]
     // 群里的 @名字 / <at:QQ号> 换成真 @（对方会收到提醒）
     if (chatId.startsWith('group:') && hasMention(text)) segs = expandMentions(segs, await membersOf(chatId.slice(6)), missed)
     if (!segs.length || (segs.length === 1 && segs[0].type === 'text' && !segs[0].data.text.trim())) return null
-    return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60))
+    return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60), opts)
   }
 
   async function sendVoice(chatId, text, replyId, userId) {
@@ -643,6 +686,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   /** 一轮回复落地：拆条、语音、表情。 */
   async function deliver(chatId, text, opts = {}) {
+    if (disposed) return
     const cfg = getConfig()
     if (hooks?.reply) {
       try {
@@ -653,6 +697,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         log.warn('扩展模块改写回复出错：', error.message)
       }
     }
+    if (disposed) return
     const r = parseReply(text)
     if (r.silent) {
       log.info(`${chatId}：她选择不说话`)
@@ -695,6 +740,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const firstSendable = items.findIndex((item) => item.kind === 'text' || item.kind === 'voice' || item.kind === 'image' || (item.kind === 'sticker' && cfg.stickers.enabled && Boolean(item.value && typeof item.value === 'object' ? item.value : stickers.match(item.value))))
     const missedAt = [] // 写了 @ 却没对上群里人的名字
     for (let i = 0; i < items.length; i++) {
+      if (disposed) return
       const it = items[i]
       const selected = it.replyTo ? refs[it.replyTo] : (!explicit && i === firstSendable ? opts.autoReply : null)
       const replyId = selected?.mid
@@ -707,7 +753,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       } else if (it.kind === 'sticker') await sendSticker(chatId, it.value, replyId, userId)
       else if (it.kind === 'poke') { if (!opts.simulate) await pokeBack(chatId) }
       else if (it.kind === 'image') await sendImage(chatId, it.value, replyId, userId)
-      if (i < items.length - 1 && !opts.simulate) await sleep(bubbleDelay(items[i + 1].kind === 'text' ? items[i + 1].value : '') * mood().delay)
+      if (i < items.length - 1 && !opts.simulate) await pause(bubbleDelay(items[i + 1].kind === 'text' ? items[i + 1].value : '') * mood().delay)
     }
     if (opts.simulate) return items
     if (inGroup) {
@@ -758,6 +804,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     if (event.type === 'turn/end') {
       slowNoticeSent.delete(key)
+      clearSlowNotices(key)
       running.delete(chatId)
       stopTyping(key)
       const d = event.data || {}
@@ -1308,6 +1355,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   async function flush(chatId) {
+    if (disposed) return
     const p = pending.get(chatId)
     if (!p) return
     clearTimeout(p.timer)
@@ -1344,6 +1392,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         groupInterjects.set(gid, arr)
       }
       const gp = await groupPrompt(p.chat, p.mode, Math.max(0, 4 - p.images.length))
+      if (disposed) return
       if (gp.speakers.length) lastSpeaker.set(chatId, [...p.senders].pop() || gp.speakers.at(-1))
       content = [{ type: 'text', text: gp.text + hint }, ...p.images, ...(gp.images || [])]
       p.query = gp.query
@@ -1392,9 +1441,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   // 私聊里等她回复时，在 QQ 上显示「对方正在输入…」（模型慢的时候让人知道她在想）
   const typing = new Map() // sessionKey → timer
   function startTyping(key, chat) {
+    if (disposed) return
     const cfg = getConfig()
     if (chat.kind !== 'private' || !cfg.enabled || cfg.dryRun || typing.has(key)) return
-    const ping = () => onebot.call('set_input_status', { user_id: Number(chat.userId), event_type: 1 }, { timeoutMs: 5000 }).catch(() => {})
+    const ping = () => { if (!disposed) onebot.call('set_input_status', { user_id: Number(chat.userId), event_type: 1 }, { timeoutMs: 5000 }).catch(() => {}) }
     ping()
     const started = Date.now()
     const t = setInterval(() => {
@@ -1411,7 +1461,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   async function pushToSession(chat, content, senderId, opts = {}) {
+    assertActive()
     const { agent, sessionId } = await agentFor(chat)
+    assertActive()
     const key = sessionKey(sessionId)
     const st = turnState.get(key) || { lastTurn: -1, text: '', senders: new Set() }
     // 上一句也带上：相关记忆检索遇到「嗯嗯」这种短句时，用上一句一起找（#79 之后由模块在提示词里加）
@@ -1429,6 +1481,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         log.warn('扩展模块改提示词出错：', error.message)
       }
     }
+    assertActive()
     const earlier = saidElsewhere.get(chat.chatId)
     if (earlier?.length) {
       saidElsewhere.delete(chat.chatId)
@@ -1456,6 +1509,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (!opts.steer) st.autoReply = opts.autoReply || null
     turnState.set(key, st)
     const admitted = await admit(agent, content)
+    assertActive()
     startTyping(key, chat)
     const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND } }
     // 正在跑的这一轮：steer = 下一步就看到这句（DSH 界面插话走的也是它）；空闲时照旧 followup 开新一轮
@@ -1484,13 +1538,21 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (st.system) throw new Error('这个后台会话的上一轮还没结束')
     turnState.set(key, st)
     let timer
-    const result = new Promise((resolve, reject) => {
+    let rejectWait
+    const base = new Promise((resolve, reject) => {
+      rejectWait = reject
       st.system = { resolve, reject }
       timer = setTimeout(() => {
         if (st.system) st.system = { resolve() {}, reject() {} }
         reject(new Error('等太久了'))
       }, timeoutMs)
-    }).finally(() => clearTimeout(timer))
+    })
+    // 卸载时立即结束等待，不用等模型或 180 秒超时；result 上的拒绝由调用方或这里的 catch 兜住。
+    const wait = { timer, reject: rejectWait, result: null }
+    wait.result = base.finally(() => { clearTimeout(timer); replyWaits.delete(wait) })
+    replyWaits.add(wait)
+    wait.result.catch(() => {})
+    const result = wait.result
     // followup 有的宿主一直等到整轮结束才返回；不能先 await 它，否则超时 Promise 会悬空。
     // 超时后的系统会话仍保留标记，晚到的结果只丢弃，绝不误发到 QQ。
     const system = st.system
@@ -1593,7 +1655,33 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     turnState.set(sessionKey(sessionId), { lastTurn: -1, text: '', senders: new Set(senders.map(String)) })
   }
 
+  /** 插件卸载：停掉所有计时器 / 等待，撤掉仍存活会话里挂的工具与上下文。 */
+  function dispose() {
+    if (disposed) return
+    disposed = true
+    for (const p of pending.values()) clearTimeout(p.timer)
+    pending.clear()
+    for (const key of [...typing.keys()]) stopTyping(key)
+    for (const done of [...pauses]) done()
+    for (const wait of [...replyWaits]) {
+      clearTimeout(wait.timer)
+      try { wait.reject(disposedError()) } catch (error) {}
+    }
+    replyWaits.clear()
+    clearSlowNotices()
+    slowNoticeSent.clear()
+    for (const rec of [...mounts]) unmount(rec)
+    mounted.clear()
+    toolDisposers.clear()
+    sessionToChat.clear()
+    turnState.clear()
+    busy.clear()
+    running.clear()
+    recentMedia.dispose()
+  }
+
   return {
+    dispose,
     // 仅关闭本中枢持有的短期媒体缓存，迟到的事件不能重新写入。
     disposeRecentMedia: () => recentMedia.dispose(),
     modelFor: targetModel,
