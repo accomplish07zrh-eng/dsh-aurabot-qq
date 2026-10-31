@@ -373,6 +373,29 @@ export function apply(ctx) {
   booted.then(() => injectPetPort()).catch(() => {})
   booted.then(() => bridge.refresh())
 
+  // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
+  // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
+  const approvalSeen = new Map()
+  async function notifyApproval(session, event) {
+    try {
+      if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
+      const d = event.data || {}
+      const id = String(d.id || '')
+      if (!id || approvalSeen.has(id)) return
+      approvalSeen.set(id, Date.now())
+      if (approvalSeen.size > 200) { for (const [k, t] of approvalSeen) if (Date.now() - t > 6 * 3600_000) approvalSeen.delete(k) }
+      let title = ''
+      try { title = String(session?.title || session?.id || '') } catch (error) {}
+      const lines = ['【要授权】' + (d.toolName || '未知工具')]
+      if (d.reason) lines.push('原因：' + String(d.reason).slice(0, 300))
+      if (title) lines.push('会话：' + title.slice(0, 60))
+      lines.push('这个得在 DSH 界面里点「批准」，QQ 这边没法代答。')
+      await hub.sendText(`private:${cfg.ownerQQ}`, lines.join('\n'))
+    } catch (error) {
+      log.debug?.('审批通知失败：', error.message)
+    }
+  }
+
   // ---------- 盯会话：一轮结束就发回 QQ ----------
   ctx.effect(() => {
     const off = ctx.on('session/event', (session, event) => {
@@ -383,6 +406,8 @@ export function apply(ctx) {
       }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
       try { use('pet')?.onSessionEvent?.(session, event) } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
+      // 审批请求顺手通知到主人私聊（只通知，不代答）
+      if (event && event.type === 'approval/asked') notifyApproval(session, event)
     })
     return () => { try { if (typeof off === 'function') off() } catch (error) {} }
   }, 'aurabot: 盯会话')
