@@ -11,7 +11,7 @@ export default {
   tab: 'mood',
   files: ['features/companion.js'],
   setup(api) {
-    const mood = createMood({ getConfig: api.config, dsh: api.dsh })
+    const mood = createMood({ getConfig: api.config, dsh: api.dsh, log: api.log })
     api.context(({ chat }) => (chat.kind === 'system' ? '' : mood.contextLine()))
     api.on('activity', (a) => {
       const cfg = api.config()

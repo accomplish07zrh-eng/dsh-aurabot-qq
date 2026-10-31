@@ -64,7 +64,7 @@ export function parseMoodJudge(out) {
   }
 }
 
-export function createMood({ getConfig, dsh }) {
+export function createMood({ getConfig, dsh, log }) {
   const file = () => dataDir('mood.json')
   const load = () => readJson(file(), () => ({ value: 65, at: Date.now(), reason: '', history: [] }))
   const save = (s) => writeJson(file(), s)
@@ -80,8 +80,10 @@ export function createMood({ getConfig, dsh }) {
     s.value = Math.max(5, Math.min(100, before + d))
     s.at = Date.now()
     s.reason = reason
-    s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason }, ...(s.history || [])].slice(0, 20)
+    // 保留 200 条：20 条只够两小时，出问题查不到原因（实测需要回溯半天以上）
+    s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason }, ...(s.history || [])].slice(0, 200)
     save(s)
+    try { log?.debug?.(`心情 ${before} → ${Math.round(s.value)}（${d > 0 ? '+' : ''}${d}）：${reason}`) } catch (error) {}
   }
   return {
     current,
