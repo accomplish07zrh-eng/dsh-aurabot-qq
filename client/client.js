@@ -2888,6 +2888,74 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         if (r.ok) setCookieText('')
         load()
       }
+      const [qrc, setQrc] = useState(null)
+      const [qrBusy, setQrBusy] = useState('')
+      const qrBegin = async () => {
+        setQrBusy('start')
+        const r = await post('/heybox/qr/start')
+        setQrBusy('')
+        setQrc(r)
+        toast(r.message || (r.ok ? '二维码出来了，用小黑盒 App 扫' : '拿不到二维码'), r.ok === false ? 'err' : 'ok')
+      }
+      const qrPoll = async () => {
+        setQrBusy('poll')
+        const r = await post('/heybox/qr/poll')
+        setQrBusy('')
+        toast(r.message || (r.ok ? '登录成功' : '还没扫上'), r.ok ? 'ok' : 'warn')
+        if (r.ok) setQrc(null)
+        load()
+      }
+      const riskOf = s && s.risk
+      const riskLeftMs = Math.max(0, Number(riskOf && riskOf.leftMs) || 0)
+      const verifyShot = s && s.verifier && s.verifier.session && s.verifier.session.shot
+      const startVerify = async () => {
+        setBusy('verify')
+        const r = await post('/heybox/verify/start')
+        setBusy('')
+        toast(r.message || (r.ok ? '浏览器开好了' : '没打开'), r.ok === false ? 'err' : 'ok')
+        load()
+      }
+      const finishVerify = async () => {
+        setBusy('verify2')
+        const r = await post('/heybox/verify/finish')
+        setBusy('')
+        toast(r.message || (r.ok ? '验证完成' : '还没好'), r.ok === false ? 'err' : 'ok')
+        load()
+      }
+      const clearRiskBtn = async () => {
+        setBusy('risk')
+        const r = await post('/heybox/risk/clear')
+        setBusy('')
+        toast(r.message || '好了', r.ok === false ? 'err' : 'ok')
+        load()
+      }
+      const riskCard = () => h(Card, {
+        title: '访问限流 / 安全验证',
+        desc: '小黑盒对同一账号的读接口有频率限制：搜索最容易弹验证码，帖子详情次之。被挡下来之后她不会硬试重试（重试只会让冷却更长），而是按阶梯等（5 分钟 → 20 分钟 → 1 小时 → 3 小时 → 8 小时）。想马上继续用就扫码：不用开浏览器，手机上扫一下就能换一个干净会话。',
+        right: h(Btn, { small: true, kind: 'ghost', onClick: clearRiskBtn, disabled: !!busy }, busy === 'risk' ? '处理中…' : '解除冷却'),
+      },
+        h(Row, { label: '现在的状态' },
+          riskLeftMs > 0
+            ? h('span', { className: 'ab-small', style: { color: 'var(--ab-warn)' } },
+              '冷却中，还要等 ' + Math.ceil(riskLeftMs / 60000) + ' 分钟' + (riskOf.reason === 'ratelimit' ? '（因操作太频繁）' : '（因安全验证）'))
+            : h('span', { className: 'ab-small', style: { color: 'var(--ab-ok)' } }, '正常，没在冷却')),
+        h(Row, { label: '接口限速', hint: '每档都带 ±20% 抖动，避免固定节拍' },
+          h('span', { className: 'ab-small ab-muted' }, '搜索 8 秒 · 帖详情 2.5 秒 · 信息流 1.2 秒 · 写操作 3 秒')),
+        h(Row, { label: '扫码登录（推荐）', hint: '不用开浏览器：用小黑盒 App 扫这个码就行。这也是被验证码挡住后最省事的恢复方式' },
+          h('div', null,
+            h('div', { className: 'ab-flex' },
+              h(Btn, { small: true, kind: 'primary', onClick: qrBegin, disabled: !!qrBusy }, qrBusy === 'start' ? '生成中…' : '生成二维码'),
+              qrc && qrc.ok ? h(Btn, { small: true, onClick: qrPoll, disabled: !!qrBusy }, qrBusy === 'poll' ? '查…' : '我扫完了，查结果') : null),
+            qrc && qrc.png ? h('div', { style: { marginTop: 8 } }, h('img', { src: qrc.png, style: { width: 200, height: 200, imageRendering: 'pixelated', border: '1px solid var(--ab-line)', borderRadius: 6 } })) : null,
+            qrc && qrc.ok ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 4 } }, qrc.message || '') : null)),
+        h(Row, { label: '遇到验证码（浏览器兜底）', hint: '浏览器会在后台打开、窗口放在屏幕外，不抢你的前台。需要点滑块时再按「显示窗口」，点完按「验证完成」' },
+          h('div', { className: 'ab-flex' },
+            h(Btn, { small: true, onClick: startVerify, disabled: !!busy }, busy === 'verify' ? '打开中…' : '后台开浏览器'),
+            h(Btn, { small: true, onClick: () => post('/heybox/verify/show', { visible: true }).then(() => toast('窗口挪进来了', 'ok')).catch(() => toast('挪窗口失败', 'err')) }, '显示窗口'),
+            h(Btn, { small: true, onClick: () => post('/heybox/verify/show', { visible: false }).then(() => toast('窗口收回屏幕外了', 'ok')).catch(() => {}) }, '收回窗口'),
+            h(Btn, { small: true, kind: 'primary', onClick: finishVerify, disabled: !!busy }, busy === 'verify2' ? '读取中…' : '验证完成')),
+          verifyShot ? h('div', { style: { marginTop: 8 } }, h('img', { src: verifyShot, style: { maxWidth: 320, borderRadius: 6, border: '1px solid var(--ab-line)' } })) : null),
+      )
       const acct = s && s.account
       const acctText = !acct || !acct.checkedAt ? h('span', { className: 'ab-small ab-muted' }, '还没检查过') :
         h('span', { className: 'ab-small', style: { color: acct.loggedIn ? 'var(--ab-ok)' : 'var(--ab-warn)' } },
@@ -2919,13 +2987,44 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                   s.hasToken ? '✓ 有 pkey 和 x_xhh_tokenid，读写都能用' : '⚠ 只有 pkey，没有 x_xhh_tokenid：点赞 / 评论 / 发帖大概率会被拒')
                 : null)),
         ),
+        riskCard(),
         h(Card, {
           title: '她的逛法', desc: '只在「主动搭话」里设的醒着时间内自己逛。主人在 QQ 里让她「去逛逛小黑盒」也行。逛是只读的，不会乱点赞评论。',
         },
           h(Row, { label: '定时自己去逛' }, f.sw('heybox.autoBrowse')),
+          h(Row, { label: '只在谷时逛', hint: '避开工作日 9-12、14-18 两个高峰（那会儿模型排队久、单价高，逛一轮很费 token）。峰时她会等，不占额度' },
+            f.sw('heybox.offPeakOnly')),
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '现在的时段', hint: '峰时段可以自己改；周末默认不算峰时' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small', style: { color: (s && s.peak && s.peak.now) ? 'var(--ab-warn)' : 'var(--ab-ok)' } },
+                (s && s.peak && s.peak.now) ? '峰时 · 等会儿再逛' : '谷时 · 可以逛'),
+              h('span', { className: 'ab-small ab-muted' }, s && s.peak ? '（' + s.peak.text + '）' : ''))) : null,
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '峰时段', hint: '默认 9-12 和 14-18（左闭右开）。改这两个数字就能挪到实际高峰' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small ab-muted' }, '上午'),
+              f.num('heybox.peakStartAM', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '–'),
+              f.num('heybox.peakEndAM', { min: 0, max: 24 }),
+              h('span', { className: 'ab-small ab-muted', style: { marginLeft: 8 } }, '下午'),
+              f.num('heybox.peakStartPM', { min: 0, max: 23 }), h('span', { className: 'ab-muted' }, '–'),
+              f.num('heybox.peakEndPM', { min: 0, max: 24 }))) : null,
+          (draft.heybox && draft.heybox.offPeakOnly) ? h(Row, { label: '周末也算峰时', hint: '默认关：周末全天都能逛' },
+            f.sw('heybox.peakWeekend')) : null,
           h(Row, { label: '多久逛一圈' }, f.range('heybox.intervalHours', 1, 24, 1, (v) => v + ' 小时')),
           h(Row, { label: '一圈看几条' }, f.range('heybox.perRun', 1, 10, 1, (v) => v + ' 条')),
           h(Row, { label: '每天最多逛' }, f.range('heybox.maxRunsPerDay', 0, 12, 1, (v) => v + ' 轮')),
+        ),
+        h(Card, {
+          title: '分享给你',
+          desc: '逛到有意思的帖子，她自己判断值不值得分享，值得就私聊发给你（带帖子链接）。和 B 站那边的分享是同一套逻辑。',
+        },
+          h(Row, { label: '私聊分享给我' }, f.sw('heybox.shareToOwner')),
+          h(Row, { label: '分享的积极程度', hint: '她自己的判断阈值：越保守越不舍得发' },
+            f.choices('heybox.shareBias', [
+              { value: 'stingy', label: '很保守', desc: '非特别好不发' },
+              { value: 'normal', label: '正常', desc: '觉得你会喜欢才发' },
+              { value: 'proactive', label: '积极', desc: '有趣就发，不太吝啬' },
+            ], { width: 200 })),
+          h(Row, { label: '每天最多分享' }, f.num('heybox.shareDaily', { min: 0, max: 10 }), h('span', { className: 'ab-muted' }, '条/天')),
         ),
         h(Card, {
           title: '每天上限',
@@ -2952,7 +3051,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                 '逛 ' + (quota.browse || 0) + '/' + (limits.maxRunsPerDay || 0) +
                 ' · 赞 ' + (quota.like || 0) + '/' + (limits.likeDaily || 0) +
                 ' · 评 ' + (quota.comment || 0) + '/' + (limits.commentDaily || 0) +
-                ' · 帖 ' + (quota.post || 0) + '/' + (limits.maxPostsPerDay || 0)),
+                ' · 帖 ' + (quota.post || 0) + '/' + (limits.maxPostsPerDay || 0) + ' · 分享 ' + (quota.share || 0) + '/' + (limits.shareDaily || 0)),
               h(Btn, { small: true, kind: 'ghost', onClick: act('/heybox/clear-quota', 'quota') }, busy === 'quota' ? '清零中…' : '清零')))
             : null,
         ),

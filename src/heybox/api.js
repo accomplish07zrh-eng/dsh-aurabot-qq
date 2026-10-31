@@ -5,6 +5,13 @@
 //   · MD5 尾部 6 字节全部参与校验和（前 4 个位混合 + 后 2 个原样，6 个一起求和 %100）
 //   · 写接口额外要 _rnd：HMAC-SHA256，盐值来自前端源码
 //
+// 限流 / 风控（参考 dph-heybox、xiaoheihe-cli、xiaoheihe-agent 的做法）：
+//   · 按接口分档：搜索最凶（8s）、帖子详情次之（2.5s）、信息流（1.2s）、写接口（3s 起）
+//   · 每档都加 ±20% 抖动，避免固定节拍被识别成脚本
+//   · 一旦小黑盒回 show_captcha / need_captcha / 429，立刻停手，按指数退避冷却
+//     （5 分钟 → 20 分钟 → 1 小时 → 3 小时 → 8 小时），冷却期内不发任何请求
+//   · 写请求永不自动重试（重试只会让风控更严）
+//
 // 图片上传走腾讯云 COS 直传四步（info → token → PUT → callback），签名是标准 COS XML API。
 
 import crypto from 'node:crypto'
@@ -35,6 +42,27 @@ export const TOPICS = {
   7214: '盒友杂谈',
   18745: '数码硬件',
   806933: 'AI',
+}
+
+/** 按接口分档的最小间隔（毫秒）。顺序有意义：先匹配到的生效。 */
+const TIERS = [
+  { name: 'search', re: /^\/bbs\/(app\/)?api\/general\/search/, gap: 8000 },
+  { name: 'detail', re: /^\/bbs\/app\/link\/tree/, gap: 2500 },
+  { name: 'feed', re: /^\/bbs\/app\/feeds/, gap: 1200 },
+  { name: 'hot', re: /^\/bbs\/app\/api\/search\/welcome_page/, gap: 1500 },
+  { name: 'comment', re: /^\/bbs\/app\/comment\//, gap: 4000 },
+  { name: 'upload', re: /^\/bbs\/app\/api\/qcloud\//, gap: 1500 },
+]
+const DEFAULT_GAP = 900
+const WRITE_GAP = 3000
+
+/** 冷却阶梯：命中验证码 / 429 后逐级抬高，成功一段时间后回落。 */
+export const COOLDOWN_STEPS = [5 * 60_000, 20 * 60_000, 60 * 60_000, 3 * 3600_000, 8 * 3600_000]
+
+/** 路径属于哪一档（给上层做提示用） */
+export function tierOf(path) {
+  const hit = TIERS.find((t) => t.re.test(String(path || '')))
+  return hit ? hit.name : 'default'
 }
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex')
@@ -114,7 +142,7 @@ export function cosSign({ secretId, secretKey, path, host, contentLength, keyTim
     + `&q-signature=${signature}`
 }
 
-/** 统一的失败语义：登录态 / 验证码 / 限流都要能分辨，上层才能给出对的提示 */
+/** 统一的失败语义：登录态 / 验证码 / 限流 / 冷却都要能分辨，上层才能给出对的提示 */
 export class HeyboxError extends Error {
   constructor(message, code = 'api', extra = {}) {
     super(message)
@@ -125,22 +153,45 @@ export class HeyboxError extends Error {
 }
 
 const AUTH_STATUS = new Set(['relogin', 'not_login', 'need_login', 'login_required', 'need_google_check'])
-const CAPTCHA_STATUS = new Set(['show_captcha', 'need_captcha'])
+const CAPTCHA_STATUS = new Set(['show_captcha', 'need_captcha', 'need_verify', 'verify_required'])
+
+const isObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+
+/** 从接口返回里认出「要验证 / 被限流」——status 之外，msg 里也常写。 */
+function riskOf(data, status) {
+  if (!isObj(data)) return ''
+  if (CAPTCHA_STATUS.has(status)) return 'captcha'
+  const msg = String(data.msg ?? data.message ?? '')
+  if (/验证码|安全验证|人机验证|请完成验证|captcha/i.test(msg)) return 'captcha'
+  if (/操作[^，。；\s]{0,2}频繁|请求[^，。；\s]{0,2}频繁|访问[^，。；\s]{0,2}频繁|稍后再试|限流|限制访问|too many/i.test(msg)) return 'ratelimit'
+  // 有些接口把风控信息塞在 result 里
+  const r = data.result
+  if (isObj(r) && (r.show_captcha === 1 || r.show_captcha === true || r.need_captcha === 1)) return 'captcha'
+  return ''
+}
+
+const jitter = (gap) => Math.round(gap * (0.8 + Math.random() * 0.4))
 
 /**
- * 小黑盒 HTTP 客户端。串行限速 + 熔断，写请求永不自动重试。
+ * 小黑盒 HTTP 客户端。分档限速 + 风控冷却，写请求永不自动重试。
  * @param {object} opts
  * @param {string} opts.cookie 整串 Cookie（pkey + x_xhh_tokenid）
- * @param {number} [opts.interval] 请求最小间隔（毫秒）
+ * @param {number} [opts.interval] 默认档最小间隔（毫秒）
  * @param {number} [opts.timeout] 单请求超时（毫秒）
+ * @param {object} [opts.risk] 冷却状态的初值（从磁盘恢复）
+ * @param {(risk:object)=>void} [opts.onRisk] 冷却状态变化时回调（落盘用）
  */
 export class HeyboxClient {
-  constructor({ cookie = '', interval = 900, timeout = 25000 } = {}) {
+  constructor({ cookie = '', interval = DEFAULT_GAP, timeout = 25000, risk = null, onRisk = null } = {}) {
     this.cookie = cookie
     this.interval = interval
     this.timeout = timeout
     this.lastAt = 0
     this.calls = 0
+    // 风控冷却状态：{ level, until, reason, at }
+    this.risk = isObj(risk) ? { level: Number(risk.level) || 0, until: Number(risk.until) || 0, reason: String(risk.reason || ''), at: Number(risk.at) || 0 } : { level: 0, until: 0, reason: '', at: 0 }
+    this.onRisk = typeof onRisk === 'function' ? onRisk : null
+    this.now = () => Date.now()
   }
 
   get loggedIn() {
@@ -153,9 +204,46 @@ export class HeyboxClient {
     return m ? m[1] : ''
   }
 
-  async #throttle() {
-    const wait = this.interval - (Date.now() - this.lastAt)
+  /** 冷却中？返回剩余毫秒，0 表示没在冷却 */
+  cooldownLeft() {
+    const left = Number(this.risk.until) - this.now()
+    return left > 0 ? left : 0
+  }
+
+  /** 冷却状态快照（给面板看） */
+  riskInfo() {
+    return { level: this.risk.level, until: this.risk.until, reason: this.risk.reason, at: this.risk.at, leftMs: this.cooldownLeft() }
+  }
+
+  /** 进入（或加深）冷却。冷却期内所有请求直接短路，不再打小黑盒。 */
+  escalate(reason = 'captcha') {
+    const level = Math.min(COOLDOWN_STEPS.length, Math.max(1, this.risk.level + 1))
+    const until = this.now() + COOLDOWN_STEPS[level - 1]
+    this.risk = { level, until, reason, at: this.now() }
+    try { this.onRisk?.(this.riskInfo()) } catch { /* 落盘失败不影响请求 */ }
+    return this.riskInfo()
+  }
+
+  /** 人工验证通过 / 成功一段时间后回调冷却等级 */
+  clearRisk() {
+    if (this.risk.level === 0 && !this.risk.until) return this.riskInfo()
+    this.risk = { level: 0, until: 0, reason: '', at: this.now() }
+    try { this.onRisk?.(this.riskInfo()) } catch { /* 同上 */ }
+    return this.riskInfo()
+  }
+
+  gapOf(path, method) {
+    const hit = TIERS.find((t) => t.re.test(String(path || '')))
+    const base = hit ? hit.gap : this.interval
+    return method !== 'GET' ? Math.max(base, WRITE_GAP) : base
+  }
+
+  async #throttle(path, method) {
+    const want = jitter(this.gapOf(path, method))
+    const wait = want - (this.now() - this.lastAt)
     if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+    this.lastAt = this.now()
+    this.calls += 1
   }
 
   /**
@@ -172,9 +260,13 @@ export class HeyboxClient {
     if (!path || !path.startsWith('/')) throw new HeyboxError('path 必须以 / 开头', 'input')
     if (method !== 'GET' && !this.loggedIn) throw new HeyboxError('写操作需要登录：先在面板里填 Cookie', 'auth')
 
-    await this.#throttle()
-    this.lastAt = Date.now()
-    this.calls += 1
+    // 冷却期直接不碰网络：这时候再发请求只会把风控拖得更久
+    const left = this.cooldownLeft()
+    if (left > 0) {
+      throw new HeyboxError(`小黑盒在冷却中（还要等 ${Math.ceil(left / 60000)} 分钟）：${this.risk.reason || '被风控挡过'}`, 'cooldown', { leftMs: left, risk: this.riskInfo() })
+    }
+
+    await this.#throttle(path, method)
 
     const query = { ...BASE_PARAMS }
     // 网页端每个请求都带 heybox_id，缺了会被当成未登录
@@ -188,7 +280,13 @@ export class HeyboxClient {
       url.searchParams.set(k, String(v))
     }
 
-    const headers = { 'user-agent': UA, accept: 'application/json, text/plain, */*', referer: WEB_BASE + '/', origin: WEB_BASE }
+    const headers = {
+      'user-agent': UA,
+      accept: 'application/json, text/plain, */*',
+      'accept-language': 'zh-CN,zh;q=0.9',
+      referer: WEB_BASE + '/',
+      origin: WEB_BASE,
+    }
     if (this.cookie) headers.cookie = this.cookie
 
     let payload
@@ -206,14 +304,18 @@ export class HeyboxClient {
       throw new HeyboxError(`网络请求失败：${err?.message ?? err}`, 'network')
     }
 
+    if (res.status === 429) {
+      this.escalate('ratelimit')
+      throw new HeyboxError('小黑盒限流（429）：已停手，冷却期内不再请求', 'rate_limit', { risk: this.riskInfo() })
+    }
     if (res.status === 401 || res.status === 403) throw new HeyboxError('小黑盒返回 401/403：登录态可能失效', 'auth')
-    if (res.status === 429) throw new HeyboxError('小黑盒限流（429）：已停止', 'rate_limit')
 
     let data
     try {
       data = await res.json()
     } catch {
-      throw new HeyboxError(`响应不是 JSON（HTTP ${res.status}）`, 'protocol')
+      // HTML 响应基本就是被拦到验证/拦截页了
+      throw new HeyboxError(`响应不是 JSON（HTTP ${res.status}）：多半被挡到验证页了`, 'protocol')
     }
 
     const setCookies = typeof res.headers?.getSetCookie === 'function' ? res.headers.getSetCookie() : []
@@ -222,9 +324,18 @@ export class HeyboxClient {
     if (!res.ok) throw new HeyboxError(`HTTP ${res.status}：${data?.msg ?? data?.message ?? '未知错误'}`, 'http', { status: res.status })
 
     const status = data?.status
-    if (status === 'ok') return wrap(data)
+    const risk = riskOf(data, status)
+    if (risk) {
+      const info = this.escalate(risk)
+      const why = risk === 'captcha' ? '小黑盒要求安全验证' : '小黑盒判定操作太频繁'
+      throw new HeyboxError(`${why}（${status ?? 'risk'}）：已停手，冷却 ${Math.ceil((info.until - this.now()) / 60000)} 分钟。需要时去面板点「去验证」用浏览器过一次`, 'captcha', { risk: info })
+    }
+    if (status === 'ok') {
+      // 冷却早已到期、这次又成功了：说明风控松了，正式解除（走 clearRisk 才会落盘）
+      if (this.risk.level > 0 && this.now() > this.risk.until) this.clearRisk()
+      return wrap(data)
+    }
     if (AUTH_STATUS.has(status)) throw new HeyboxError(`登录态失效（${status}）：请重新登录`, 'auth')
-    if (CAPTCHA_STATUS.has(status)) throw new HeyboxError(`小黑盒要求验证码（${status}）：请到网页完成验证后重试`, 'captcha')
     throw new HeyboxError(`小黑盒拒绝（${status ?? 'no-status'}）：${data?.msg ?? ''}`.trim(), 'api', { payload: data })
   }
 

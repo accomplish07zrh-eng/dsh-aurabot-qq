@@ -4,19 +4,22 @@
 // 写操作各有权限（面板「权限」页），默认仅主人；发帖前有自检清单（见面板与规则）。
 
 import { createHeybox } from '../../heybox/site.js'
+import { createVerifier } from '../../heybox/verify.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { profileToolVisible, profilePermits } from '../../chat/access.js'
 
 export default {
   id: 'heybox',
   name: '刷小黑盒',
-  version: '1.0.0',
+  version: '1.1.0',
   description: '小黑盒游戏社区：看信息流、读帖子热评、点赞、评论、发帖（文章模式可带图）、删自己的帖；发帖前先看热榜找角度（heybox_feed / heybox_watch / heybox_like / heybox_comment / heybox_post / heybox_hot / heybox_search / heybox_topics / heybox_delete）',
   tab: 'heybox',
-  files: ['heybox/api.js', 'heybox/site.js'],
+  files: ['heybox/api.js', 'heybox/site.js', 'heybox/verify.js'],
   setup(api) {
     const { hub, http } = api.core
-    const hb = createHeybox({ getConfig: api.config, hub, memory: api.lazy('memory'), log: api.log })
+    // 接口被安全验证挡住时，靠真浏览器过一次（复用抖音那套 CDP 封装）
+    const verifier = createVerifier({ browserPath: () => api.config().douyin?.browserPath || '', log: api.log })
+    const hb = createHeybox({ getConfig: api.config, hub, memory: api.lazy('memory'), log: api.log, verifier })
 
     // 定时自己逛一圈（只读，不写）
     api.every(60_000, () => hb.tick({ memory: api.use('memory'), owner: api.config().ownerName || '' }), '刷小黑盒')
@@ -116,6 +119,7 @@ export default {
       '发帖自检（任何一条不过就别发）：标题和正文第一行不重复；不编造第一人称经历（你没经历过的事一律不写）；正文符合所选风格的字数；配图至少 3 张更好；不碰政治、医疗法律建议、评价真人、判断价格是否合理；读一遍像不像人话（转折词堆砌就是 AI 腔）。',
       '小黑盒评论要短：15-40 字，超过 60 字就是在写小作文。抓住对方话里的具体措辞顶回去，别写「闲鱼水深」这种贴哪都成立的空话。自检：这条回复贴到同帖另一条评论下还说得通吗？说得通说明没针对，重写。',
       '定时刷小黑盒跑在独立的后台会话（system:ext-heybox）里，带人格但不会自动带记忆，也不发到 QQ。需要长期记住的逛帖收获会被写进记忆。',
+      '小黑盒有风控：工具返回「小黑盒在冷却中」「要求安全验证」「操作太频繁」，说明这会儿不能再用接口了。别换个接口重试、别让主人反复点，等冷却过去（面板「小黑盒」页能看到还要等多久）；实在急着用，让主人在面板里点「去验证」用浏览器过一次。',
     ].join('\n'))
 
     // 面板：全部只读状态下拉，不带副作用
@@ -134,6 +138,29 @@ export default {
     api.route('/heybox/run', async () => hb.browse())
     api.route('/heybox/clear-quota', async () => hb.clearQuota())
     api.route('/heybox/styles', async () => ({ ok: true, styles: hb.POST_STYLES, default: hb.DEFAULT_POST_STYLE }))
+    // 风控：看冷却还剩多久 / 手动解除
+    api.route('/heybox/risk', async () => ({ ok: true, risk: hb.risk(), verifier: verifier.status() }))
+    api.route('/heybox/risk/clear', async () => hb.clearRisk())
+    // 安全验证：默认走扫码（不开浏览器）；verifyMode=browser 才开后台浏览器
+    api.route('/heybox/verify/start', async () => hb.verifyStart())
+    // 扫码登录：拿二维码 / 轮询结果（纯接口，不弹窗）
+    api.route('/heybox/qr/start', async () => hb.qrStart())
+    api.route('/heybox/qr/poll', async () => {
+      const r = await hb.qrPoll()
+      if (r.ok && r.cookie) api.setConfig((cur) => ({ ...cur, heybox: { ...cur.heybox, cookie: r.cookie } }))
+      return r
+    })
+    // 浏览器兜底：显示/收回窗口（默认屏幕外，不打扰主人）
+    api.route('/heybox/verify/show', async (req) => {
+      const b = await http.body(req).catch(() => ({}))
+      return hb.verifyShow(Boolean(b?.visible))
+    })
+    api.route('/heybox/verify/finish', async () => {
+      const r = await hb.verifyFinish()
+      // verifyFinish 收回来的 Cookie 要落配置，不然重启就丢了
+      if (r.ok && r.cookie) api.setConfig((cur) => ({ ...cur, heybox: { ...cur.heybox, cookie: r.cookie } }))
+      return { ok: r.ok, message: r.message, hasPkey: r.hasPkey, shot: r.shot }
+    })
     return hb
   },
 }

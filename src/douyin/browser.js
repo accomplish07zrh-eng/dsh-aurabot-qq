@@ -1,9 +1,17 @@
 // 抖音专用浏览器：独立用户资料目录的 Edge / Chrome，经 CDP（Node 自带 WebSocket）控制。
 // 只管「开 / 连 / 点 / 打字 / 截图 / 等接口返回」这些通用动作，抖音相关的都在 site.js。
 // 不用无头模式：抖音会拦无头浏览器（页面一直「加载中」）。Linux 没桌面就配 Xvfb。
+//
+// 「窗口别打扰用户」在这里做了三层（实测这台机器上 Edge Beta 会忽略 --headless，
+// 也会忽略 --window-position / Start-Process -WindowStyle，所以必须自己压）：
+//   1. 启动参数尽量放屏幕外（成本最低，能生效就生效）；
+//   2. 连上 CDP 后立刻最小化（Browser.setWindowBounds）；
+//   3. quietWindows=true 时开一个「看门狗」：每 30ms 扫一次本进程的窗口，
+//      只要发现新窗口没最小化就立刻 ShowWindow(SW_MINIMIZE)。
+//      这是唯一在「Edge 无视 headless」的机器上也稳的办法（实测 1474ms 出现、立刻压下）。
 
 import { createServer } from 'node:net'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -120,7 +128,7 @@ export function connectCdp(wsUrl, { WS = globalThis.WebSocket } = {}) {
  * 专用浏览器。open() 才会真的启动 / 连接；只读状态的地方不要调它（打开面板不该弹窗口）。
  * @param {{profileDir:string, browserPath?:()=>string, log?:object}} o
  */
-export function createBrowser({ profileDir, browserPath = () => '', log } = {}) {
+export function createBrowser({ profileDir, browserPath = () => '', log, startMinimized = false, headless = false, quietWindows = false } = {}) {
   let cdp = null
   let opening = null
 
@@ -141,12 +149,77 @@ export function createBrowser({ profileDir, browserPath = () => '', log } = {}) 
     cdp = c
   }
 
+  // ── 窗口看门狗 ────────────────────────────────────────────────
+  //
+  // 为什么需要：这台机器上 Edge Beta 会忽略 --headless（照样建窗口），
+  // 也会忽略 --window-position 和 Start-Process -WindowStyle。
+  // 实测窗口在 ~1500ms 出现并可见，CDP 连上再最小化已经晚了。
+  // 所以开一个独立的 PowerShell 子进程，每 30ms 扫一次窗口，
+  // 发现「属于本 profile 的、没最小化的」就立刻 SW_MINIMIZE。
+  //
+  // 只看自己的窗口：按命令行里的 --user-data-dir 精确匹配 profile 路径。
+  let watchdog = null
+
+  function quietWatchdogScript() {
+    // 转义成 PowerShell 单引号字符串里的安全形式
+    const profileLit = String(profileDir).replace(/'/g, "''")
+    return [
+      'Add-Type -Namespace Q -Name W -MemberDefinition \'[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr h); [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h,uint c); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n); [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p); public delegate bool EnumProc(IntPtr h, IntPtr p);\' -ErrorAction SilentlyContinue',
+      `$profile = '${profileLit}'`,
+      'while (\$true) {' ,
+      '  \$pids = @(Get-CimInstance Win32_Process -Filter "name=\'msedge.exe\' or name=\'chrome.exe\'" -ErrorAction SilentlyContinue | Where-Object { \$_.CommandLine -and \$_.CommandLine.Contains(\$profile) } | ForEach-Object { \$_.ProcessId })',
+      '  if (\$pids.Count -eq 0) { break }',
+      '  \$visited = @{}',
+      '  [Q.W]::EnumWindows({ param(\$h,\$x)',
+      '    if (\$visited.ContainsKey(\$h)) { return \$true }',
+      '    \$visited[\$h] = \$true',
+      '    \$sb = New-Object System.Text.StringBuilder 256',
+      '    [void][Q.W]::GetClassName(\$h, \$sb, 256)',
+      '    \$cls = \$sb.ToString()',
+      '    if (\$cls -ne "Chrome_WidgetWin_1") { return \$true }',
+      '    \$procId = 0',
+      '    [void][Q.W]::GetWindowThreadProcessId(\$h, [ref]\$procId)',
+      '    if (\$pids -notcontains \$procId) { return \$true }',
+      '    if ([Q.W]::IsWindowVisible(\$h) -and -not [Q.W]::IsIconic(\$h)) {',
+      '      if ([Q.W]::GetWindowTextLength(\$h) -gt 0) { [void][Q.W]::ShowWindow(\$h, 6) }',
+      '    }',
+      '    return \$true',
+      '  }, [IntPtr]::Zero) | Out-Null',
+      '  Start-Sleep -Milliseconds 30',
+      '}',
+    ].join(NL)
+  }
+
+  function startWatchdog() {
+    if (!quietWindows || watchdog || process.platform !== 'win32') return
+    try {
+      const script = quietWatchdogScript()
+      watchdog = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        stdio: 'ignore',
+        detached: true,
+        windowsHide: true,
+      })
+      watchdog.on('error', () => { watchdog = null })
+      watchdog.unref()
+    } catch (error) {
+      log?.debug?.('窗口看门狗没起来：' + error.message)
+      watchdog = null
+    }
+  }
+
+  function stopWatchdog() {
+    if (!watchdog) return
+    try { watchdog.kill() } catch { /* 已经退了 */ }
+    watchdog = null
+  }
+
   async function launch() {
     const bin = findBrowser(browserPath())
     if (!bin) return { ok: false, message: browserPath() ? `浏览器路径不对：${browserPath()}` : '找不到 Edge / Chrome，先装一个，或在面板里填浏览器路径' }
     mkdirSync(profileDir, { recursive: true })
     const port = await freePort()
     const child = spawn(bin, [
+      ...(headless ? ['--headless=new'] : []), // 无头：根本不创建窗口（小黑盒用）
       `--user-data-dir=${profileDir}`,
       `--remote-debugging-port=${port}`,
       '--remote-debugging-address=127.0.0.1',
@@ -160,7 +233,8 @@ export function createBrowser({ profileDir, browserPath = () => '', log } = {}) 
       '--disable-renderer-backgrounding',
       '--disable-features=Translate,MediaRouter,CalculateNativeWinOcclusion',
       '--window-size=1280,860',
-      '--window-position=-2400,-2400', // 放到屏幕外，不抢前台；要看的时候 show()
+      // 有窗口时放到屏幕外，不抢前台；要看的时候 show()。无头模式不会有窗口，这行无副作用。
+      '--window-position=-2400,-2400',
       'about:blank',
     ], { stdio: 'ignore', detached: true })
     child.on('error', (error) => log?.warn?.('浏览器启动失败：', error.message))
@@ -171,6 +245,12 @@ export function createBrowser({ profileDir, browserPath = () => '', log } = {}) 
         // Edge 经常不写这个文件，自己写一份，DSH 重启后才能接回这个窗口
         try { writeFileSync(join(profileDir, 'DevToolsActivePort'), `${port}\n/devtools/browser/aurabot\n`) } catch (error) {}
         await attach(port)
+        // 要求「不要弹到前台」的模块（小黑盒）：连上就立刻最小化，
+        // 窗口只在任务栏留个条，不占屏幕、不抢焦点。要操作时再 restoreWindow() 复原。
+        if (startMinimized || quietWindows) await hideWindow().catch(() => {})
+        // 看门狗兜底：这台机器上 Edge 会忽略 headless / window-position，
+        // 只有「出现就压」这个办法稳（实测窗口 ~1.1s 露头、~1.2s 被压）。
+        startWatchdog()
         return { ok: true }
       }
     }
@@ -186,6 +266,10 @@ export function createBrowser({ profileDir, browserPath = () => '', log } = {}) 
       if (port && await getJson(`http://127.0.0.1:${port}/json/version`, 1500).catch(() => null)) {
         try {
           await attach(port)
+          // 接回的是之前就已开着（可能正显示在屏幕上）的窗口：也按模块要求收起来。
+          // 不补这一步，重启 DSH / 重新加载插件之后，旧窗口会一直挂在屏幕上。
+          if (startMinimized || quietWindows) await hideWindow().catch(() => {})
+          startWatchdog()
           return { ok: true }
         } catch (error) {
           log?.debug?.('接回已开的浏览器失败，重新启动：', error.message)
@@ -317,8 +401,34 @@ export function createBrowser({ profileDir, browserPath = () => '', log } = {}) 
     return r.data ? 'data:image/png;base64,' + r.data : ''
   }
 
-  /** 窗口挪到屏幕里给人看 / 挪回屏幕外。 */
+  /**
+   * 把窗口收进任务栏（最小化）。比「挪到屏幕外坐标」可靠：
+   * 坐标法在多显示器 / 高分屏 / 系统把窗口拉回可见区时都不管用，而且窗口仍是前台候选。
+   */
+  async function hideWindow() {
+    if (headless) return // 无头模式没有窗口，没什么可收的
+    const c = need()
+    const { windowId } = await c.send('Browser.getWindowForTarget')
+    await c.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } })
+  }
+
+  /** 窗口恢复成普通大小并放到前台（用户主动要看的时候）。 */
+  async function restoreWindow({ left = 80, top = 60, width = 1280, height = 860 } = {}) {
+    if (headless) return // 无头模式没有窗口可恢复；要看得起一个带窗口的
+    const c = need()
+    const { windowId } = await c.send('Browser.getWindowForTarget')
+    await c.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {})
+    await c.send('Browser.setWindowBounds', { windowId, bounds: { left, top, width, height } }).catch(() => {})
+    await c.send('Page.bringToFront').catch(() => {})
+  }
+
+  /**
+   * 窗口挪到屏幕里给人看 / 挪回屏幕外（**保持原语义**，抖音依赖这个行为）。
+   * 抖音会拦无头浏览器，窗口必须真实存在并渲染；所以这里不能用最小化。
+   * 需要「彻底不进前台」的模块（小黑盒）用 hideWindow()。
+   */
   async function show(visible) {
+    if (headless) return
     const c = need()
     const { windowId } = await c.send('Browser.getWindowForTarget')
     await c.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {})
@@ -326,10 +436,24 @@ export function createBrowser({ profileDir, browserPath = () => '', log } = {}) 
     if (visible) await c.send('Page.bringToFront').catch(() => {})
   }
 
+  /**
+   * 读浏览器里当前的 Cookie（只在页面自己这个域的登录态上取，不碰别的浏览器的）。
+   * 返回 [{ name, value, domain, path, secure }]；读不到就返回空数组。
+   * 用途：用户手动在窗口里过完安全验证后，把新会话收回来给接口用。
+   */
+  async function cookies() {
+    const r = await need().send('Storage.getCookies', {}).catch(() => null)
+    if (!r || !Array.isArray(r.cookies)) return []
+    return r.cookies
+      .filter((c) => c && typeof c.name === 'string' && typeof c.value === 'string')
+      .map((c) => ({ name: c.name, value: c.value, domain: String(c.domain || ''), path: String(c.path || '/'), secure: Boolean(c.secure) }))
+  }
+
   function close() {
+    stopWatchdog()
     cdp?.close()
     cdp = null
   }
 
-  return { open, connected, evaluate, goto, waitFor, click, press, type, clearFocused, pressEnter, waitResponse, screenshot, show, close }
+  return { open, connected, evaluate, goto, waitFor, click, press, type, clearFocused, pressEnter, waitResponse, screenshot, show, hideWindow, restoreWindow, cookies, close, headless }
 }

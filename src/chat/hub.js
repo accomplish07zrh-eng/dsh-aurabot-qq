@@ -63,7 +63,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const mounted = new Map() // sessionKey → { agent, offs, chatId, toolsKey }  按会话记，agent 对象换了也能清掉旧工具（#90）
   const toolDisposers = new Map() // `${sessionKey}|${工具名}` → disposer，防注册表里残留同名工具时挂不上（#90）
   const sessionToChat = new Map() // sessionKey → chatId
-  const turnState = new Map() // sessionKey → { lastTurn, text, images, senders:Set, system?: {resolve, reject} }
+  const turnState = new Map() // sessionKey → { lastTurn, text, images, senders:Set, system?: {resolve, reject, timedOutAt} }
+  // 后台轮次超时后，还愿意等它自己 turn/end 多久。超过就认定卡死，换新会话（否则这个会话会被永久锁住）
+  const SYSTEM_STUCK_GRACE_MS = 5 * 60_000
   const groupBuf = new Map() // groupId → [{t, uid, nick, text, at, replyId, quote}]
   const quoteCache = new Map() // replyId → { ok, who, uid, text, images, stickers, records, isBot }  引用消息解析缓存
   const groupInterjects = new Map() // groupId → [t]  她主动开口（插话、接话）的时间
@@ -1481,13 +1483,29 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const { agent, sessionId } = await agentFor(chat)
     const key = sessionKey(sessionId)
     const st = turnState.get(key) || { lastTurn: -1, text: '', senders: new Set() }
-    if (st.system) throw new Error('这个后台会话的上一轮还没结束')
+    if (st.system) {
+      // 上一轮超时之后迟迟等不到 turn/end：说明那一轮是真卡死了（宿主不回来收尾）。
+      // 这时候还继续拒绝，这个后台会话就永远跑不起来了，所以过了宽限期就换新会话重来。
+      const since = Number(st.system.timedOutAt || 0)
+      if (!since || Date.now() - since < SYSTEM_STUCK_GRACE_MS) {
+        throw new Error('这个后台会话的上一轮还没结束')
+      }
+      log.warn(`${chat.chatId}: 上一轮超时后 ${Math.round((Date.now() - since) / 1000)} 秒都没结束，按卡死处理，换一个会话`)
+      // 必须真的换掉会话（sessionId 变了），不能只是把标记清成 null：
+      // turn/end 事件本身不带轮次身份，同一个会话上迟到的旧 turn/end 会连新一轮的标记一起清掉，
+      // 导致「假结束」。换会话之后，旧事件落在旧 sessionId 上，碰不到新会话的状态。
+      resetChat(chat.chatId)
+      return runSystemTurn(name, title, prompt, { timeoutMs, noTools, key: scope })
+    }
     turnState.set(key, st)
     let timer
     const result = new Promise((resolve, reject) => {
       st.system = { resolve, reject }
       timer = setTimeout(() => {
-        if (st.system) st.system = { resolve() {}, reject() {} }
+        // 只记下超时时刻，别把 st.system 换掉：
+        //   · turn/end 晚到时还能正常把它清成 null
+        //   · 一直不来的话，下一次调用靠这个时刻判断「这轮是真卡死了」
+        if (st.system) st.system.timedOutAt = Date.now()
         reject(new Error('等太久了'))
       }, timeoutMs)
     }).finally(() => clearTimeout(timer))

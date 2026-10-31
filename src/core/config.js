@@ -169,6 +169,18 @@ export const DEFAULTS = {
     maxPostsPerDay: 3, // 每天最多发帖（硬上限，多了容易被限）
     defaultTopic: 7214, // 发帖默认分区：7214 盒友杂谈 / 18745 数码硬件 / 806933 AI
     postStyle: 'mix', // 发帖风格：diary 大肥鱼日记 / news 热搜文 / mix 肥鱼热搜
+    shareToOwner: true, // 逛到有意思的帖子，私聊分享给主人（和 B 站同一个思路）
+    shareBias: 'normal', // stingy | normal | proactive：分享给主人的积极程度
+    shareDaily: 3, // 每天最多分享几条（避免刷屏）
+    // 验证策略：qr = 扫码登录（不开浏览器，手机上扫一下）｜browser = 开浏览器窗口点验证
+    verifyMode: 'qr',
+    // 谷时逛：只在非峰时跑自动逛，避开工作日 9-12 / 14-18 的高峰，省 token
+    offPeakOnly: false, // 开关：默认关（行为不变）
+    peakStartAM: 9, // 上午峰时开始（含）
+    peakEndAM: 12, // 上午峰时结束（不含）
+    peakStartPM: 14, // 下午峰时开始（含）
+    peakEndPM: 18, // 下午峰时结束（不含）
+    peakWeekend: false, // 周末是否也算峰时（默认不算，周末全天可逛）
   },
   qzoneSocial: {
     enabled: true,
@@ -333,6 +345,18 @@ export function normalize(raw) {
   b.maxCommentsPerDay = num(b.maxCommentsPerDay, 3, 0, 50)
   b.maxRepliesPerDay = num(b.maxRepliesPerDay, 6, 0, 100)
   b.keywords = (Array.isArray(b.keywords) ? b.keywords : String(b.keywords || '').split(/[\n,，]+/)).map((x) => String(x).trim()).filter(Boolean).slice(0, 30)
+  const hb = c.heybox
+  hb.shareToOwner = bool(hb.shareToOwner, true)
+  hb.shareBias = ['stingy', 'normal', 'proactive'].includes(hb.shareBias) ? hb.shareBias : 'normal'
+  hb.shareDaily = Math.round(num(hb.shareDaily, 3, 0, 10))
+  hb.verifyMode = hb.verifyMode === 'browser' ? 'browser' : 'qr'
+  hb.cookie = String(hb.cookie || '').trim()
+  hb.offPeakOnly = bool(hb.offPeakOnly, false)
+  hb.peakStartAM = num(hb.peakStartAM, 9, 0, 23)
+  hb.peakEndAM = num(hb.peakEndAM, 12, 0, 24)
+  hb.peakStartPM = num(hb.peakStartPM, 14, 0, 23)
+  hb.peakEndPM = num(hb.peakEndPM, 18, 0, 24)
+  hb.peakWeekend = bool(hb.peakWeekend, false)
   const d = c.douyin
   d.enabled = bool(d.enabled, false)
   d.autoBrowse = bool(d.autoBrowse, true)
