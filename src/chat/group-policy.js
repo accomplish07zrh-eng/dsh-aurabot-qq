@@ -11,7 +11,7 @@ export const DEFAULT_GROUP_POLICY = {
   // 话题相关度：群里正在聊的东西和她有关（碰到她感兴趣的话题、或者她记得相关的事），才可能插话
   interests: ['白米饭', '米饭', '吃饭', '好吃', '饿了', '游戏', '追剧', '番剧', '动漫', '猫', '狗', '鲸鱼', '鱼', '睡觉', '熬夜', '困', '天气', '下雨', '表情包', '女仆', '可爱', '奶茶', '甜品'],
   minRelevance: 0.25, // 相关度低于这个就不插话（0 = 不看话题，纯随机）
-  engagedMax: 2, // 没人再叫她时，接话最多连着接几次，接满就回到普通插话的冷却和上限
+  engagedMax: 6, // 没人再叫她时最多连着接几次。该不该停由她自己判断，这里只防失控
   burstMax: 8, // 安全刹车：burstWindowSec 秒内她最多说这么多次，超了就歇着（主人 @ 除外），只防失控
   burstWindowSec: 120,
 }
@@ -81,7 +81,7 @@ export function decideGroupReply(p) {
   if (inQuietHours(p.hour, pol.quietHours)) return { reply: false, mode: 'none', reason: '静默时段' }
   const minRel = Number(pol.minRelevance) || 0
   // 已经加入了这个话题：接着聊（每段看完再回，不受冷却和每小时上限限制）。她说话会续上这个状态，
-  // 不限次数就停不下来，所以没人叫她时只能连着接 engagedMax 次
+  // 她会看到自己接了几次、自己决定停不停，engagedMax 只是兜底
   if (p.engagedUntil && p.now < p.engagedUntil && rel >= minRel && (p.engagedRun || 0) < (pol.engagedMax ?? 2)) {
     return { reply: true, mode: 'engaged', reason: `正聊得起劲，接着说（相关度 ${rel.toFixed(2)}）` }
   }
@@ -107,6 +107,12 @@ export function pickAutoReply(fresh) {
   if (new Set(fresh.map((x) => x.uid)).size !== 1) return null
   const target = fresh.filter((x) => x.direct).at(-1)
   return target ? { mid: target.mid, uid: target.uid } : null
+}
+
+/** 接话时给她的提示：告诉她已经连着说了几次没人理，让她自己判断要不要停。 */
+export function engagedHint(run = 0) {
+  const said = run > 1 ? `你已经连着接了 ${run - 1} 次，这期间没人叫你或回你。` : ''
+  return `（这段没人提到你。${said}想想大家是不是在聊自己的，没人接你的话就该停了，别一直接话；真有话要说再说，否则只回 [沉默]）`
 }
 
 /** 同一段里有重名的人时提醒她按 QQ 号分：名字一样时她很容易忽略括号（#160）。 */

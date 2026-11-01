@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseReply, stripMarkdown, bubbleDelay } from '../src/chat/reply.js'
-import { decideGroupReply, policyFor, inQuietHours, DEFAULT_GROUP_POLICY } from '../src/chat/group-policy.js'
+import { decideGroupReply, engagedHint, policyFor, inQuietHours, DEFAULT_GROUP_POLICY } from '../src/chat/group-policy.js'
 import { parseMessageEvent, isStickerSegment, stickerSizeOk, imageSize } from '../src/chat/inbound.js'
 import { checkAllowed, levelFor, presetFor, isOwner, profileToolVisible, profilePermits } from '../src/chat/access.js'
 import { avatarSource } from '../src/modules/profile/index.js'
@@ -372,9 +372,14 @@ test('#32 工作区位置：面板填的绝对路径优先，相对路径 / 乱�
 test('群聊：没人叫她时接话有上限，叫她就重新开始', () => {
   const six = Array.from({ length: 6 }, (_, i) => 9_000_000 + i)
   const o = { policy: DEFAULT_GROUP_POLICY, text: '随便聊聊', now: 10_000_000, hour: 12, relevance: 0.5, engagedUntil: 10_100_000, interjectTimes: six, recentTimes: [], botReplyTimes: [], rand: () => 0 }
-  assert.equal(decideGroupReply({ ...o, engagedRun: 1 }).mode, 'engaged')
-  assert.equal(decideGroupReply({ ...o, engagedRun: 2 }).reply, false, '接满了就回到插话规则，这里冷却和上限都不过')
-  assert.equal(decideGroupReply({ ...o, engagedRun: 2, mentioned: true }).mode, 'must')
+  assert.equal(decideGroupReply({ ...o, engagedRun: 5 }).mode, 'engaged')
+  assert.equal(decideGroupReply({ ...o, engagedRun: 6 }).reply, false, '兜底：接满了就回到插话规则，这里冷却和上限都不过')
+  assert.equal(decideGroupReply({ ...o, engagedRun: 6, mentioned: true }).mode, 'must')
   assert.equal(decideGroupReply({ ...o, policy: { ...DEFAULT_GROUP_POLICY, engagedMax: 0 } }).reply, false)
 })
 
+test('群聊：接话提示告诉她连着说了几次，让她自己停', () => {
+  assert.doesNotMatch(engagedHint(1), /连着接了/)
+  assert.match(engagedHint(3), /连着接了 2 次/)
+  assert.match(engagedHint(3), /\[沉默\]/)
+})
