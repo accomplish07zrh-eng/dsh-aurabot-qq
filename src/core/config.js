@@ -77,7 +77,8 @@ export const DEFAULTS = {
     engine: 'auto',
     cosyvoice: { url: 'http://127.0.0.1:50000', mode: 'sft', spkId: '中文女', instruct: '', sampleRate: 22050 },
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
-    http: { urlTemplate: '' }, // 通用：GET 这个地址（{text} 会替换成要念的话），返回音频
+    // 通用 HTTP 引擎：GET 时地址里带 {text}；POST 时填接口地址，请求头一行一个，请求体里 {text} 自动替换（已做 JSON 转义）
+    http: { urlTemplate: '', method: 'GET', headers: '', body: '', sampleRate: 24000 },
     voice: 'zh-CN-XiaoyiNeural',
     rate: '+0%',
     pitch: '+0Hz',
@@ -271,6 +272,20 @@ const bool = (v, d) => (typeof v === 'boolean' ? v : d)
 const qq = (v) => String(v ?? '').replace(/\D/g, '')
 const qqList = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split(/[\s,，;；]+/)).map(qq).filter(Boolean))]
 const hhmm = (v, d) => (/^\d{1,2}:\d{2}$/.test(String(v)) ? String(v) : d)
+// 请求头：正常是字符串（一行一个）；手写成对象 / 数组时展开成同样的多行文本，
+// 免得下游按行解析时认不出来，静默把头全丢掉。
+const headerLines = (v) => {
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) return v.map((x) => String(x ?? '')).join('\n')
+  if (isObj(v)) return Object.entries(v).map(([k, x]) => `${k}: ${x ?? ''}`).join('\n')
+  return v == null ? '' : String(v)
+}
+// 请求体：正常是字符串；手写成对象 / 数组时序列化回去（占位符 {text} / {reqid} 照样能替换）
+const bodyText = (v) => {
+  if (typeof v === 'string') return v
+  if (isObj(v) || Array.isArray(v)) return JSON.stringify(v, null, 2)
+  return v == null ? '' : String(v)
+}
 
 export function normalize(raw) {
   const c = deepMerge(DEFAULTS, raw)
@@ -323,6 +338,15 @@ export function normalize(raw) {
   c.voice.autoChance = num(c.voice.autoChance, 0.15, 0, 1)
   c.voice.autoMaxChars = num(c.voice.autoMaxChars, 80, 1, BIG)
   c.voice.emojiSeparate = c.voice.emojiSeparate !== false
+  // 通用 HTTP 引擎（接火山 / 阿里 / 讯飞这类云 TTS）：method 只认 GET / POST，其余当 GET；
+  // 地址、请求头、请求体一律转成字符串——手改 config.json 写成对象、数组或数字时，也按原意
+  // 拼得出去，不会变成 "[object Object]" 或者带着填错的空格。
+  if (!isObj(c.voice.http)) c.voice.http = structuredClone(DEFAULTS.voice.http)
+  c.voice.http.urlTemplate = String(c.voice.http.urlTemplate ?? '').trim()
+  c.voice.http.method = String(c.voice.http.method ?? '').trim().toUpperCase() === 'POST' ? 'POST' : 'GET'
+  c.voice.http.headers = headerLines(c.voice.http.headers)
+  c.voice.http.body = bodyText(c.voice.http.body)
+  c.voice.http.sampleRate = num(c.voice.http.sampleRate, 24000, 8000, 48000)
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   c.stickers.faces = c.stickers.faces !== false
   c.stickers.collectMode = ['ask', 'auto', 'owner'].includes(c.stickers.collectMode) ? c.stickers.collectMode : 'auto'
