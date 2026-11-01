@@ -129,7 +129,7 @@ rm -rf ~/.dsh/plugins-data/aurabot/modules-data/weibo
 
 ## 已知限制
 
-- **标签页绿点**：需要 Aurabot 支持自写模块的 `flag`（见 [issue #166](https://github.com/accomplish07zrh-eng/dsh-aurabot-qq/issues/166)）。未支持时绿点不显示，其余功能不受影响——登录状态在面板里照常可见。
+- **标签页绿点**：模块定义里声明了 `flag: 'loggedIn'`，看的是 `ext.weibo.loggedIn`（Aurabot **1.2.0+** 支持，见 [#166](https://github.com/accomplish07zrh-eng/dsh-aurabot-qq/issues/166)）。更早的版本不显示绿点，其余功能不受影响——登录状态在面板里照常可见。
 - **扫码登录**需要系统里有 Chrome/Chromium；没有图形界面时依赖 `xvfb-run`。
 - 微博网页接口是逆向的，微博改版可能需要跟着更新。
 
