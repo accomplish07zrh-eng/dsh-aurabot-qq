@@ -1,0 +1,29 @@
+{
+  "name": "aurabot-weibo",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Aurabot 的微博扩展：热搜 / 扫码登录 / 读自己的微博 / 发博转发评论（写操作默认试运行）",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "aurabot",
+    "dsh-plugin",
+    "weibo",
+    "微博",
+    "extension"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "install:module": "node scripts/install.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "panel.js",
+    "README.md",
+    "LICENSE",
+    "scripts/install.mjs"
+  ],
+  "private": true
+}
