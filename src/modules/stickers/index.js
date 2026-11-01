@@ -198,6 +198,19 @@ export default {
       const b = await http.body(req)
       return store.remove(b.md5, { fromQQ: b.fromQQ !== false })
     })
+    // 多选批量删除：面板上一次删几十张，不用一张张点、一张张确认
+    api.route('/sticker/delete-batch', async (req) => {
+      const b = await http.body(req)
+      const list = Array.isArray(b.md5s) ? b.md5s : b.md5 ? [b.md5] : []
+      return store.removeMany(list, { fromQQ: b.fromQQ !== false })
+    })
+    // 批量补名字 / 标签：POST 立刻返回，后台一张张看图起名，进度用下面的 status 查
+    api.route('/sticker/caption-all', async (req) => {
+      const b = await http.body(req)
+      return store.captionLibrary({ all: b.all === true, limit: Number(b.limit) || 0 })
+    })
+    api.route('/sticker/caption-status', async () => ({ ok: true, ...store.captionStatus() }))
+    api.route('/sticker/caption-stop', async () => ({ ok: true, ...store.captionCancel() }))
     api.route('/sticker/import-qq', async () => store.importFromQQ())
     api.rule(() => '- 主人让你存某个表情（「存一下」「导入这个表情」）时用 qq_save_sticker；让你把 QQ 收藏里的表情导进来时用 qq_import_qq_stickers。别人让你存，不用理。')
     api.route('/sticker/upload', async (req) => {
@@ -207,6 +220,8 @@ export default {
       return store.addFromBuffer(buf, { name: b.name || '', tags: b.tags || [], from: 'panel' })
     })
 
+    // 导出的就是 store：模块停下 / 重载时宿主会调 store.dispose()，
+    // 后台批量起名跟着停（不然旧实例会接着调模型、写库，和新实例互相覆盖）。
     return store
   },
 }

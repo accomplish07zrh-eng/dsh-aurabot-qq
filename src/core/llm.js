@@ -44,12 +44,17 @@ export async function modelVision (dsh, provider, model) {
   return value
 }
 
-/** 当前设置里的模型能看图吗。面板上「视觉能力」可以手动声明，覆盖元数据。null = 不知道。 */
-export async function canSeeImages (dsh, cfg) {
-  const v = cfg && cfg.model && cfg.model.vision
-  if (v === 'on') return true
-  if (v === 'off') return false
-  const t = defaultModel(dsh, cfg)
+/**
+ * 当前设置里的模型能看图吗。面板上「视觉能力」可以手动声明，覆盖元数据。null = 不知道。
+ * target 传了就只看这个模型（表情起名可以单独挑模型，主人对聊天模型的手动声明不该管到它）。
+ */
+export async function canSeeImages (dsh, cfg, target) {
+  if (!(target && target.provider && target.model)) {
+    const v = cfg && cfg.model && cfg.model.vision
+    if (v === 'on') return true
+    if (v === 'off') return false
+  }
+  const t = target && target.provider && target.model ? target : defaultModel(dsh, cfg)
   if (!t) return null
   return modelVision(dsh, t.provider, t.model)
 }
@@ -147,13 +152,14 @@ async function runStream (llm, params) {
 
 /**
  * @param {object} dsh 宿主 ctx
- * @param {{system:string, text:string, images?:Array<{data:string, mediaType:string}>, maxTokens?:number, temperature?:number, reasoningEffort?:string, cfg?:object}} o
+ * @param {{system:string, text:string, images?:Array<{data:string, mediaType:string}>, maxTokens?:number, temperature?:number, reasoningEffort?:string, cfg?:object, model?:{provider:string, model:string}}} o
  * @returns {Promise<string>}
  */
 export async function askModel (dsh, o) {
   const llm = dsh.llm || dsh.get('llm')
   if (!llm || typeof llm.stream !== 'function') throw new Error('宿主没有 llm 服务')
-  const t = defaultModel(dsh, o.cfg)
+  // o.model 指定了就用它（后台小任务可以单独挑便宜 / 能看图的模型），否则跟随设置
+  const t = o.model && o.model.provider && o.model.model ? { provider: o.model.provider, model: o.model.model } : defaultModel(dsh, o.cfg)
   if (!t) throw new Error('拿不到默认模型')
   let content = [{ type: 'text', text: cleanText(o.text) }]
   for (const img of o.images || []) content.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: 'aurabot-image' })

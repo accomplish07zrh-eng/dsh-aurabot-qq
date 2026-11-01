@@ -100,6 +100,8 @@ export const DEFAULTS = {
     maxPerHour: 20,
     maxLibrary: 300, // 表情库最多存多少张（QQ 收藏表情有上限），超了就清掉最少用的
     caption: true, // 用视觉模型起备注
+    // 起名单独挑的模型：{ provider, model }；留空 = 跟随聊天用的模型
+    captionModel: { provider: '', model: '' },
   },
   diary: {
     enabled: true,
@@ -324,6 +326,13 @@ export function normalize(raw) {
   c.stickers.collectMode = ['ask', 'auto', 'owner'].includes(c.stickers.collectMode) ? c.stickers.collectMode : 'auto'
   c.stickers.maxPerHour = num(c.stickers.maxPerHour, 20, 0, BIG)
   c.stickers.maxLibrary = num(c.stickers.maxLibrary, 300, 1, BIG)
+  // 起名单独挑的模型：两半都填了才认；填一半 / 脏数据都当没填（回落到聊天模型）
+  c.stickers.captionModel = (() => {
+    const m = isObj(c.stickers.captionModel) ? c.stickers.captionModel : {}
+    const provider = String(m.provider || '').trim()
+    const model = String(m.model || '').trim()
+    return provider && model ? { provider, model } : { provider: '', model: '' }
+  })()
   c.diary.timesPerDay = num(c.diary.timesPerDay, 2, 0, 48)
   c.diary.windowStart = hhmm(c.diary.windowStart, '10:00')
   c.diary.windowEnd = hhmm(c.diary.windowEnd, '23:30')
