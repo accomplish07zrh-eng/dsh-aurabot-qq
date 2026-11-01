@@ -159,6 +159,42 @@ export function rewriteImports(code, fromKey, keep = new Set()) {
  * @param {string} o.version     插件版本
  * @param {object[]} o.builtins  内置模块定义（按启动顺序）
  */
+/**
+ * 给单个模块的 core：hub 下发「白名单副本」，原始委派入口不下发、也不可经原型链摸回（三审 #177）。
+ * - scopedHub：平面对象，只转发 hub 的函数/取值器（跳过原始 runSubagentTurn / subagentFor），
+ *   再补一个固定模块 id 的 runSubagentTurn；原型就是 Object.prototype，没有可逃逸的入口。
+ * - scopedCore：Proxy 转发 core 的其余属性（bridge / modules 后挂的也可见），
+ *   但 getPrototypeOf 掐成 null —— Object.getPrototypeOf(api.core).hub 也绕不回去。
+ */
+export function scopeCoreForModule(core, id) {
+  if (!core || !core.hub || typeof core.hub.subagentFor !== 'function') return core || {}
+  const scopedHub = {}
+  for (const name of Object.getOwnPropertyNames(core.hub)) {
+    if (name === 'runSubagentTurn' || name === 'subagentFor') continue
+    const d = Object.getOwnPropertyDescriptor(core.hub, name)
+    if (!d) continue
+    if (typeof d.get === 'function') {
+      Object.defineProperty(scopedHub, name, { enumerable: true, configurable: true, get: () => core.hub[name] })
+    } else if (typeof d.value === 'function') {
+      const fn = d.value
+      Object.defineProperty(scopedHub, name, { enumerable: true, configurable: true, value: (...args) => fn.apply(core.hub, args) })
+    } else {
+      Object.defineProperty(scopedHub, name, { enumerable: true, configurable: true, get: () => core.hub[name], set: (v) => { core.hub[name] = v } })
+    }
+  }
+  Object.defineProperty(scopedHub, 'runSubagentTurn', {
+    enumerable: true, configurable: true,
+    value: (name, title, prompt, opts = {}) => core.hub.subagentFor(id)(name, title, prompt, opts),
+  })
+  return new Proxy(core, {
+    get(target, key, recv) {
+      if (key === 'hub') return scopedHub
+      return Reflect.get(target, key, recv)
+    },
+    getPrototypeOf() { return null }, // 摸原型拿回原始 hub 的路也堵死（三审 #177）
+  })
+}
+
 export function createModules({ ctx, core, getConfig, setConfig, logger, version, builtins }) {
   const log = logger.child('modules')
   const builtinDefs = new Map(builtins.map((d) => [d.id, d]))
@@ -210,6 +246,10 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     // 内置模块和替换它的版本用原来的路径（内置的面板页照常能用）；新模块放在 /ext/模块id/ 下
     const prefix = builtinDefs.has(id) || STABLE_ROUTES.has(id) ? '' : `/ext/${id}`
     const def = rec.def
+    // 模块拿到的 core：hub 换成「宿主按模块身份封装」的白名单副本（三审 #177：原型链斩断，
+    // 模块摸不到原始 runSubagentTurn / subagentFor）；core 本体用 Proxy 转发，
+    // getPrototypeOf 也掐断，防 getPrototypeOf(api.core).hub 绕回原始入口。
+    const scopedCore = scopeCoreForModule(core, id)
     const api = {
       id,
       source,
@@ -232,7 +272,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       use: (other) => exportsOf(other),
       lazy: (other) => lazyProxy(() => exportsOf(other)),
       has: (other) => live.has(other),
-      core,
+      core: scopedCore,
       dsh: ctx,
       lib,
       // ---- 往插件里加东西 ----
@@ -640,6 +680,26 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     return r.handler(req, res)
   }
 
+  /**
+   * 模块声明的能力（module.json 的 capabilities 数组）：内置模块没有 module.json 就当未声明（[]）。
+   * 子智能体委派这类「要本机权限」的能力靠它把关（一审 #177）：没声明就不许用。
+   */
+  function capabilitiesOf(id) {
+    const key = String(id || '')
+    if (!ID_RE.test(key)) return []
+    for (const dir of [join(userDir(), key), join(BUILTIN_DIR, key)]) {
+      const file = join(dir, 'module.json')
+      if (!existsSync(file)) continue
+      try {
+        const m = JSON.parse(readFileSync(file, 'utf8'))
+        return Array.isArray(m.capabilities) ? m.capabilities.map(String) : []
+      } catch (error) {
+        return []
+      }
+    }
+    return []
+  }
+
   // ---------- 面板 ----------
   function status() {
     const users = isUserOn() ? scanUser() : scanUser().map((u) => ({ ...u, safe: true }))
@@ -769,6 +829,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   return {
     boot, sync, reload, stop, dispose, status, create, fork, promptFor, panelSource,
     use: exportsOf, has: (id) => live.has(id), running: (id) => live.get(id)?.source || null, generation: () => generation,
+    capabilitiesOf,
     emit, claim, filter, filterSync, buildTools,
     // 插件核心自己听事件（不属于任何模块，不会被撤掉）
     listen: (event, fn) => { const item = { id: '@core', fn }; listeners.set(event, [...(listeners.get(event) || []), item]); return () => listeners.set(event, (listeners.get(event) || []).filter((x) => x !== item)) }, contextFor, rules, commands, dshTools, builtinOff, handle,

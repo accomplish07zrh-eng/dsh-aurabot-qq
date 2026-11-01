@@ -260,6 +260,8 @@ export function apply(ctx) {
     stickers,
     tts,
     buildTools: (where) => mods.buildTools(where),
+    // 模块声明的能力（module.json capabilities）：子智能体委派这类要本机权限的能力靠它把关（一审 #177）
+    capabilitiesOf: (id) => (typeof mods.capabilitiesOf === 'function' ? mods.capabilitiesOf(id) : []),
     contextProviders: [(args) => mods.contextFor(args)],
     onActivity: (a) => mods.emit('activity', a),
     // 群聊话题和她的记忆有多相关（插话判断用）
