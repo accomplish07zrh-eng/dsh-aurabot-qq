@@ -2052,6 +2052,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [pkUrl, setPkUrl] = useState(null)
       // Electron 下载镜像的本地编辑态（同上；留空 = 用内置默认 npmmirror）
       const [emUrl, setEmUrl] = useState(null)
+      // 对话框（pet 1.0.5）配置草稿：快捷键/关键字/数字/城市要「保存」才下发，开关即点即存
+      const [cc, setCc] = useState(null)
       const load = async () => {
         const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
         if (pr.ok) { setPet(pr.pet); setWs((old) => old || (pr.pet && pr.pet.whisper ? { ...pr.pet.whisper } : null)) }
@@ -2100,6 +2102,14 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         } catch (e) { toast(e.message) } finally { setBusy(''); load() }
       }
       const work = (pet && pet.work) || null
+      // ---------- 对话框（pet 1.0.5，模块库里的 petChat）：文本/数字走草稿 + 保存，开关即点即存 ----------
+      const chatCfg = (pet && pet.chat) || null
+      const cg = (k, fallback) => (cc && cc[k] != null ? cc[k] : (chatCfg ? chatCfg[k] : fallback))
+      const setCg = (k, v) => setCc((old) => ({ ...(old || {}), [k]: v }))
+      const saveChat = async (patch, msg) => { await savePet(patch, msg); setCc(null) }
+      const hotkeyStateText = !chatCfg ? '' : chatCfg.hotkeyState === 'registered' ? '当前已注册：' + (chatCfg.hotkey || '—')
+        : chatCfg.hotkeyState === 'failed' ? '注册失败：这个组合键被别的程序占用了，换一个试试'
+          : '当前未注册（没填或对话框关着）'
       // 可编辑字段用本地编辑态（改了一半别被轮询冲掉），实时字段（thinking/today/nextAt/上次说了什么）用服务端的
       const liveW = (pet && pet.whisper) || null
       const whisper = (liveW || ws) ? {
@@ -2191,6 +2201,35 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         // 只有 1.0.4 以上的桌宠模块才支持松手落地开关（老模块不显示，免得拨了没反应）
         pet?.releaseLand != null ? h(Row, { label: '松手后落地', hint: '开：拖动松手后按甩出速度抛出去、落回屏幕底部（带 Q 弹挤压）。关：松手停在哪就在哪，不抛也不落' },
           h(Switch, { on: pet.releaseLand !== false, onChange: async (v) => { setBusy('land'); try { await savePet({ petReleaseLand: v }, v ? '松手落地已开启' : '松手落地已关闭：松手停在哪就在哪') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })) : null,
+        // 只有 pet 1.0.5 以上的模块才有对话框（老模块不显示这些行，免得拨了没反应）
+        chatCfg ? h('div', { style: { marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--ab-line, #dbe5ea)' } },
+          h('div', { className: 'ab-small ab-muted', style: { marginBottom: 2 } },
+            '对话框：ta 自己的小窗，只在桌面里聊，永不发 QQ。现在 ' + (chatCfg.enabled ? (chatCfg.windowOpen ? '开着' : '开着（窗没开）') : '关着')
+            + (chatCfg.thinking ? ' · 正在想上一句' : '') + (chatCfg.historyCount ? ' · 历史 ' + chatCfg.historyCount + ' 条' : '')),
+          h(Row, { label: '开启对话框', hint: '关掉后快捷键会一起注销；开着才能用快捷键/右键菜单唤出小窗' },
+            h(Switch, { on: chatCfg.enabled !== false, onChange: async (v) => { setBusy('chat-on'); try { await savePet({ petChatEnabled: v }, v ? '对话框已开启' : '对话框已关闭（快捷键已注销）') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })),
+          h(Row, { label: '对话框快捷键', hint: '全局快捷键，按一次开、再按一次关（如 Alt+P）。留空 = 不启用。' + hotkeyStateText },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: 'Alt+P', value: cg('hotkey', ''), onChange: (e) => setCg('hotkey', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petChatHotkey: String(cg('hotkey', '')).trim() }, '快捷键已保存：桌宠会立刻重新注册') } }, '保存'))),
+          h(Row, { label: '关闭关键字', hint: '在对话框里发送这句话 → 直接关窗、不请求模型。留空 = 不启用关键字关闭' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: '关闭', value: cg('closeKeyword', ''), onChange: (e) => setCg('closeKeyword', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petChatCloseKeyword: String(cg('closeKeyword', '')).trim() }, '关闭关键字已保存') } }, '保存'))),
+          h(Row, { label: '失焦自动收起', hint: '点别处（小窗失焦）时自动关掉对话框' },
+            h(Switch, { on: chatCfg.blurHide !== false, onChange: async (v) => { setBusy('chat-blur'); try { await savePet({ petChatBlurHide: v }, v ? '失焦会收起' : '失焦不再收起') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })),
+          h(Row, { label: '历史条数 / 保留天数', hint: '只存桌宠本地（不进 QQ、不进工作区）。超限从头部截断；天数填 0 = 永久保留' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', type: 'number', min: 10, max: 2000, style: { width: 96 }, value: cg('maxEntries', 200), onChange: (e) => setCg('maxEntries', e.target.value) }),
+              h('span', { className: 'ab-muted ab-small' }, '条'),
+              h('input', { className: 'ab-input', type: 'number', min: 0, max: 3650, style: { width: 96 }, value: cg('retentionDays', 30), onChange: (e) => setCg('retentionDays', e.target.value) }),
+              h('span', { className: 'ab-muted ab-small' }, '天'),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petChatMaxEntries: Number(cg('maxEntries', 200)), petChatRetentionDays: Number(cg('retentionDays', 30)) }, '历史设置已保存') } }, '保存'))),
+          h(Row, { label: '天气城市', hint: '填城市名（如 上海）才接入天气，进对话框和碎碎念的「现在」；留空 = 不接入' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: '留空 = 不接入', value: cg('weatherCity', ''), onChange: (e) => setCg('weatherCity', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petWeatherCity: String(cg('weatherCity', '')).trim() }, '天气城市已保存') } }, '保存'),
+              chatCfg.weather ? h('span', { className: 'ab-muted ab-small' }, '现在：' + chatCfg.weather) : null))) : null,
         clientBad ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } },
           h('div', null, '⚠ 客户端和插件版本对不上：' + (clientInfo.message || '需要重新生成')),
           clientInfo.missing && clientInfo.missing.length ? h('div', { className: 'ab-small', style: { marginTop: 4 } }, '缺文件：' + clientInfo.missing.join('、') + '（缺 behavior.js 时行为层整个不生效，只打日志）') : null,

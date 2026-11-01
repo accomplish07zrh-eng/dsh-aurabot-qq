@@ -660,6 +660,22 @@ export function apply(ctx) {
     if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
     // 松手后落地：布尔透传（模块侧缺省当开，别让老面板把抛掷关没）
     if (typeof b.petReleaseLand === 'boolean') patch.petReleaseLand = b.petReleaseLand
+    // 对话框（pet 1.0.5 起在模块库，模块自己的 settings 同样不渲染成表单；这里仍是唯一写入通道）
+    for (const k of ['petChatEnabled', 'petChatBlurHide']) {
+      if (typeof b[k] === 'boolean') patch[k] = b[k]
+    }
+    // 快捷键 / 关闭关键字 / 天气城市：纯文本，按模块 settings 的口径截断（空串合法 = 关掉该项）
+    for (const [k, max] of [['petChatHotkey', 40], ['petChatCloseKeyword', 20], ['petWeatherCity', 40]]) {
+      if (typeof b[k] === 'string') patch[k] = b[k].trim().slice(0, max)
+    }
+    // 天气接口模板：只收 http/https（留空 = 用模块内置默认 wttr.in）
+    if (typeof b.petWeatherUrl === 'string') {
+      const u = b.petWeatherUrl.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.petWeatherUrl = u
+    }
+    // 历史上限与保留天数：与模块 settings 的 min/max 对齐（10~2000 条；0 天 = 永久保留）
+    if (Number.isFinite(b.petChatMaxEntries)) patch.petChatMaxEntries = Math.min(2000, Math.max(10, Math.round(b.petChatMaxEntries)))
+    if (Number.isFinite(b.petChatRetentionDays)) patch.petChatRetentionDays = Math.min(3650, Math.max(0, Math.round(b.petChatRetentionDays)))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
     // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
     // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
