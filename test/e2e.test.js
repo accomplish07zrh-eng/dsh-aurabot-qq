@@ -80,7 +80,7 @@ async function brain({ preset, text, images, callTool }) {
   if (text.includes('跑个慢任务')) { await new Promise((r) => setTimeout(r, 1500)); return '慢任务跑完了' }
   if (text.includes('改成快的')) return '好 改成快的'
   if (text.includes('语音说你好')) return '你好呀'
-  if (text.includes('表情语音测试')) return '<voice>晚安<face:呲牙>😁</voice>'
+  if (text.includes('表情语音测试') || text.includes('表情补发失败测试')) return '<voice>晚安<face:呲牙>😁</voice>'
   if (text.includes('语音带引用')) return '<voice>晚安啦 做个好梦</voice>'
   if (text.includes('晚安')) return '<voice>晚安啦 做个好梦</voice>'
   if (text.includes('没人叫你')) return '[沉默]'
@@ -1272,3 +1272,64 @@ test('上一轮还在跑时排队的新消息，不会让下一轮的「仅主�
   assert.match(String(second.reply), /allOwner=true/, '排队轮次也要认出主人：' + second.reply)
   rmSync(modsDir, { recursive: true, force: true })
 })
+
+test('语音里的表情和语音分开发：表情单独补一条文字气泡（开关关掉就不补）', async () => {
+  const http = await import('node:http')
+  const srv = http.createServer((req, res) => { res.setHeader('content-type', 'audio/wav'); res.end(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(2000)])) })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  await fake.call('/save', { voice: { engine: 'http', emojiSeparate: true, http: { urlTemplate: `http://127.0.0.1:${srv.address().port}/tts?text={text}` } } })
+  try {
+    const n = sentTo('private', OWNER).length
+    mock.push(priv(OWNER, text('表情语音测试')))
+    await until(() => sentTo('private', OWNER).slice(n).some((c) => (c.params.message || []).some((s) => s.type === 'face')), 20000)
+    const after = sentTo('private', OWNER).slice(n)
+    assert.equal(after.filter((c) => (c.params.message || []).some((s) => s.type === 'record')).length, 1, '语音条还是单独的 1 条')
+    const faceMsg = after.find((c) => (c.params.message || []).some((s) => s.type === 'face'))
+    assert.deepEqual(faceMsg.params.message.map((s) => s.type), ['face', 'text'], '表情要单独一条文字气泡：' + JSON.stringify(faceMsg.params.message))
+    assert.equal(faceMsg.params.message[0].data.id, '13', '呲牙 = 13')
+    assert.equal(faceMsg.params.message[1].data.text, '😁')
+    // 关掉开关：表情只从语音里去掉，不补发
+    await fake.call('/save', { voice: { emojiSeparate: false } })
+    const m2 = sentTo('private', OWNER).length
+    mock.push(priv(OWNER, text('表情语音测试')))
+    await until(() => sentTo('private', OWNER).slice(m2).some((c) => (c.params.message || []).some((s) => s.type === 'record')), 20000)
+    await sleep(800)
+    assert.equal(sentTo('private', OWNER).slice(m2).filter((c) => (c.params.message || []).some((s) => s.type === 'face')).length, 0, '关掉补发后不该多出表情消息')
+    // 等这一轮的发消息彻底安静下来，别让残留的发送算进后面用例的统计
+    let last = -1
+    for (let i = 0; i < 24 && last !== mock.calls.length; i++) { last = mock.calls.length; await sleep(250) }
+  } finally {
+    srv.close()
+    await fake.call('/save', { voice: { engine: 'windows', emojiSeparate: true } })
+  }
+})
+
+test('语音发出去、补发表情失败：这一轮不算没发出去（补发和 failStore 隔开）', async () => {
+  const http = await import('node:http')
+  const srv = http.createServer((req, res) => { res.setHeader('content-type', 'audio/wav'); res.end(Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(2000)])) })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  await fake.call('/save', { voice: { engine: 'http', emojiSeparate: true, http: { urlTemplate: 'http://127.0.0.1:' + srv.address().port + '/tts?text={text}' } } })
+  const d = new Date()
+  const day = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
+  const bots = () => {
+    try {
+      return readFileSync(join(dataDir, 'chatlog', day + '.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((x) => x.who === 'bot')
+    } catch { return [] }
+  }
+  try {
+    const before = bots().length
+    const n = sentTo('private', OWNER).length
+    mock.state.failFace = true // 只让带系统表情的那条发失败
+    mock.push(priv(OWNER, text('表情补发失败测试')))
+    await until(() => sentTo('private', OWNER).slice(n).some((c) => (c.params.message || []).some((s) => s.type === 'record')), 20000)
+    await until(() => bots().length > before, 8000) // 记了流水 = 这一轮算说出口了
+    assert.ok(bots().slice(before).some((x) => /晚安/.test(x.text)), '语音发出去了就该记成说过：' + JSON.stringify(bots().slice(before)))
+    const tried = mock.calls.filter((c) => (c.params?.message || []).some((s) => s.type === 'face'))
+    assert.ok(tried.length >= 1, '补发那一步确实试过（这次注定失败）')
+  } finally {
+    mock.state.failFace = false
+    srv.close()
+    await fake.call('/save', { voice: { engine: 'windows', emojiSeparate: true } })
+  }
+})
+
