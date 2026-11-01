@@ -157,3 +157,10 @@ test('关掉 imageByPath 就一直走 base64', async (t) => {
   assert.match(s.calls[0].params.message[0].data.file, /^base64:\/\//)
 })
 
+test('群里回 [沉默]：退出话题，不发东西，日志记下她不想说', async (t) => {
+  const s = setup(t, null)
+  await s.hub.deliver('group:9', '[沉默]')
+  assert.equal(s.calls.length, 0)
+  assert.ok(s.logs.some((line) => line.includes('她选择不说话')))
+})
+

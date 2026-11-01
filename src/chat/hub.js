@@ -871,7 +871,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const r = parseReply(text)
     if (r.silent) {
       log.info(`${chatId}：她选择不说话`)
-      if (chatId.startsWith('group:')) groupEngaged.delete(chatId.slice(6)) // 不想聊就退出这个话题
+      if (chatId.startsWith('group:')) {
+        // 她不想接，这就是群里停下来的主要原因：退出话题，这次也算一次插话，走完冷却才会再开口
+        const gid = chatId.slice(6)
+        groupEngaged.delete(gid)
+        groupEngagedRun.delete(gid)
+        groupInterjects.set(gid, [...(groupInterjects.get(gid) || []), Date.now()].slice(-60))
+      }
       return
     }
     let items = r.items
