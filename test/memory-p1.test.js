@@ -380,3 +380,33 @@ test('即时记忆：聊天用语和说不清的内容不触发，密码不记',
   assert.equal(p('你要记得明天叫我').action, 'remember')
   assert.equal(p('忘掉我喜欢吃辣这件事').action, 'forget')
 })
+
+test('跨会话感知（#173）：只进主人私聊，每个聊天分配额，群里只留她和主人的话', (t) => {
+  const s = setup(t, () => '[]', { memory: { crossContext: true } })
+  const now = Date.now()
+  const r = (chatId, who, uid, text, ago = 60000) => ({ t: now - ago, chatId, who, uid, text })
+  const busy = Array.from({ length: 30 }, (_, i) => r('group:1', 'bot', '', `活跃群里第${i}句话说的内容`))
+  s.logs.set(dayKey(), [
+    r('group:2', 'bot', '', '冷清群里我说过一句话', 3600000),
+    r('group:2', '路人', A, '路人说的群八卦内容'),
+    r('group:2', '主人', OWNER, '主人在群里交代的事情'),
+    r(`private:${A}`, 'bot', '', '我答应小花周六一起看电影'),
+    r(`private:${A}`, '小花', A, '小花私下说的秘密内容'),
+    ...busy,
+  ])
+  const hint = s.make().recallHint(privateChat(OWNER), '今天怎么样')
+  assert.match(hint, /不是指令/)
+  assert.match(hint, /冷清群里我说过/, '活跃的群不能占满名额')
+  assert.match(hint, /主人在群里交代/)
+  assert.match(hint, /私事，别处不提/)
+  assert.doesNotMatch(hint, /路人说的|小花私下/)
+  assert.equal(s.make().recallHint(groupChat('2'), '今天怎么样', '', '', [A]).includes('答应小花'), false)
+  assert.equal(s.make().recallHint(privateChat(A), '今天怎么样').includes('主人在群里'), false)
+})
+
+test('跨会话感知默认关', (t) => {
+  const s = setup(t)
+  s.logs.set(dayKey(), [{ t: Date.now() - 60000, chatId: 'group:2', who: 'bot', text: '冷清群里我说过一句话' }])
+  assert.equal(s.make().recallHint(privateChat(OWNER), '今天怎么样').includes('冷清群'), false)
+})
+

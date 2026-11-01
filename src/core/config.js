@@ -435,6 +435,7 @@ export function normalize(raw) {
   c.memory.keepChatlogSet = true
   c.memory.mergeGroups = bool(c.memory.mergeGroups, false)
   for (const k of ['instantCommands', 'groupMemory', 'searchRrf']) c.memory[k] = bool(c.memory[k], true)
+  c.memory.crossContext = bool(c.memory.crossContext, false)
   c.memory.extractIdleMinutes = num(c.memory.extractIdleMinutes, 30, 0, BIG)
   c.memory.extractMinLines = Math.round(num(c.memory.extractMinLines, 20, 1, BIG))
   c.memory.extractDailyBatches = Math.round(num(c.memory.extractDailyBatches, 24, 0, BIG))
