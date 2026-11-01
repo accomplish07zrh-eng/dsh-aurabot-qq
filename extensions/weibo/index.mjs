@@ -658,7 +658,8 @@ function statusText(w) {
 export default {
   id: 'weibo',
   name: '微博',
-  version: '1.0.0',
+  version: '1.1.0',
+  flag: 'loggedIn',   // 标签页状态点看 ext.weibo.loggedIn（Aurabot 1.2.0+）
   api: 1,
   description: '热搜 / 扫码登录 / 读自己的微博 / 发博转发评论。写操作默认试运行，支持一键预设档位',
   panel: 'panel.js',
