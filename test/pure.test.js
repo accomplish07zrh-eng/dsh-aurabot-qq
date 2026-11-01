@@ -368,3 +368,13 @@ test('#32 工作区位置：面板填的绝对路径优先，相对路径 / 乱�
   assert.equal(normalize({ workspaceDir: 'chats' }).workspaceDir, '')
   assert.equal(normalize({ workspaceDir: '..\\x' }).workspaceDir, '')
 })
+
+test('群聊：没人叫她时接话有上限，叫她就重新开始', () => {
+  const six = Array.from({ length: 6 }, (_, i) => 9_000_000 + i)
+  const o = { policy: DEFAULT_GROUP_POLICY, text: '随便聊聊', now: 10_000_000, hour: 12, relevance: 0.5, engagedUntil: 10_100_000, interjectTimes: six, recentTimes: [], botReplyTimes: [], rand: () => 0 }
+  assert.equal(decideGroupReply({ ...o, engagedRun: 1 }).mode, 'engaged')
+  assert.equal(decideGroupReply({ ...o, engagedRun: 2 }).reply, false, '接满了就回到插话规则，这里冷却和上限都不过')
+  assert.equal(decideGroupReply({ ...o, engagedRun: 2, mentioned: true }).mode, 'must')
+  assert.equal(decideGroupReply({ ...o, policy: { ...DEFAULT_GROUP_POLICY, engagedMax: 0 } }).reply, false)
+})
+

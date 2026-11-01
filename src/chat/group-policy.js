@@ -11,6 +11,7 @@ export const DEFAULT_GROUP_POLICY = {
   // 话题相关度：群里正在聊的东西和她有关（碰到她感兴趣的话题、或者她记得相关的事），才可能插话
   interests: ['白米饭', '米饭', '吃饭', '好吃', '饿了', '游戏', '追剧', '番剧', '动漫', '猫', '狗', '鲸鱼', '鱼', '睡觉', '熬夜', '困', '天气', '下雨', '表情包', '女仆', '可爱', '奶茶', '甜品'],
   minRelevance: 0.25, // 相关度低于这个就不插话（0 = 不看话题，纯随机）
+  engagedMax: 2, // 没人再叫她时，接话最多连着接几次，接满就回到普通插话的冷却和上限
   burstMax: 8, // 安全刹车：burstWindowSec 秒内她最多说这么多次，超了就歇着（主人 @ 除外），只防失控
   burstWindowSec: 120,
 }
@@ -79,8 +80,9 @@ export function decideGroupReply(p) {
   if (!(pol.interjectChance > 0)) return { reply: false, mode: 'none', reason: '插话关着' }
   if (inQuietHours(p.hour, pol.quietHours)) return { reply: false, mode: 'none', reason: '静默时段' }
   const minRel = Number(pol.minRelevance) || 0
-  // 已经加入了这个话题：接着聊（每段看完再回，不受冷却和每小时上限限制）
-  if (p.engagedUntil && p.now < p.engagedUntil && rel >= minRel) {
+  // 已经加入了这个话题：接着聊（每段看完再回，不受冷却和每小时上限限制）。她说话会续上这个状态，
+  // 不限次数就停不下来，所以没人叫她时只能连着接 engagedMax 次
+  if (p.engagedUntil && p.now < p.engagedUntil && rel >= minRel && (p.engagedRun || 0) < (pol.engagedMax ?? 2)) {
     return { reply: true, mode: 'engaged', reason: `正聊得起劲，接着说（相关度 ${rel.toFixed(2)}）` }
   }
   const times = p.interjectTimes || []
