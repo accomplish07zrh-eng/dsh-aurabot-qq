@@ -212,7 +212,7 @@ test('不在白名单的私聊：不理', async () => {
   assert.equal(sentTo('private', '123456').length, 0)
 })
 
-test('群聊：没叫她不回；@她必回（群聊 preset，无本地工具）', async () => {
+test('群聊：没叫她不回；@她必回（群聊 preset，只有主人那一轮能发文件）', async () => {
   const before = fake.turns.length
   mock.push(grp('555', '777', text('今天天气不错')))
   await sleep(400)
@@ -229,7 +229,7 @@ test('群聊：没叫她不回；@她必回（群聊 preset，无本地工具）
   const agent = fake.agents.get(turn.sessionId)
   assert.ok(!agent.tools.has('qq_send_qzone'), '群聊会话没有发空间这类主人工具')
   assert.ok(!agent.tools.has('qq_send_message'))
-  assert.ok(!agent.tools.has('qq_send_file'), '群聊会话没有发文件工具')
+  assert.ok(agent.tools.has('qq_send_file'), '群聊会话有发文件工具，但 execute 里只放行「这一轮说话的全是主人」')
 })
 
 test('群聊：叫名字（唤醒词）必回', async () => {

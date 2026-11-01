@@ -8,7 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { parseMessageEvent, gifFrames } from './inbound.js'
 import { parseReply, bubbleDelay, wantsVoice } from './reply.js'
@@ -669,13 +669,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     })
   }
 
-  /** 把一个文件当文件发到 QQ（OneBot upload_private_file / upload_group_file）。file 可以是本机绝对路径、网址或 base64://。 */
-  async function sendFile(chatId, file, name) {
-    if (disposed) return null
-    const cfg = getConfig()
-    const tgt = targetOf(chatId)
-    if (!tgt) return null
-    if (!cfg.files?.enabled) throw new Error('发文件没打开（面板「聊天」页 → 发文件），打开后才能发')
+  /** 发文件、发图共用的一套检查：绝对路径、存在、是文件、在允许的目录里、不超过大小上限。 */
+  function checkSendableFile(cfg, file) {
     const src = String(file ?? '').trim()
     if (!src) throw new Error('要发哪个文件？')
     const external = isExternalFile(src)
@@ -691,6 +686,17 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       if (roots.length && !insideRoots(src, roots)) throw new Error('这个文件不在允许发送的目录里（面板「聊天」页 → 发文件 可以加目录）')
       if (size > maxBytes) throw new Error(`文件太大（${(size / 1024 / 1024).toFixed(1)} MB），上限 ${Math.round(maxBytes / 1024 / 1024)} MB`)
     }
+    return { src, external, size, maxBytes }
+  }
+
+  /** 把一个文件当文件发到 QQ（OneBot upload_private_file / upload_group_file）。file 可以是本机绝对路径、网址或 base64://。 */
+  async function sendFile(chatId, file, name) {
+    if (disposed) return null
+    const cfg = getConfig()
+    const tgt = targetOf(chatId)
+    if (!tgt) return null
+    if (!cfg.files?.enabled) throw new Error('发文件没打开（面板「聊天」页 → 发文件），打开后才能发')
+    const { src, external, size, maxBytes } = checkSendableFile(cfg, file)
     const label = fileLabel(name, src)
     // 模拟测试：只记下来，不真发
     const cap = captureStore.getStore()
@@ -766,11 +772,40 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     } catch (error) { return true }
   }
 
-  async function sendImage(chatId, src, replyId, userId) {
+  /**
+   * 发一张图。本地绝对路径（或 file://）先试「路径直发」——网关和 NapCat 在同一台机器/共享挂载时，省掉读盘和
+   * base64 膨胀（#169）。只有网关明确拒绝（路径读不到、retcode 非 0）才改用 base64；超时、断线可能已经发出去了，
+   * 再发会变成两张，所以不回退。files.imageByPath 关掉就一直是 base64。
+   */
+  async function sendImage(chatId, src, replyId, userId, opts = {}) {
     if (disposed) return null
+    const s = String(src ?? '').trim()
+    const head = [...quote(replyId), ...mention(userId)]
+    const local = isAbsolute(s) ? s : /^file:\/\//i.test(s) ? s : ''
+    if (local && getConfig().files?.imageByPath !== false) {
+      // Windows 上 'file://' + 'C:\...' 不是合法 URL，网关读不到；pathToFileURL 会给出 file:///C:/... 这种正确形态
+      const file = local.startsWith('file://') ? local : pathToFileURL(local).href
+      try {
+        const r = await sendSegments(chatId, [...head, { type: 'image', data: { file } }], `[图片·路径] ${local.slice(-40)}`, { throwOnError: true })
+        if (r) {
+          log.debug(`${chatId}：按路径发图「${local.slice(-40)}」`)
+          return r
+        }
+        // 总开关关着、试运行、或者扩展模块拦下了：这不是错误，也不该再走 base64 发一遍
+        return null
+      } catch (error) {
+        if (!isDefiniteFailure(error)) {
+          log.warn(`${chatId}：按路径发图失败，发送结果不确定，不再重发：`, error.message)
+          // 调用方要发别的形态（比如 qq_send_file 想改用 sendFile）时，得知道「可能已经发出去了」，不能接着发第二份
+          if (opts.strict) throw new Error(`图片可能已经发出去了，但网关没确认：${error.message}`)
+          return null
+        }
+        log.debug(`${chatId}：按路径发不出去，改用 base64：`, error.message)
+      }
+    }
     try {
-      const buf = await fetchImage(src, { maxBytes: MAX_IMAGE_BYTES })
-      return sendSegments(chatId, [...quote(replyId), ...mention(userId), { type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[图片] ${src.slice(-40)}`)
+      const buf = await fetchImage(s, { maxBytes: MAX_IMAGE_BYTES })
+      return sendSegments(chatId, [...head, { type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[图片] ${s.slice(-40)}`)
     } catch (error) {
       log.warn('图片发不出去：', error.message)
       return null
@@ -2014,6 +2049,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     sendFile,
     sendSticker,
     sendImage,
+    checkSendableFile,
     sendSegments,
     pushToSession,
     titleFilter,

@@ -4,21 +4,22 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createHub } from '../src/chat/hub.js'
 import { normalize } from '../src/core/config.js'
 import { OneBotError } from '../src/onebot/client.js'
 
-function setup(t, failure, { ttsFailure = false } = {}) {
+function setup(t, failure, { ttsFailure = false, files = { enabled: true } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aurabot-send-fallback-'))
   const old = process.env.AURABOT_DATA_DIR
   process.env.AURABOT_DATA_DIR = dir
   const file = join(dir, 'test.txt')
   writeFileSync(file, '音频或文件')
   const calls = [], logs = []
-  const cfg = normalize({ enabled: true, dryRun: false, workspaceDir: dir, files: { enabled: true }, voice: { enabled: true }, stickers: { enabled: false } })
+  const cfg = normalize({ enabled: true, dryRun: false, workspaceDir: dir, files, voice: { enabled: true }, stickers: { enabled: false } })
   const hub = createHub({ dsh: {}, getConfig: () => cfg,
     log: Object.fromEntries(['info', 'warn', 'debug', 'error'].map((k) => [k, (...v) => logs.push(v.join(' '))])),
-    onebot: { async call(action, params, opts) { calls.push({ action, params, opts }); if (calls.length === 1) throw failure; return { message_id: 42 } } },
+    onebot: { async call(action, params, opts) { calls.push({ action, params, opts }); if (calls.length === 1 && failure) throw failure; return { message_id: 42 } } },
     tts: { async speak() { if (ttsFailure) throw new Error('合成失败'); return { file, engine: 'test' } } },
   })
   t.after(() => {
@@ -97,7 +98,7 @@ test('语音传不上去：网关报 highway 失败（带 timeout 字样）也�
 })
 
 test('群里回复写本机图片：允许目录外的不发，数据目录里的照发', async (t) => {
-  const s = setup(t, refused())
+  const s = setup(t, null)
   const outside = join(tmpdir(), 'aurabot-secret.png')
   writeFileSync(outside, '图')
   t.after(() => rmSync(outside, { force: true }))
@@ -106,5 +107,53 @@ test('群里回复写本机图片：允许目录外的不发，数据目录里�
   assert.ok(s.logs.some((line) => line.includes('不在允许的目录里')))
   await s.hub.deliver('group:9', `![图](${s.file})`)
   assert.equal(s.calls.length, 1)
+})
+
+// —— 发图：本地路径优先直发，只有网关明确拒绝才转 base64（#169）——
+
+test('本地图片先按路径直发，网关认了就不读盘转 base64', async (t) => {
+  const s = setup(t, null)
+  const r = await s.hub.sendImage('private:1', s.file)
+  assert.equal(s.calls.length, 1)
+  assert.equal(s.calls[0].params.message[0].type, 'image')
+  assert.equal(s.calls[0].params.message[0].data.file, pathToFileURL(s.file).href)
+  assert.ok(r && r.message_id)
+})
+
+test('file:// 开头的本地图片也一样按路径直发', async (t) => {
+  const s = setup(t, null)
+  await s.hub.sendImage('private:1', pathToFileURL(s.file).href)
+  assert.equal(s.calls[0].params.message[0].data.file, pathToFileURL(s.file).href)
+})
+
+test('路径直发被明确拒绝：改用 base64 再发一次', async (t) => {
+  const s = setup(t, refused())
+  await s.hub.sendImage('private:1', s.file)
+  assert.equal(s.calls.length, 2)
+  assert.equal(s.calls[0].params.message[0].data.file, pathToFileURL(s.file).href)
+  assert.match(s.calls[1].params.message[0].data.file, /^base64:\/\//)
+})
+
+for (const [name, make] of [['超时', timeout], ['发送后断线', disconnected], ['未知错误', () => new Error('未知')]]) {
+  test(`图片路径直发${name}：不改成 base64 重发`, async (t) => {
+    const s = setup(t, make())
+    const r = await s.hub.sendImage('private:1', s.file)
+    assert.equal(s.calls.length, 1)
+    assert.equal(r, null)
+    assert.ok(s.logs.some((line) => line.includes('不再重发')))
+  })
+}
+
+test('调用方要求 strict 时，不确定的失败会抛错（上层才好停下，别发第二份）', async (t) => {
+  const s = setup(t, timeout())
+  await assert.rejects(s.hub.sendImage('private:1', s.file, undefined, undefined, { strict: true }), /可能已经发出去了/)
+  assert.equal(s.calls.length, 1)
+})
+
+test('关掉 imageByPath 就一直走 base64', async (t) => {
+  const s = setup(t, null, { files: { enabled: true, imageByPath: false } })
+  await s.hub.sendImage('private:1', s.file)
+  assert.equal(s.calls.length, 1)
+  assert.match(s.calls[0].params.message[0].data.file, /^base64:\/\//)
 })
 

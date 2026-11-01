@@ -79,7 +79,7 @@ export default {
   id: 'qq-tools',
   name: '基础 QQ 工具',
   version: '1.0.0',
-  description: '翻当前聊天的记录（qq_chat_history）；主人私聊里让她主动给白名单里的人和群发消息（qq_send_message）、把本机文件当文件发出去（qq_send_file）',
+  description: '翻当前聊天的记录（qq_chat_history）；主人私聊里让她主动给白名单里的人和群发消息（qq_send_message）；把本机文件发到 QQ（qq_send_file，图片会直接显示成图）——私聊里随时能发，群里只在她主人开口的那一轮能发',
   setup(api) {
     const { hub, onebot } = api.core
     api.tool(({ chat, level, sessionId }) => {
@@ -201,10 +201,11 @@ export default {
           return readQqFile({ onebot, chat, file })
         },
       }))
-      // 发文件：只给主人私聊（full）挂，群里/别人没有本机文件能力；面板「聊天」页可以关掉
-      if (level === 'full' && api.config().files?.enabled) tools.push(defineTool({
+      // 发文件/发图：主人私聊（full）和群聊都挂；群里只有「这一轮说话的人全是主人」才放行（#169）。
+      // 面板「聊天」页关掉 files.enabled 就都没有。
+      if ((level === 'full' || chat.kind === 'group') && api.config().files?.enabled) tools.push(defineTool({
         name: 'qq_send_file',
-        description: '把本机上的一个文件（文档、压缩包、音频、视频、安装包……）当文件发到 QQ。默认发到当前聊天；主人让你发给别的私聊或群时，target 写 private:QQ号 或 group:群号（只能发白名单里的人和群）。file 要写这台电脑上的绝对路径，而且必须在允许发送的目录里（QQ 工作区，或主人在面板里加的目录）；name 可选，是对方看到的文件名。',
+        description: '把本机上的文件发到 QQ：图片（png/jpg/jpeg/gif/webp/bmp）会直接显示成图，其它当文件发。默认发到当前聊天；主人让你发给别的私聊或群时，target 写 private:QQ号 或 group:群号（只能发白名单里的人和群）。file 要写这台电脑上的绝对路径，而且必须在允许发送的目录里（QQ 工作区，或主人在面板里加的目录）；name 可选，是对方看到的文件名。',
         properties: {
           file: str('本机文件的绝对路径（必须在允许发送的目录里）'),
           name: str('对方看到的文件名，可不填'),
@@ -213,6 +214,8 @@ export default {
         required: ['file'],
         execute: async ({ file, name, target }) => {
           const cfg = api.config()
+          // 群里只认主人：这一轮说话的人必须全是主人，群里别人 @ 她不算（#169）
+          if (chat.kind === 'group' && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '群里只有主人开口时才能发文件，这一轮不是。' }
           let chatId = chat.chatId
           const t = String(target || '').trim()
           if (t) {
@@ -221,9 +224,25 @@ export default {
             if (!okList.includes(String(id))) return { ok: false, message: '不在白名单里，不能发' }
             chatId = `${kind}:${id}`
           }
-          const r = await hub.sendFile(chatId, String(file || ''), name ? String(name) : '')
+          const abs = String(file || '')
+          const label = String(name || '').trim() || abs.split(/[\\/]/).pop()
+          // 图片先按图发（直接铺在聊天里），确认发不出去再按文件发；路径、允许目录、大小上限和私聊同一套检查
+          if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(abs)) {
+            try {
+              hub.checkSendableFile(cfg, abs)
+            } catch (error) {
+              return { ok: false, message: error.message }
+            }
+            try {
+              const img = await hub.sendImage(chatId, abs, undefined, undefined, { strict: true })
+              if (img) return { ok: true, message: `图片发出去了：${label}` }
+            } catch (error) {
+              // 结果不确定（超时/断线）：可能已经发出去了，绝不能再按文件发第二份
+              return { ok: false, message: error.message }
+            }
+          }
+          const r = await hub.sendFile(chatId, abs, name ? String(name) : '')
           if (!r) return { ok: false, message: !cfg.enabled ? '总开关关着，没发' : cfg.dryRun ? '试运行，只记了日志，没真发' : '没发出去' }
-          const label = String(name || '').trim() || String(file || '').split(/[\\/]/).pop()
           return { ok: true, message: `文件发出去了：${label}` }
         },
       }))
