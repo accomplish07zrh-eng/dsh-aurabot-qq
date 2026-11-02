@@ -92,16 +92,38 @@ test('群聊：话题无关不插话，越相关越容易插，加入话题后�
   assert.notEqual(decideGroupReply(base({ relevance: 0.1, engagedUntil: 10_100_000 })).mode, 'engaged')
 })
 
-test('群聊安全刹车：短时间说太多就歇着，主人 @ 能叫动', () => {
+test('群聊安全刹车：短时间说太多就歇着，但明确被叫到的不拦（#182）', () => {
   const now = 10_000_000
   const eight = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => now - 10_000 * i)
-  assert.match(decideGroupReply(base({ mentioned: true, botReplyTimes: eight })).reason, /歇一会儿/)
+  // 刹车只拦她主动接话：@、引用、叫名字、主人 @ 都能叫动
+  assert.equal(decideGroupReply(base({ mentioned: true, botReplyTimes: eight })).mode, 'must')
+  assert.equal(decideGroupReply(base({ repliedToBot: true, botReplyTimes: eight })).mode, 'must')
+  assert.equal(decideGroupReply(base({ text: '肥鱼 露馅你很自豪吗', botReplyTimes: eight, rand: () => 0.99 })).mode, 'must')
   assert.equal(decideGroupReply(base({ mentioned: true, fromOwner: true, botReplyTimes: eight })).mode, 'must')
+  // 没被叫到、纯自己想说：照常刹车
+  assert.match(decideGroupReply(base({ botReplyTimes: eight, rand: () => 0.99 })).reason, /歇一会儿/)
   // 没到刹车线照常回
   assert.equal(decideGroupReply(base({ mentioned: true, botReplyTimes: eight.slice(0, 7) })).mode, 'must')
   // 单个字的唤醒词也算必回
   const p = policyFor({ wakeWords: ['鱼'] }, {}, 1)
   assert.equal(decideGroupReply(base({ policy: p, text: '这鱼真大', rand: () => 0.99 })).mode, 'must')
+})
+
+test('群聊：刚说完被追问「人呢」也算叫她，但要防 A/B 聊天误判（#182）', () => {
+  const now = 10_000_000
+  const said = [now - 60_000, now - 30_000] // 她这两分钟里说过话（刹车/「刚说完」都成立）
+  const ask = (o = {}) => decideGroupReply(base({ policy: policyFor({}, {}, 1), text: '人呢', lastIsBot: false, botReplyTimes: said, now, rand: () => 0.99, ...o }))
+  assert.equal(ask().mode, 'must')
+  assert.equal(ask().reason, '刚说完被追问')
+  // 她这几分钟没说过话：不认（群里 A/B 正常聊天，B 回 A 一句「人呢」）
+  assert.notEqual(ask({ botReplyTimes: [] }).mode, 'must')
+  // 这一条之前最近一条就是她：也不认（不是在追问她）
+  assert.notEqual(ask({ lastIsBot: true }).mode, 'must')
+  // 超过 12 字：不认
+  assert.notEqual(ask({ text: '你们谁知道这个东西到底要怎么弄啊？' }).mode, 'must')
+  // @ 了别人：不认（不管「@ 别人不算叫她」这个策略开没开）
+  assert.notEqual(ask({ atOthers: true }).mode, 'must')
+  assert.notEqual(ask({ atOthersAny: true }).mode, 'must')
 })
 
 test('topicRelevance', async () => {

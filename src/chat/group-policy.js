@@ -12,7 +12,7 @@ export const DEFAULT_GROUP_POLICY = {
   interests: ['白米饭', '米饭', '吃饭', '好吃', '饿了', '游戏', '追剧', '番剧', '动漫', '猫', '狗', '鲸鱼', '鱼', '睡觉', '熬夜', '困', '天气', '下雨', '表情包', '女仆', '可爱', '奶茶', '甜品'],
   minRelevance: 0.25, // 相关度低于这个就不插话（0 = 不看话题，纯随机）
   engagedMax: 6, // 没人再叫她时最多连着接几次。该不该停由她自己判断，这里只防失控
-  burstMax: 8, // 安全刹车：burstWindowSec 秒内她最多说这么多次，超了就歇着（主人 @ 除外），只防失控
+  burstMax: 8, // 安全刹车：burstWindowSec 秒内她最多说这么多次，超了就歇着（明确被叫到除外），只防失控
   burstWindowSec: 120,
 }
 
@@ -50,6 +50,8 @@ export function inQuietHours(hour, quiet) {
  * @param {boolean} p.mentioned  被 @
  * @param {boolean} p.repliedToBot  引用了机器人的消息
  * @param {boolean} [p.fromOwner]  是主人说的
+ * @param {boolean} [p.lastIsBot]  这一条之前最近一条是不是她说的（判断「在追问她」用）
+ * @param {boolean} [p.atOthersAny]  这条消息是不是 @ 了别人（不管策略开没开「@ 别人不算叫她」）
  * @param {string} p.text  消息正文
  * @param {number} p.now  毫秒时间戳
  * @param {number[]} p.recentTimes  本群最近消息的时间戳（毫秒）
@@ -64,17 +66,23 @@ export function decideGroupReply(p) {
   const text = String(p.text || '')
   const rand = p.rand || Math.random
   const said = p.botReplyTimes || []
-  // 刹车：短时间里说太多了就歇一会儿，只有主人 @ 能叫动
   const burst = said.filter((t) => p.now - t < (pol.burstWindowSec ?? 120) * 1000).length
-  if (burst >= (pol.burstMax ?? 8) && !(p.fromOwner && (p.mentioned || p.repliedToBot))) {
+  // @ 了别人（没 @ 她）：不算在叫她，但仍走正常插话判断
+  const atOther = !p.mentioned && p.atOthers === true
+  const hit = atOther ? undefined : (pol.wakeWords || []).find((w) => w && text.includes(w))
+  // 她刚说完，别人追一句「人呢」「不说话了」也算在问她。要她这几分钟确实说过话（burst > 0），
+  // 且这一条之前最近一条不是她——群里 A/B 正常聊天、B 回 A 一句「人呢」时别抢答
+  const shortAsk = Boolean(burst > 0 && !p.lastIsBot && !atOther && !p.atOthersAny && String(text).trim().length <= 12 &&
+    /[？?]|不说话了|人呢|跑了|去哪|怎么了|在吗|说话/.test(text))
+  // 明确被叫到（@、引用、叫名字、被追问）不算她主动接话，刹车不拦；刹车只拦她自己想插话
+  const calling = Boolean(p.mentioned || p.repliedToBot || hit || shortAsk)
+  if (burst >= (pol.burstMax ?? 8) && !calling) {
     return { reply: false, mode: 'none', reason: `刚说了太多（${burst} 次），歇一会儿` }
   }
   if (p.mentioned) return { reply: true, mode: 'must', reason: '被 @' }
   if (p.repliedToBot) return { reply: true, mode: 'must', reason: '引用了她的消息' }
-  // @ 了别人（没 @ 她）：不算在叫她，但仍走正常插话判断
-  const atOther = !p.mentioned && p.atOthers === true
-  const hit = atOther ? undefined : (pol.wakeWords || []).find((w) => w && text.includes(w))
   if (hit) return { reply: true, mode: 'must', reason: `叫到了「${hit}」` }
+  if (shortAsk) return { reply: true, mode: 'must', reason: '刚说完被追问' }
   const rel = typeof p.relevance === 'number' ? p.relevance : 1
 
   if (!(pol.interjectChance > 0)) return { reply: false, mode: 'none', reason: '插话关着' }

@@ -456,7 +456,7 @@ test('合并转发：她能看到转发里的聊天记录', async () => {
   assert.match(t, /转发乙：转发里的话乙/)
 })
 
-test('群聊刹车：短时间说够次数就歇着，主人 @ 还能叫动', async () => {
+test('群聊刹车：主动接话才歇着，群友 @ / 叫名字 / 追问都能叫动（#182）', async () => {
   const at = (t) => [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' ' + t } }]
   for (let i = 0; i < 2; i++) {
     const n = sentTo('group', '559').length
@@ -464,10 +464,30 @@ test('群聊刹车：短时间说够次数就歇着，主人 @ 还能叫动', as
     await until(() => sentTo('group', '559').length > n)
     await sleep(600)
   }
-  const turns = fake.turns.length
+  let turns = fake.turns.length
+  mock.push(grp('559', '711', text('今天天气不错')))
+  await sleep(1200)
+  assert.equal(fake.turns.length, turns, '说够 2 次了，没叫她的消息先不回')
   mock.push(grp('559', '711', at('在吗 再来')))
-  await sleep(1500)
-  assert.equal(fake.turns.length, turns, '说够 2 次了，群友 @ 也先不回')
+  await until(() => fake.turns.length > turns)
+  // 等她的回复真的发出去（groupSaid 记上时间），「最近一条是不是她说的」才准
+  let sends = sentTo('group', '559').length
+  turns = fake.turns.length
+  mock.push(grp('559', '712', text('肥鱼 你刚才说啥')))
+  await until(() => fake.turns.length > turns, 5000)
+  await until(() => sentTo('group', '559').length > sends, 5000)
+  // 等这一轮的发送彻底安静下来：她要先说完，「最近一条是不是她说的」才稳定
+  let quiet = -1
+  for (let i = 0; i < 20 && quiet !== mock.calls.length; i++) { quiet = mock.calls.length; await sleep(200) }
+  // 刚说完被人追问「人呢」：也算在叫
+  turns = fake.turns.length
+  mock.push(grp('559', '713', text('你们先聊')))
+  await sleep(1200)
+  assert.equal(fake.turns.length, turns, '没人叫她的普通消息不回')
+  mock.push(grp('559', '714', text('人呢')))
+  await until(() => fake.turns.length > turns, 5000)
+  // 主人 @ 照常能叫动
+  turns = fake.turns.length
   mock.push(grp('559', OWNER, at('在吗 主人来了'), 'xiaoming'))
   await until(() => fake.turns.length > turns)
 })
@@ -1333,3 +1353,30 @@ test('语音发出去、补发表情失败：这一轮不算没发出去（补�
   }
 })
 
+test('群聊：同一段里群友发的图也能看到（限 5 分钟、最多 2 张）；模型看不了图时明说（#181）', async () => {
+  const img = (salt) => [{ type: 'image', data: { sub_type: 0, file: 'base64://' + fakePng(200, 200, salt).toString('base64') } }]
+  // 三张图先进群：不会触发回复，但应该留在这一段里给她看
+  for (let i = 0; i < 3; i++) mock.push(grp('555', String(810 + i), img(21 + i), '发图' + i))
+  await sleep(800)
+  let turns = fake.turns.length
+  mock.push(grp('555', '820', text('肥鱼 看看刚才的图')))
+  await until(() => fake.turns.length > turns)
+  const t = fake.turns.at(-1)
+  assert.equal(t.images, 2, '同一段里的群图最多带 2 张：' + t.userText)
+  assert.match(t.userText, /\[图片\]/, '文字里的图片占位还在，但图这次真给她了')
+  // 模型看不了图：换成一句明确的提示，不让她照着占位编
+  await fake.call('/save', { model: { vision: 'off' } })
+  try {
+    mock.push(grp('555', '821', img(31), '发图4'))
+    await sleep(800)
+    turns = fake.turns.length
+    mock.push(grp('555', '822', text('肥鱼 这张是啥')))
+    await until(() => fake.turns.length > turns)
+    const t2 = fake.turns.at(-1)
+    assert.equal(t2.images, 0, '看不了图的模型不塞图片块')
+    assert.match(t2.userText, /对方一共发了 1 张图/)
+    assert.match(t2.userText, /看不了图/)
+  } finally {
+    await fake.call('/save', { model: { vision: 'auto' } })
+  }
+})

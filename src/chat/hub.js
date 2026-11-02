@@ -1268,7 +1268,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     let groupEntry = null
     if (msg.kind === 'group') {
       const buf = groupBuf.get(msg.groupId) || []
-      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: msg.text, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId }
+      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: msg.text, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId, images: msg.images, stickers: msg.stickers }
       buf.push(groupEntry)
       while (buf.length > 40) buf.shift()
       groupBuf.set(msg.groupId, buf)
@@ -1369,6 +1369,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       try { memScore = typeof memoryScore === 'function' ? memoryScore(recentTexts.join(' ')) : 0 } catch (error) {}
       const quotedBot = await repliedToBot(msg.replyId, msg)
       if (disposed) return
+      // 这一条之前最近一条是不是她说的：判断「人呢」是不是在追问她（#182）
+      const gbuf = groupBuf.get(msg.groupId) || []
+      const priorMsg = gbuf.length >= 2 ? gbuf[gbuf.length - 2] : null
+      const lastBotAt = (groupSaid.get(msg.groupId) || []).at(-1) || 0
       const decision = decideGroupReply({
         policy: pol,
         relevance: topicRelevance(recentTexts, pol.interests, memScore),
@@ -1376,7 +1380,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         engagedRun: groupEngagedRun.get(msg.groupId) || 0,
         mentioned: msg.mentioned,
         atOthers: cfg.group?.ignoreAtOthers ? msg.atOthers : false,
+        atOthersAny: msg.atOthers,
         repliedToBot: quotedBot,
+        lastIsBot: Boolean(lastBotAt && (!priorMsg || lastBotAt > priorMsg.t)),
         fromOwner: isOwner(cfg, msg.userId),
         text: msg.wakeText,
         now,
@@ -1398,7 +1404,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         log.debug(`群 ${msg.groupId}：不回（${decision.reason}）`)
         logChat(msg.chatId, msg.nickname, msg.text, msg.userId)
         // 已经有一段在等她回：这条也算进去（她回的时候能看到），但不单独再触发一次
-        if (pending.has(msg.chatId)) await addGroupImages(msg)
+        if (pending.has(msg.chatId)) await addGroupImages(msg, groupEntry)
         return
       }
       groupEntry.direct = Boolean(msg.messageId && msg.messageId !== '0' && msg.userId && (msg.mentioned || quotedBot))
@@ -1435,6 +1441,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const content = msg.kind === 'group' ? [] : [{ type: 'text', text: `【私聊】${msg.nickname}(${msg.userId})：` + (text || '（没有文字）') + (quoted ? '\n' + quoteInline(quoted) : '') }]
     const imgs = await imagesOf(msg)
     if (disposed) return
+    if (imgs.length && groupEntry) groupEntry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
     if (imgs.length) {
       // 图片先留着，prompt 钩子里的模块可以接管（#167）；模型看不了图时 pushToSession 再换成文字
       for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
@@ -1520,14 +1527,44 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   /** 没触发回复的群消息带的图：如果正有一段在等她回，把图也带上（最多 4 张）。 */
-  async function addGroupImages(msg) {
+  async function addGroupImages(msg, entry = null) {
     const p = pending.get(msg.chatId)
     if (!p || p.images.length >= MAX_MESSAGE_IMAGES) return
     try {
       const imgs = await imagesOf(msg)
       for (let i = 0; i < imgs.length && p.images.length < MAX_MESSAGE_IMAGES; i++) p.images.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
+      if (imgs.length && entry) entry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
       if (animatedNote(imgs) && (await canSeeFor(p.chat)) !== false) p.images.push({ type: 'text', text: animatedNote(imgs) })
     } catch (error) {}
+  }
+
+  // 群聊这一段里群友发的图：只带最近 5 分钟内、最多 2 张（#181）。触发回复那条的图走 pending.images，这里跳过。
+  const GROUP_IMAGE_WINDOW_MS = 5 * 60_000
+  const GROUP_IMAGE_MAX = 2
+
+  async function freshGroupImages(fresh, room) {
+    const take = Math.min(GROUP_IMAGE_MAX, room)
+    if (take <= 0) return []
+    const out = []
+    let got = 0
+    const cutoff = Date.now() - GROUP_IMAGE_WINDOW_MS
+    for (const x of fresh.slice().reverse()) {
+      if (got >= take) break
+      if (x.mediaPending || !x.t || x.t < cutoff || (!x.images?.length && !x.stickers?.length)) continue
+      try {
+        const imgs = await imagesOf(x)
+        for (const img of imgs) {
+          if (got >= take) break
+          got++
+          out.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: `qq-${x.mid || 'group'}-${got}` })
+        }
+        const note = animatedNote(imgs)
+        if (note) out.push({ type: 'text', text: note })
+      } catch (error) {
+        log.debug('群聊图片读取失败：', error.message)
+      }
+    }
+    return out
   }
 
   /** 群聊这一段的提示词：之前的几句当背景，上次交给她之后群里新说的话全部列出来，让她看完整段再回。 */
@@ -1573,7 +1610,20 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         quotedImages.push(...await quoteImages(x.quote, take))
       }
     }
-    return { text, query, speakers, autoReply: pickAutoReply(fresh), images: quotedImages }
+    // 这一段里群友发的图也给她看；看不了图就明说有几张，别让她照着占位编（#181）
+    const mediaNow = Date.now()
+    const mediaEntries = fresh.filter((x) => !x.mediaPending && (x.images?.length || x.stickers?.length) && x.t && mediaNow - x.t < GROUP_IMAGE_WINDOW_MS)
+    let mediaNote = ''
+    let extraImages = []
+    if (mediaEntries.length) {
+      const mediaCount = mediaEntries.reduce((n, x) => n + (x.images?.length || 0) + (x.stickers?.length || 0), 0)
+      if ((await canSeeFor(chat)) === false) {
+        mediaNote = '\n（这一段里对方一共发了 ' + mediaCount + ' 张图/表情，你现在的模型看不了图，只能知道有这回事；别猜图里是什么，也别当成自己看过）'
+      } else {
+        extraImages = await freshGroupImages(fresh, Math.max(0, imageRoom - quotedImages.length))
+      }
+    }
+    return { text: text + mediaNote, query, speakers, autoReply: pickAutoReply(fresh), images: [...quotedImages, ...extraImages] }
   }
 
   // ---------- 连发合并：人常常一口气发好几句，等对方说完再一起交给她，别一句一回 ----------
