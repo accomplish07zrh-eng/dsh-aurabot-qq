@@ -193,6 +193,13 @@ export const DEFAULTS = {
     shareBias: 'normal', // stingy | normal | proactive：分享给主人的积极程度
     shareDaily: 3, // 每天最多分享几条（避免刷屏）
     // 谷时逛：只在非峰时跑自动逛，避开工作日 9-12 / 14-18 的高峰，省 token
+    // 分区：manual = 总是用默认分区；auto = 按正文内容自动挑（挑不到回落默认）
+    topicMode: 'manual',
+    // 发帖字数范围：0 = 用风格自带的；填了就覆盖（对所有风格生效）
+    postWordsMin: 0,
+    postWordsMax: 0,
+    // 每天每篇的排期：空数组 = 用全局设置；填几项就按几篇发，每篇用自己的配置
+    dailyPosts: [],
     offPeakOnly: false, // 开关：默认关（行为不变）
     peakStartAM: 9, // 上午峰时开始（含）
     peakEndAM: 12, // 上午峰时结束（不含）
@@ -424,6 +431,27 @@ export function normalize(raw) {
   hb.shareBias = ['stingy', 'normal', 'proactive'].includes(hb.shareBias) ? hb.shareBias : 'normal'
   hb.shareDaily = Math.round(num(hb.shareDaily, 3, 0, BIG))
   hb.cookie = String(hb.cookie || '').trim()
+  hb.topicMode = hb.topicMode === 'auto' ? 'auto' : 'manual'
+  hb.postWordsMin = Math.round(num(hb.postWordsMin, 0, 0, 2000))
+  hb.postWordsMax = Math.round(num(hb.postWordsMax, 0, 0, 3000))
+  if (hb.postWordsMax && hb.postWordsMin && hb.postWordsMax < hb.postWordsMin) [hb.postWordsMin, hb.postWordsMax] = [hb.postWordsMax, hb.postWordsMin]
+  // 每天每篇的排期：最多 5 篇；hashtags 和 hashtagsText 都保留（面板靠 Text 回显，模块靠数组发帖）
+  hb.dailyPosts = Array.isArray(hb.dailyPosts) ? hb.dailyPosts.slice(0, 5).map((p) => {
+    const o = p && typeof p === 'object' ? p : {}
+    const splitH = (v) => String(v ?? '').split(/[\s,，、]+/).map((x) => String(x).trim()).filter(Boolean)
+    const hash = (Array.isArray(o.hashtags) ? o.hashtags : splitH(o.hashtagsText)).map((x) => String(x).trim()).filter(Boolean).slice(0, 4)
+    return {
+      style: ['diary', 'news', 'mix', 'deal'].includes(o.style) ? o.style : '',
+      topic: /^\d{3,7}$/.test(String(o.topic ?? '')) ? String(o.topic) : '',
+      hashtags: hash,
+      hashtagsText: hash.join(','),
+      wordsMin: Math.round(num(o.wordsMin, 0, 0, 2000)),
+      wordsMax: Math.round(num(o.wordsMax, 0, 0, 3000)),
+      hint: String(o.hint || '').trim().slice(0, 120),
+    }
+  }) : []   // ⚠ 不能在这里过滤全空项：排期是按下标取的（module 侧 currentPostPlan 用 postsToday() 索引），
+             //    过滤掉「第 1 篇留空跟全局、第 2 篇单独配」里的空项，会让第 2 篇的配置被当成第 1 篇用。
+             //    空项就代表「这一篇走全局设置」，原样保留位置。
   hb.offPeakOnly = bool(hb.offPeakOnly, false)
   hb.peakStartAM = num(hb.peakStartAM, 9, 0, 23)
   hb.peakEndAM = num(hb.peakEndAM, 12, 0, 24)
