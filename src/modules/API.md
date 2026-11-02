@@ -319,7 +319,7 @@ return function Panel({ settings, save, toast }) {
 | `bili` | B 站 | `watch(链接)` `comment(链接, 文字)` `run()` `checkReplies()` `account()` `state()` |
 | `song` | 翻唱 | `request({ song, pitch, chatId })` `search(关键词)` `status()` `install()` |
 
-平台是工具，同一个人只有一套记忆。模块确认平台账号对应的 QQ 后，可以用 `noteVia` 把双方对话写进同一份私聊流水（`who` 为 `user` 或 `bot`，`at` 是可选的毫秒时间戳），用 `contextVia` 取得这位 QQ 用户的私聊记忆上下文。核对不了身份的账号不要写入，也不要读取记忆。
+平台是工具，同一个人只有一套记忆。模块确认平台账号对应的 QQ 后，可以用 `noteVia` 把双方对话写进同一份私聊流水（`who` 为 `user` 或 `bot`，`at` 是可选的毫秒时间戳），用 `contextVia` 取得这位 QQ 用户的私聊记忆上下文。模块用 `noteVia` 写入流水后，开启的短期状态会自动生效。核对不了身份的账号不要写入，也不要读取记忆。
 
 聊天中枢需要的时候会去找 `stickers`（发表情、偷表情）、`voice`（发语音）、`mood`（心情影响表情 / 语音频率）、`memory`（群聊插话判断）。
 这几个被关掉，对应的事就不做（想发语音时改发文字）；被替换，就用你的——所以替换时**导出的函数名要和上表一样**。

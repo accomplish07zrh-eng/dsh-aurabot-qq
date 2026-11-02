@@ -136,6 +136,7 @@ export interface Events {
 /** 平台是工具；确认平台账号对应的 QQ 后，才能写入和读取同一份私聊记忆。 */
 export interface MemoryModule {
   [key: string]: any
+  /** 写入流水后，开启的短期状态会自动生效。 */
   noteVia(args: { via: string; qq: string | number; who: 'user' | 'bot'; text: string; at?: number }): { ok: boolean }
   contextVia(args: { qq: string | number; query?: string }): string
 }
