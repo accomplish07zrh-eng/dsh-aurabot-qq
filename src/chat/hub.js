@@ -2047,8 +2047,6 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       for (const [chatId, entry] of Object.entries(map().chats || {})) {
         if (!entry) continue
         if (entry.sessionId && sessionKey(entry.sessionId) === key) return chatId
-        // 调试 / 正式模式各有一条会话，都算这个 QQ 会话
-        if (Object.values(entry.sessions || {}).some((sid) => sessionKey(sid) === key)) return chatId
       }
     } catch (error) {}
     return ''
