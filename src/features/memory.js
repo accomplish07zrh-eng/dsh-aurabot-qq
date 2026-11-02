@@ -338,6 +338,83 @@ export function parseFacts(out) {
   return null
 }
 
+// ---------------- 记忆压缩：细节淡化 → 长期印象 ----------------
+/** 压缩参数：每次整理最多调几次模型（成本上限）、每簇最少/最多几条、印象长度与敏感词。 */
+export const COMPRESS = { maxCallsPerRun: 2, minItems: 4, maxItems: 8, minChars: 8, maxChars: 120 }
+const COMPRESS_SENSITIVE = /密码|口令|验证码|token|api.?key|secret|身份证|银行卡/i
+
+/**
+ * 选可压缩的簇（纯函数，方便测试）：只压同「可见性来源 + about」的旧细节。
+ * - 只收 source = auto / event / diary（手动、导入、面板、长期印象都不压）
+ * - 年龄 >= afterDays、未过时、未压缩过、tier 不是 core
+ * - 普通记忆按 chatId 分簇，群公共记忆按群分簇；不同 chatId 绝不混在一簇
+ * @returns {Array<{key:string, chatId:string, scope:string, about:string, aboutName:string, ids:string[], items:object[]}>}
+ */
+export function compressionClusters (items, { now = Date.now(), afterDays = 14, minItems = COMPRESS.minItems } = {}) {
+  const days = Math.max(0, Number(afterDays) || 0)
+  const cutoff = now - days * 86400_000
+  const by = new Map()
+  for (const m of Array.isArray(items) ? items : []) {
+    if (!m || m.invalidAt || m.compressedAt) continue
+    if (m.tier === 'core' || m.source === 'abstract') continue
+    if (!['auto', 'event', 'diary'].includes(String(m.source || ''))) continue
+    const at = saidTime(m) || 0
+    if (!at || at > cutoff) continue
+    const group = m.scope === 'group'
+    const chatId = String(m.chatId || '')
+    const about = String(m.about || '')
+    const key = `${group ? 'group' : 'normal'}|${chatId}|${about}`
+    if (!by.has(key)) by.set(key, { key, chatId, scope: group ? 'group' : '', about, aboutName: '', items: [] })
+    const c = by.get(key)
+    if (!c.aboutName && m.aboutName) c.aboutName = String(m.aboutName)
+    c.items.push(m)
+  }
+  const out = []
+  for (const c of by.values()) {
+    if (c.items.length < Math.max(2, Number(minItems) || COMPRESS.minItems)) continue
+    // 稳定排序：越新越靠后，取最近 minItems~maxItems 条交给模型（簇内 about 本来一致，防御性检查 mixed）
+    c.items.sort((a, b) => (saidTime(a) || 0) - (saidTime(b) || 0))
+    const items = c.items.slice(-COMPRESS.maxItems)
+    const abouts = new Set(items.map((m) => String(m.about || '')))
+    const about = abouts.size === 1 ? [...abouts][0] : ''
+    out.push({ key: c.key, chatId: c.chatId, scope: c.scope, about, aboutName: about ? c.aboutName : '', ids: items.map((m) => String(m.id)), items })
+  }
+  // 确定性排序，便于测试与「每次整理最多 N 次调用」的稳定选择
+  out.sort((a, b) => a.key.localeCompare(b.key))
+  return out
+}
+
+/** 解析模型输出 {"text":"长期印象"}；坏 JSON / 缺 text 返回空串。 */
+export function parseAbstract (out) {
+  const hit = String(out || '').match(/\{[\s\S]*\}/)
+  if (!hit) return ''
+  try {
+    const j = JSON.parse(hit[0])
+    const t = typeof j === 'string' ? j : (j && (j.text ?? j.abstract ?? j.impression))
+    return String(t || '').replace(/\s+/g, ' ').trim()
+  } catch (error) {
+    return ''
+  }
+}
+
+/**
+ * 校验模型写的长期印象（模型输出不可信）：长度 8~120、不含敏感词、不包含源记忆里没有的数字。
+ * @returns {{ok:boolean, text?:string, message?:string}}
+ */
+export function checkAbstractText (text, sourceTexts = []) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim()
+  const chars = [...t.replace(/\s/g, '')]
+  if (chars.length < COMPRESS.minChars) return { ok: false, message: `太短（${chars.length} 字）` }
+  if (chars.length > COMPRESS.maxChars) return { ok: false, message: `太长（${chars.length} 字）` }
+  if (COMPRESS_SENSITIVE.test(t)) return { ok: false, message: '含敏感词' }
+  const source = (Array.isArray(sourceTexts) ? sourceTexts : [sourceTexts]).join(' ')
+  const known = new Set([...source.matchAll(/\d{2,}/g)].map((m) => m[0]))
+  for (const n of [...t.matchAll(/\d{2,}/g)].map((m) => m[0])) {
+    if (!known.has(n)) return { ok: false, message: `出现源记忆里没有的数字 ${n}` }
+  }
+  return { ok: true, text: t }
+}
+
 export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   const vector = createVectorIndex({ getConfig, log, fetchImpl })
   const file = () => dataDir('memories.json')
@@ -626,7 +703,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     const old = dirty ? '' : profileOf(qq)?.text || ''
     const out = await askModel(dsh, {
       cfg,
-      system: '你是「大肥鱼」。根据你记得的关于一个人的事，写一张给自己看的人物小档案：TA 是谁、怎么称呼、和你什么关系、性格和喜好、最近在忙什么。只写记忆里明确有的，不要推测性格、不要编，也不要写「应该」「可能」这种猜的话；旧档案和新记忆矛盾时以新记忆为准。用第三人称，一段话，100 字以内，不要标题和列表。',
+      system: '你是「大肥鱼」。根据你记得的关于一个人的事，写一张给自己看的人物小档案：TA 是谁、怎么称呼、和你什么关系、性格和喜好、最近在忙什么。只写记忆里明确有的，不要推测性格、不要编，也不要写「应该」「可能」这种猜的话；旧档案和新记忆矛盾时以新记忆为准。像人一样：具体的事件可以淡忘，留下关系与感受的概括，别罗列流水账。用第三人称，一段话，100 字以内，不要标题和列表。',
       text: `${String(qq) === String(cfg.ownerQQ) ? `这是你的${cfg.ownerName || '主人'}。\n` : ''}旧档案：${old || '（还没有）'}\n\n记得的事（越往下越新）：\n${mine.slice(-40).map((m) => `- [${whenText(saidTime(m))}] ${m.text}`).join('\n')}`,
       maxTokens: 1500,
       temperature: 0.3,
@@ -976,6 +1053,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     // 整理结果只能改「当前聊天候选里的、关于当前在场人的」记忆；不能跨聊天/改主人
     const canRevise = (target) => {
       if (!target || target.source === 'panel') return false
+      if (target.source === 'abstract') return false // 长期印象由压缩生成，不被自动整理改写/作废
       const about = String(target.about || '')
       if (about === ownerQQ && !ownerScope) return false
       const ownGroupFact = chatId.startsWith('private:') && about === chatId.slice(8) && String(target.chatId || '').startsWith('group:') && target.scope !== 'group'
@@ -1121,6 +1199,89 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     return profiles
   }
 
+  /**
+   * 记忆压缩：把同可见范围、同一 about 的一簇旧细节交给模型概括成 1~2 句长期印象。
+   * 源条目标过时（面板「已过时」里能看到被压缩成了什么，可恢复）；新条目 source='abstract'。
+   * 每次整理最多调用 maxCalls 次模型（默认 2），控制成本；模型输出不可信，先校验再落盘。
+   */
+  async function compressDetails ({ now = Date.now(), maxCalls = COMPRESS.maxCallsPerRun } = {}) {
+    const memCfg = getConfig().memory || {}
+    if (memCfg.compress === false) return { clusters: 0, calls: 0, created: 0 }
+    const afterDays = Number.isFinite(Number(memCfg.compressAfterDays)) ? Number(memCfg.compressAfterDays) : 14
+    const clusters = compressionClusters(load().items, { now, afterDays })
+    let calls = 0
+    let created = 0
+    for (const cluster of clusters) {
+      if (calls >= Math.max(0, maxCalls)) break
+      // 模型调用前再查一次：期间可能被面板删/忘掉
+      const fresh = load().items.filter((m) => cluster.ids.includes(String(m.id)) && !m.invalidAt && !m.compressedAt)
+      if (fresh.length < COMPRESS.minItems) continue
+      calls++
+      let out = ''
+      try {
+        out = await askModel(dsh, {
+          cfg: getConfig(),
+          system: '你是「大肥鱼」。下面是你记得的一些具体的事（带时间）。请把它们概括成 1~2 句「长期印象」——更像人对另一个人的关系和感受的总结（例如「主人很疼你，总惦记你爱吃的东西」），而不是流水账。只依据给出的内容，不要编造没发生的事，不要写具体日期、数字、金额；语气自然。只输出 JSON：{"text":"..."}',
+          text: cluster.items.map((m) => `- [${whenText(saidTime(m), now)}] ${m.aboutName ? '[' + m.aboutName + '] ' : ''}${m.text}`).join('\n'),
+          maxTokens: 400,
+          temperature: 0.3,
+        })
+      } catch (error) {
+        log.warn('压缩记忆失败（这簇跳过）：', error.message)
+        continue
+      }
+      const text = parseAbstract(out)
+      if (!text) { log.debug?.('压缩记忆：模型没给出可用的 JSON，跳过这簇'); continue }
+      const check = checkAbstractText(text, fresh.map((m) => m.text))
+      if (!check.ok) { log.warn(`压缩记忆：结果丢弃（${check.message}）`); continue }
+      try {
+        if (commitAbstract(cluster, check.text, now)) created++
+      } catch (error) {
+        log.warn('写入长期印象失败：', error.message)
+      }
+    }
+    return { clusters: clusters.length, calls, created }
+  }
+
+  /** 把一簇已经校验过的印象写进记忆库：源条目标过时并记 compressedInto/supersededText。 */
+  function commitAbstract (cluster, text, now = Date.now()) {
+    const s = load()
+    const group = cluster.scope === 'group'
+    const ids = cluster.ids.map(String)
+    const live = s.items.filter((m) => ids.includes(String(m.id)) && !m.invalidAt && !m.compressedAt)
+    if (live.length < COMPRESS.minItems) return false
+    const item = {
+      id: randomUUID().slice(0, 8),
+      text,
+      about: String(cluster.about || ''),
+      aboutName: String(cluster.aboutName || ''),
+      tags: ['长期印象'],
+      importance: 0.85,
+      source: 'abstract',
+      chatId: String(cluster.chatId || ''),
+      at: now,
+      saidAt: now,
+      hits: 0,
+      tier: 'core',
+      abstractOf: live.map((m) => String(m.id)),
+    }
+    if (group) item.scope = 'group'
+    for (const m of live) {
+      m.invalidAt = now
+      m.compressedInto = item.id
+      m.supersededText = text
+      if (m.about && m.scope !== 'group') {
+        s.dirtyProfiles = { ...(s.dirtyProfiles || {}), [String(m.about)]: true }
+        delete s.profiles?.[String(m.about)]
+      }
+    }
+    s.items.push(item)
+    s.rev = (s.rev || 0) + 1
+    save(s)
+    log.info(`把 ${live.length} 条具体记忆压缩成一条长期印象：${text.slice(0, 40)}`)
+    return true
+  }
+
   let busy = false
   let failures = 0
   let retryAt = 0
@@ -1230,16 +1391,19 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       profiles = await refreshProfiles(startedAt)
       // 先合并（内部 load→改→save），再重新读快照，否则下面那次 save(s) 会把合并结果覆盖回旧数据
       try { await mergeGroups() } catch (error) { log.warn('合并记忆出错：', error.message) }
+      // 细节淡化 → 长期印象（A；每次整理最多 COMPRESS.maxCallsPerRun 次模型调用）
+      let compressed = 0
+      try { const cr = await compressDetails(); compressed = cr.created } catch (error) { log.warn('压缩记忆出错：', error.message) }
       const s = load()
       // 遗忘：不重要、很久没被想起的自动记忆清掉，记忆库不会越堆越乱
       const before = s.items.length
       s.items = s.items.filter((m) => !shouldForget(m, Date.now(), getConfig().memory.eventExpireDays ?? 90))
       const forgot = before - s.items.length
       if (forgot) s.rev = (s.rev || 0) + 1
-      s.lastConsolidate = { day: today, at: Date.now(), added, insights, days, forgot, profiles }
+      s.lastConsolidate = { day: today, at: Date.now(), added, insights, days, forgot, profiles, compressed }
       save(s)
-      log.info(`整理临时记忆：处理了 ${days} 天，新增或更新 ${added} 条长期记忆，更新了 ${insights} 份相处经验、${profiles} 份人物小档案${forgot ? `，忘掉 ${forgot} 条不重要的旧记忆` : ''}`)
-      return { ok: true, added, insights, days, forgot, profiles, budgetExhausted, incomplete: batches >= EXTRACT_LIMIT, message: `整理好了：新增或更新 ${added} 条记忆，更新 ${insights} 份相处经验、${profiles} 份人物小档案${forgot ? `，忘掉 ${forgot} 条旧的` : ''}` }
+      log.info(`整理临时记忆：处理了 ${days} 天，新增或更新 ${added} 条长期记忆，更新了 ${insights} 份相处经验、${profiles} 份人物小档案${forgot ? `，忘掉 ${forgot} 条不重要的旧记忆` : ''}${compressed ? `，压缩出 ${compressed} 条长期印象` : ''}`)
+      return { ok: true, added, insights, days, forgot, profiles, compressed, budgetExhausted, incomplete: batches >= EXTRACT_LIMIT, message: `整理好了：新增或更新 ${added} 条记忆，更新 ${insights} 份相处经验、${profiles} 份人物小档案${forgot ? `，忘掉 ${forgot} 条旧的` : ''}${compressed ? `，压缩出 ${compressed} 条长期印象` : ''}` }
     } catch (error) {
       log.warn('整理临时记忆失败：', error.message)
       return { ok: false, message: error.message }
@@ -1257,7 +1421,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     const version = forgetVersion
     const cfg = getConfig()
     if (!cfg.memory?.mergeGroups) return { groups: 0, calls: 0, merged: 0 }
-    const list = load().items.filter((m) => !m.invalidAt)
+    const list = load().items.filter((m) => !m.invalidAt && m.source !== 'abstract')
     const by = new Map()
     for (const m of list) {
       // F5：按「可见性来源」分组再交给模型合并。普通记忆带上 chatId（没有来源的旧数据单独一组），
