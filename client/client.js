@@ -1071,26 +1071,58 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       h('span', null, busy ? '润色中' : empty ? 'AI 写一版' : 'AI 润色'))
     }
 
+    const personaDraftKey = (id) => 'aurabot.persona.draft.' + id
     function Persona({ st, toast, reload }) {
       const [list, setList] = useState(st.personas)
       const [current, setCurrent] = useState(st.config.persona.current)
-      const [sel, setSel] = useState(st.config.persona.current)
+      // 记住上次编辑的人格：切走标签页再回来还编辑同一个，而不是跳回正在用的那个
+      const [sel, setSel] = useState(() => { try { return localStorage.getItem('aurabot.persona.sel') || st.config.persona.current } catch (e) { return st.config.persona.current } })
       const [edit, setEdit] = useState(null) // { id, name, tags, secs }
       const [dirty, setDirty] = useState(false)
       const [pending, setPending] = useState({}) // 节的 k → { text, view: 'new' | 'old' } AI 润色还没选定的
       const [whole, setWhole] = useState(() => { try { return localStorage.getItem('aurabot.persona.whole') === '1' } catch (e) { return false } })
+      // 上次没保存的草稿：进来时只提示「要不要恢复」，不自动覆盖当前内容
+      const [restore, setRestore] = useState(null)
+      useEffect(() => { try { localStorage.setItem('aurabot.persona.sel', sel) } catch (e) {} }, [sel])
       const load = async (id) => {
         const r = await get('/persona/get?id=' + encodeURIComponent(id))
-        if (r.ok) { setEdit({ id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), secs: splitPersona(r.persona.body) }); setDirty(false); setPending({}) }
+        if (!r.ok) return
+        const server = { id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), secs: splitPersona(r.persona.body) }
+        let draft = null
+        try { const raw = localStorage.getItem(personaDraftKey(id)); if (raw) { const d = JSON.parse(raw); if (d && d.id === id && typeof d.body === 'string' && d.body !== r.persona.body) draft = d } } catch (e) {}
+        setEdit(server)
+        setDirty(false)
+        setRestore(draft ? { body: draft.body, name: draft.name, tags: draft.tags, at: draft.at || 0 } : null)
+        setPending({})
       }
       useEffect(() => { load(sel) }, [sel])
+      // 编辑中的草稿只写 localStorage（不动磁盘）；切标签/刷新后在下次进来时提示是否恢复
+      useEffect(() => {
+        if (!edit || !dirty) return
+        const t = setTimeout(() => {
+          try { localStorage.setItem(personaDraftKey(edit.id), JSON.stringify({ id: edit.id, name: edit.name, tags: edit.tags, body: joinPersona(edit.secs), at: Date.now() })) } catch (e) {}
+        }, 200)
+        return () => clearTimeout(t)
+      }, [edit, dirty])
+      const restoreDraft = () => {
+        if (!restore) return
+        setEdit({ ...edit, name: restore.name ?? edit.name, tags: restore.tags ?? edit.tags, secs: splitPersona(restore.body) })
+        setDirty(true)
+        setRestore(null)
+        toast('已恢复上次的改动（还没保存，确认后点「保存人格」）', 'ok')
+      }
+      const discardDraft = () => {
+        try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {}
+        setRestore(null)
+        toast('已丢弃上次没保存的改动')
+      }
       const refresh = async () => { const r = await get('/personas'); if (r.ok) { setList(r.list); setCurrent(r.current) } }
       const body = edit ? joinPersona(edit.secs) : ''
       const waiting = Object.keys(pending).length
       const save = async () => {
         const r = await post('/persona/save', { id: edit.id, name: edit.name, tags: edit.tags.split(/[,，\s]+/).filter(Boolean), body })
         toast(r.message || (r.ok ? '保存好了' : '没保存成功'))
-        if (r.ok) { setDirty(false); refresh() }
+        if (r.ok) { setDirty(false); setRestore(null); try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {} refresh() }
       }
       const patch = (p) => { setEdit({ ...edit, ...p }); setDirty(true) }
       const setSecs = (secs) => patch({ secs })
@@ -1122,10 +1154,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Btn, { kind: 'ghost', onClick: () => { const id = 'persona-' + Date.now().toString(36); setEdit({ id, name: '新人格', tags: '', secs: splitPersona('你是……\n\n【打字习惯】\n- 短句、口语，一次只说一两句。') }); setSel(id); setDirty(true); setPending({}) } }, '＋ 新建人格'),
           h(AvatarCard, { st, toast, reload }),
         ),
-        edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面，按节写更好改。保存后，大肥鱼下一轮回复起就按新的来。',
+        edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面，按节写更好改。离开不会自动保存；切标签/切页面会先记住草稿，下次进来会问你要不要恢复；输入框里 Ctrl+Z 可撤回。保存后大肥鱼下一轮回复起就按新的来。',
           right: h('div', { className: 'ab-flex' },
             edit.id !== current ? h(Btn, { small: true, onClick: async () => { const r = await post('/persona/use', { id: edit.id }); toast(r.message); refresh(); reload() } }, '设为当前') : null,
-            edit.id !== current ? h(Btn, { small: true, kind: 'danger', onClick: async () => { if (!confirm('删掉这个人格？')) return; const r = await post('/persona/delete', { id: edit.id }); if (r.ok) { setList(r.list); setSel(current) } else toast(r.message) } }, '删除') : null) },
+            edit.id !== current ? h(Btn, { small: true, kind: 'danger', onClick: async () => { if (!confirm('删掉这个人格？')) return; const r = await post('/persona/delete', { id: edit.id }); if (r.ok) { try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {} setList(r.list); setSel(current) } else toast(r.message) } }, '删除') : null) },
+          restore ? h('div', { className: 'ab-flex', style: { marginTop: 12, padding: '8px 10px', border: '1px solid #4a4a55', borderRadius: 8, background: 'rgba(255,255,255,.04)' } },
+            h('span', { className: 'ab-small' }, '发现上次没保存的人格改动（' + String(restore.body || '').length + ' 字' + (restore.at ? '，' + new Date(restore.at).toLocaleString() : '') + '）。要恢复吗？'),
+            h('div', { className: 'ab-spacer' }),
+            h(Btn, { small: true, kind: 'primary', onClick: restoreDraft }, '恢复'),
+            h(Btn, { small: true, kind: 'ghost', onClick: discardDraft }, '丢弃')) : null,
           h(Row, { label: '名字' }, h('input', { className: 'ab-input', value: edit.name, onChange: (e) => patch({ name: e.target.value }) })),
           h(Row, { label: '标签', hint: '用逗号隔开' }, h('input', { className: 'ab-input', value: edit.tags, onChange: (e) => patch({ tags: e.target.value }) })),
           h('div', { className: 'ab-flex', style: { marginTop: 14 } },
