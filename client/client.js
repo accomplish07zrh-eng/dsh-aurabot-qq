@@ -703,7 +703,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const navGroupOf = (t) => NAV_GROUPS.find((g) => g.tabs.includes(t.id)) || (t.ext && PLATFORM_EXT.test(t.label) ? NAV_GROUPS[3] : NAV_GROUPS[4])
     const navOrder = (g, t) => { const i = g.tabs.indexOf(t.id); return i >= 0 ? i : g.tabs.length - (g.tabs.includes('logs') ? 1.5 : 0) }
     const NAV_ALIAS = {
-      overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴', access: '主人 白名单 权限 群管 改资料',
+      overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴 相处经验 说话方式', access: '主人 白名单 权限 群管 改资料',
       group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', stickers: '表情 小黄脸 gif 商城表情',
       imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
       bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', security: '安全 防护 ssrf 内网 图片 下载', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错', about: '关于 关于我们 版本 许可 鸣谢 开源', backup: '备份 恢复 换电脑 迁移 导入 导出',
@@ -2686,11 +2686,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [mem, setMem] = useState(null)
       const [stats, setStats] = useState(null)
       const [q, setQ] = useState('')
-      const [ins, setIns] = useState(null)
       const [adding, setAdding] = useState({ text: '', aboutName: '', importance: 0.6 })
       const load = (query) => get('/memories?q=' + encodeURIComponent(query ?? q)).then((r) => { setMem(r.items || []); setStats(r.stats || null) })
       const [styles, setStyles] = useState({})
-      const loadIns = () => get('/insights').then((r) => { setIns(r.items || []); setStyles(r.styles || {}) })
+      const loadIns = () => get('/insights').then((r) => setStyles(r.styles || {}))
       const times = draft.memory.consolidateTimes || []
       const setTime = (i, v) => { const t = times.slice(); t[i] = v; setDraft(setPath(draft, 'memory.consolidateTimes', t)) }
       const memOn = modOn(st, 'memory')
@@ -2713,12 +2712,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       if (!memOn) return h('div', { className: 'ab-grid' }, moodCard, h(ModOff, { name: '记忆' }))
       return h('div', { className: 'ab-grid' },
         moodCard,
-        h(Card, { title: '相处经验', desc: 'ta对每个人（和每个群）总结出来的相处之道：概括的、不琐碎的，比如「他累的时候不想多聊」。每次整理记忆时ta会回顾一次，越来越懂你。聊天时只带上对当前这个人的那份。' },
-          ins === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : ins.length === 0 ? h(Empty, { icon: '🌱', text: '还没有总结出经验。多聊几天，整理记忆时ta会慢慢总结。' }) :
-            ins.map((p) => h(InsightCard, { key: p.key, p, toast, onSaved: loadIns, style: styles[p.key] || [] }))),
-        h(Card, { title: '说话方式', desc: '聊久了潜移默化学到的：每个人的说话习惯（ta会自然地贴近一点），和ta自己慢慢养成的说法。不会变成另一个人，只是越来越像「你们的」大肥鱼。' },
-          h(StyleEditor, { k: 'self', label: 'ta自己养成的说法', list: styles.self || [], toast, onSaved: loadIns }),
-          Object.keys(styles).filter((k) => k !== 'self').length === 0 ? h('div', { className: 'ab-muted ab-small' }, '还没学到别人的说话习惯。整理记忆时会跟着相处经验一起总结（显示在上面每个人的相处经验下面）。') : null),
+        h(Card, { title: 'ta自己的说话方式', desc: '聊久了慢慢养成的说法。不会变成另一个人，只是越来越像「你们的」大肥鱼。对每个人和每个群的相处经验、说话习惯在「人物记忆」页。' },
+          h(StyleEditor, { k: 'self', label: 'ta自己养成的说法', list: styles.self || [], toast, onSaved: loadIns })),
         h(Card, { title: '记忆库', right: f.sw('memory.enabled'), desc: '长期记忆：ta聊天时自己记的、每天从聊天里整理出来的、写过的空间日记、你手动加的。每一轮回复前，ta会按对方正在说的话翻出最相关的几条。' },
           h('div', { className: 'ab-grid ab-g4', style: { marginBottom: 12 } },
             h('div', { className: 'ab-card ab-stat' }, h('div', { className: 'n' }, stats ? stats.count : '–'), h('div', { className: 'l' }, '条长期记忆')),
@@ -2883,6 +2878,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
           h('div', { className: 'ab-flex', style: { marginTop: 10 } }, h(Btn, { kind: 'primary', disabled: !changed, onClick: save }, '保存'))) :
         h('div', { className: 'ab-pm-traits' }, traits.map(([key, label]) => h('div', { key, className: 'ab-pm-trait' },
           h('div', { className: 'k' }, label), h('div', { className: cx('v', !p[key] && 'empty') }, p[key] || '还不了解')))),
+        h(Card, { title: '私聊里的相处经验', desc: '私聊时优先用这里，上面的「说话方式」和「怎么相处」在群里用。' },
+          h(InsightCard, { p: { key: 'qq:' + qq, list: data.insights || [] }, style: data.styles || [], toast, onSaved: () => load(true) })),
         h(Card, { title: `记得的事 ${live.length ? live.length : ''}`.trim() },
           live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' })),
         data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true) })) : null,
@@ -2984,6 +2981,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         h('div', { className: cx('vibe', !chat.vibe && 'empty') }, chat.vibe || '还说不上来是什么气氛'),
         topics.length ? h('div', { className: 'chips' }, topics.slice(0, 8).map((t) => h('span', { key: t, className: 'ab-pm-chip' }, t))) : null,
         chat.impression ? h('div', { className: 'note' }, chat.impression) : null,
+        h('details', { className: 'ab-small' }, h('summary', null, `相处经验 ${(chat.insights || []).length} 条`),
+          h('div', { style: { marginTop: 8 } }, h(InsightCard, { p: { key: chat.chatId, list: chat.insights || [] }, style: chat.styles || [], toast, onSaved: onChanged }))),
         h('div', { className: 'foot' }, h('span', null, memoryDate(chat.updatedAt) + ' 更新'),
           h('span', null, h('button', { type: 'button', className: 'ab-pm-link', onClick: () => setEditing(true) }, '编辑'),
             h('button', { type: 'button', className: 'ab-pm-link danger', onClick: () => { if (confirm('清空这个群的印象？')) return save({ vibe: '', topics: '', impression: '' }) } }, '清空'))))
@@ -3080,14 +3079,15 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
     }
 
     function InsightCard({ p, toast, onSaved, style }) {
-      const [text, setText] = useState(p.list.map((x) => x.text).join('\n'))
-      const changed = text !== p.list.map((x) => x.text).join('\n')
-      const who = p.key.startsWith('group:') ? '群 ' + p.key.slice(6) : (p.name ? p.name + '（' + p.key.slice(3) + '）' : p.key.slice(3))
-      return h('div', { style: { marginBottom: 12 } },
-        h('div', { className: 'ab-flex', style: { marginBottom: 6 } }, h('b', null, who), h('span', { className: 'ab-muted ab-small' }, p.list.length + ' 条'), h('div', { className: 'ab-spacer' }),
+      const saved = p.list.map((x) => x.text).join('\n')
+      const [text, setText] = useState(saved)
+      useEffect(() => setText(saved), [saved])
+      const changed = text !== saved
+      return h('div', null,
+        h('div', { className: 'ab-flex', style: { marginBottom: 6 } }, h('span', { className: 'ab-small', style: { color: 'var(--ab-sub)' } }, '相处经验 ' + p.list.length + ' 条'), h('div', { className: 'ab-spacer' }),
           changed ? h(Btn, { small: true, kind: 'primary', onClick: async () => { const r = await post('/insights/save', { key: p.key, list: text.split('\n') }); toast(r.message, 'ok'); onSaved() } }, '保存') : null),
         h('textarea', { className: 'ab-textarea', style: { minHeight: 70, fontFamily: 'inherit' }, value: text, onChange: (e) => setText(e.target.value), placeholder: '一行一条经验' }),
-        h(StyleEditor, { k: p.key, label: '说话方式', list: style || [], toast, onSaved }))
+        h(StyleEditor, { k: p.key, label: '学到的说话习惯', list: style || [], toast, onSaved }))
     }
 
     function MemoryRow({ m, onChanged, toast }) {

@@ -258,3 +258,43 @@ test('面板注册人物记忆及四个子页，旧人格页仍可访问', () =>
   panel.AurabotPage()
   assert.equal(state[3], 'persona', '迁移之后可以记住新的人物记忆页')
 })
+
+test('相处经验归到人物和群下面；只有经验的人和群也列得出来', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  mem.setInsights('qq:424242', ['别太正经'])
+  mem.setStyle('qq:424242', ['爱用叠字'])
+  mem.setInsights('group:555', ['这群爱玩梗'])
+  assert.ok(mem.personaOverview().some((p) => p.qq === '424242'))
+  const detail = mem.personaPerson('424242')
+  assert.deepEqual(detail.insights.map((x) => x.text), ['别太正经'])
+  assert.deepEqual(detail.styles, ['爱用叠字'])
+  const group = mem.chats().find((c) => c.chatId === 'group:555')
+  assert.deepEqual(group.insights.map((x) => x.text), ['这群爱玩梗'])
+})
+
+test('私聊里有相处经验时画像同名字段不重复；群里的个人画像照带', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  mem.savePersonaPerson('424242', { text: '老朋友', style: '话少', handle: '慢慢聊', persona: '安静' })
+  const chat = { kind: 'private', userId: '424242', chatId: 'private:424242' }
+  assert.match(mem.contextFor(chat, 's'), /说话方式：话少/)
+  mem.setInsights('qq:424242', ['别太正经'])
+  mem.setStyle('qq:424242', ['爱用叠字'])
+  const text = mem.contextFor(chat, 's')
+  assert.doesNotMatch(text, /怎么相处：|话少/)
+  assert.match(text, /别太正经/)
+  assert.match(text, /爱用叠字/)
+  assert.match(text, /性格：安静/)
+})
+
+test('说忘掉时相处经验和说话习惯里的也一起忘', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  mem.setInsights('qq:424242', ['别提奶茶店', '别太正经'])
+  mem.setStyle('qq:424242', ['爱说奶茶店的梗', '爱用叠字'])
+  const r = mem.handleCommand({ kind: 'private', userId: '424242', chatId: 'private:424242' }, '忘掉奶茶店')
+  assert.equal(r.ok, true)
+  assert.deepEqual(mem.personaPerson('424242').insights.map((x) => x.text), ['别太正经'])
+  assert.deepEqual(mem.personaPerson('424242').styles, ['爱用叠字'])
+})

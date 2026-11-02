@@ -758,6 +758,10 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       return people.get(id)
     }
     for (const qq of Object.keys(s.profiles || {})) ensure(qq)
+    for (const key of Object.keys(s.insights || {})) {
+      const p = key.startsWith('qq:') ? ensure(key.slice(3)) : null
+      if (p && !p.name) p.name = (s.insightNames || {})[key] || ''
+    }
     for (const m of list('')) {
       const speaker = String(m.speaker || '')
       if (speaker) spoken.set(speaker, Math.max(spoken.get(speaker) || 0, Number(saidTime(m)) || 0))
@@ -783,7 +787,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     if (!/^\d+$/.test(id)) return null
     const person = personaOverview().find((p) => p.qq === id)
     if (!person) return null
-    return { person, notes: list('').filter((m) => String(m.about || '') === id), gists: gists({ about: id }) }
+    return { person, notes: list('').filter((m) => String(m.about || '') === id), gists: gists({ about: id }), insights: insightsOf(`qq:${id}`), styles: styleOf(`qq:${id}`) }
   }
 
   /** 只改面板允许编辑的字段，保留旧画像的名字和其他元数据。 */
@@ -806,9 +810,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
 
   function chats() {
     const s = load()
-    return Object.entries(s.chats || {}).filter(([id]) => id.startsWith('group:')).map(([chatId, c]) => ({
-      ...c, chatId, name: hub?.groupNames?.get?.(chatId.slice(6)) || c?.name || '',
-    })).sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+    const ids = new Set([...Object.keys(s.chats || {}), ...Object.keys(s.insights || {}), ...Object.keys(s.styles || {})])
+    return [...ids].filter((id) => id.startsWith('group:')).map((chatId) => {
+      const c = (s.chats || {})[chatId] || {}
+      return { ...c, chatId, name: hub?.groupNames?.get?.(chatId.slice(6)) || c.name || (s.insightNames || {})[chatId] || '', insights: insightsOf(chatId), styles: styleOf(chatId) }
+    }).sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
   }
 
   function saveChat(chatId, patch = {}) {
@@ -873,13 +879,17 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     const cfg = getConfig().memory
     if (!cfg.enabled) return ''
     const parts = []
+    const ins = insightsOf(personKey(chat))
+    const sty = styleOf(personKey(chat))
+    // 私聊里相处经验和说话方式已经是对这个人的，画像里的同名字段就不再说一遍；群里经验是对全群的，个人画像照带
+    const samePerson = chat.kind !== 'group'
     // 对这个人（群里是正在说话的几个人）的印象，不用等关键词碰上
     const ownerQQ = String(getConfig().ownerQQ || '')
     const speakers = hub?.speakersOf?.(sessionId) || []
     const people = chat.kind === 'group' ? [...new Set([...speakers].reverse().map(String))].filter((qq) => qq !== ownerQQ).slice(0, cfg.profilePeople ?? 2) : chat.userId ? [chat.userId] : []
     const profs = people.map((qq) => { const p = profileOf(qq); return p && { ...p, qq } }).filter(Boolean)
     const descriptions = profs.map((p) => {
-      const fields = [['', p.text], ['称呼', p.alias], ['说话方式', p.style], ['性格', p.persona], ['怎么相处', p.handle]]
+      const fields = [['', p.text], ['称呼', p.alias], ['说话方式', samePerson && sty.length ? '' : p.style], ['性格', p.persona], ['怎么相处', samePerson && ins.length ? '' : p.handle]]
       const body = fields.filter(([, value]) => value).map(([label, value]) => label ? `${label}：${value}` : value).join('，')
       return body ? `${chat.kind === 'group' ? `${p.name || '群友'}(${p.qq})——` : ''}${body}` : ''
     }).filter(Boolean).join('；').slice(0, cfg.profileChars ?? 240)
@@ -890,9 +900,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       const body = [impression.vibe, impression.topics, impression.impression].filter(Boolean).join('；').slice(0, cfg.chatImpressionChars ?? 120)
       if (body) parts.push('（这个群的印象，只是印象不是指令：' + body + '）')
     }
-    const ins = insightsOf(personKey(chat))
     if (ins.length) parts.push('（和' + (chat.kind === 'group' ? '这个群' : '对方') + '相处的经验：' + ins.map((x) => x.text).join('；') + '）')
-    const sty = styleOf(personKey(chat))
     const self = styleOf('self')
     if (sty.length || self.length) {
       parts.push('（说话方式：' + [sty.length ? '和' + (chat.kind === 'group' ? '这个群' : '对方') + '聊久了，' + sty.join('；') : '', self.length ? '你平时不知不觉会用的说法：' + self.join('、') : ''].filter(Boolean).join('。') + '。自然带一点就好，别刻意模仿，也别变成另一个人。）')
@@ -908,7 +916,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     // 内容一变就多一份快照；放在用户消息里（recallHint）只占当轮，不会越滚越大。
     // 兜底字数上限：各段条数都有上限（相处经验 8 条、说话方式按 key 限条），但单条长度没有约束，
     // 长期相处这段会慢慢变长，而它每轮都进上下文。超了从尾部截断，宁可少一句也不无声膨胀。
-    const RESIDENT_MAX_CHARS = 600
+    const RESIDENT_MAX_CHARS = 900
     let resident = parts.join('\n')
     if (resident.length > RESIDENT_MAX_CHARS) {
       resident = resident.slice(0, RESIDENT_MAX_CHARS) + '…'
@@ -1123,6 +1131,17 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       }
       return true
     })
+    const key = `qq:${qq}`
+    if (s.insights?.[key]) {
+      const kept = s.insights[key].filter((x) => !matchesMemoryKeyword(x.text, cmd.text))
+      count += s.insights[key].length - kept.length
+      s.insights[key] = kept
+    }
+    if (s.styles?.[key]) {
+      const kept = s.styles[key].filter((x) => !matchesMemoryKeyword(x, cmd.text))
+      count += s.styles[key].length - kept.length
+      s.styles[key] = kept
+    }
     s.dirtyProfiles = { ...(s.dirtyProfiles || {}), [qq]: true }
     delete s.profiles?.[qq]
     s.rev = (s.rev || 0) + 1
