@@ -53,6 +53,16 @@ const MENTION_WORDS = {
   '关闭/重启电脑': new Set(['shutdown', 'stop-computer', 'restart-computer', 'reboot', 'halt', 'poweroff']),
 }
 
+// Aurabot 自己的模块目录：变量赋值、管道删除、Move/Rename 都可能绕过
+// 「Remove-Item 后面必须跟绝对路径」的通用规则。只要同一条命令里同时出现
+// 受保护路径和删除/移动动作，就要求主人确认，宁可多问一次。
+const AURABOT_MODULES_PATH_RE = /plugins-data[\\/]+aurabot[\\/]+modules(?:-data)?(?:[\\/]|["'\s;]|$)/i
+const AURABOT_MODULES_ACTION_RE = /\b(?:Remove-Item|Move-Item|Rename-Item|rm|del|erase|rd|rmdir|mv|move|ren|rename)\b/i
+const AURABOT_MODULES_DANGER = '删除/移动 Aurabot 模块目录'
+function touchesAurabotModules (text) {
+  return AURABOT_MODULES_PATH_RE.test(text) && AURABOT_MODULES_ACTION_RE.test(text)
+}
+
 /** parted 的只读形式：只要同一段里没有写操作子命令，就放行。 */
 const PARTED_READ_ONLY = new Set(['-l', '--list', '-p', 'print', '--pretend'])
 const PARTED_WRITE = new Set(['mklabel', 'mkpart', 'mkpartfs', 'mkfs', 'mkswap', 'rm', 'resizepart', 'resize', 'set', 'toggle', 'name', 'flag', 'disk_set', 'disk_toggle', 'select', 'rescue', 'align-check'])
@@ -382,10 +392,12 @@ function scanAll (text, depth = 0) {
   if (stripped === null) {
     // heredoc / here-string / 引号状态不确定：按原文宽匹配，保持 fail-closed
     const raw = String(text)
+    if (touchesAurabotModules(raw)) return AURABOT_MODULES_DANGER
     for (const rule of EXEC_RULES) if (rule.re.test(raw)) return rule.label
     for (const rule of BROAD_MENTION_RULES) if (rule.re.test(raw)) return rule.label
     return ''
   }
+  if (touchesAurabotModules(stripped)) return AURABOT_MODULES_DANGER
   for (const rule of EXEC_RULES) {
     if (rule.re.test(stripped)) return rule.label
   }
