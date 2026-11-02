@@ -34,7 +34,7 @@ import { createApprovalRelay } from './security/approval.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
-import { createDangerGuard } from './security/danger.js'
+import { createDangerGuard, safeOwnedSession } from './security/danger.js'
 import { setSsrpMode } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
@@ -366,7 +366,9 @@ export function apply(ctx) {
     deliver: (chatId, text) => hub.sendText(chatId, text),
     chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
     // tools/pre-execute 是进程级的，同一个 DSH 里主人自己开的会话也会走到这里；那些会话不归这个守卫管
-    isOwnedSession: (sessionId) => { try { return !!hub.isOwnedSession?.(sessionId) } catch (error) { return false } },
+    // 判断不出来（hub.isOwnedSession 缺失 / 抛错）时 safeOwnedSession 返回 true，走原 deny 逻辑；
+    // 只有明确 false（宿主自己的 GUI/CLI 会话）才放行给 DSH 自己的权限系统，别在异常时 fail-open。
+    isOwnedSession: safeOwnedSession(typeof hub?.isOwnedSession === 'function' ? (sessionId) => hub.isOwnedSession(sessionId) : null),
     ownerQQ: () => cfg.ownerQQ,
   })
   core.dangerGuard = dangerGuard
