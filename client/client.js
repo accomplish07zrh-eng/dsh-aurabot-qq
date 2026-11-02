@@ -209,6 +209,88 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-log.warn .m{color:var(--ab-warn)}.ab-log.error .m{color:var(--ab-err)}.ab-log.debug .m{color:var(--ab-dim)}
 .ab-persona{display:grid;grid-template-columns:240px 1fr;gap:12px}
 @media (max-width:760px){.ab-persona{grid-template-columns:1fr}}
+.ab-pm{display:grid;gap:12px;min-width:0;overflow-wrap:anywhere}
+.ab-pm-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.ab-pm-count{color:var(--ab-sub);font-size:12.5px}
+.ab-pm-face{flex:none;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;overflow:hidden;font-weight:620;font-size:14px;color:#fff;background:var(--ab-sea)}
+.ab-pm-face img{width:100%;height:100%;object-fit:cover;display:block}
+.ab-pm-face.big{width:64px;height:64px;font-size:24px}
+.ab-pm-split{display:grid;grid-template-columns:272px minmax(0,1fr);gap:12px;align-items:start}
+.ab-pm-list{display:flex;flex-direction:column;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);overflow:hidden;position:sticky;top:64px;max-height:calc(100vh - 96px)}
+.ab-pm-search{padding:10px;border-bottom:1px solid var(--ab-line)}
+.ab-pm-search input{width:100%;box-sizing:border-box}
+.ab-pm-rows{overflow-y:auto;padding:4px}
+.ab-pm-row{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border:0;border-radius:10px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.ab-pm-row:hover{background:var(--ab-card-2)}
+.ab-pm-row.on{background:var(--ab-foam-2)}
+.ab-pm-row .who{min-width:0;flex:1}
+.ab-pm-row .name{display:flex;align-items:center;gap:6px;font-size:13.5px;font-weight:600}
+.ab-pm-row .name span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ab-pm-row .line{color:var(--ab-sub);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+.ab-pm-own{flex:none;padding:0 6px;border-radius:999px;font-size:11px;font-weight:500;color:var(--ab-deep);background:var(--ab-foam-2)}
+.ab-pm-detail{display:grid;gap:12px;min-width:0}
+.ab-pm-hero{display:flex;gap:14px;align-items:flex-start;padding:18px;border:1px solid var(--ab-line);border-radius:14px;background:linear-gradient(120deg,var(--ab-foam-2),transparent 70%),var(--ab-card)}
+.ab-pm-hero .body{min-width:0;flex:1}
+.ab-pm-hero h3{margin:0;font-size:18px;font-weight:640}
+.ab-pm-hero .meta{color:var(--ab-sub);font-size:12px;margin-top:2px}
+.ab-pm-hero .quote{margin:10px 0 0;font-size:14px;line-height:1.65;white-space:pre-wrap}
+.ab-pm-hero .quote.empty{color:var(--ab-dim)}
+.ab-pm-traits{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:10px}
+.ab-pm-trait{padding:12px 14px;border:1px solid var(--ab-line);border-radius:12px;background:var(--ab-card);min-width:0}
+.ab-pm-trait .k{color:var(--ab-sub);font-size:12px}
+.ab-pm-trait .v{margin-top:3px;font-size:13.5px;line-height:1.55}
+.ab-pm-trait .v.empty{color:var(--ab-dim)}
+.ab-pm-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px 14px}
+.ab-pm-form label{display:block;min-width:0;color:var(--ab-sub);font-size:12px}
+.ab-pm-form textarea{display:block;width:100%;box-sizing:border-box;margin-top:4px;font-family:inherit}
+.ab-pm-form .full{grid-column:1/-1}
+.ab-pm-fact{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--ab-line);min-width:0}
+.ab-pm-fact:first-child{border-top:0;padding-top:2px}
+.ab-pm-fact.old{opacity:.6}
+.ab-pm-dot{flex:none;width:7px;height:7px;margin-top:7px;border-radius:50%;background:var(--ab-line-2)}
+.ab-pm-dot.t0{background:var(--ab-gold,#d4a44c)}.ab-pm-dot.t3{background:var(--ab-deep)}.ab-pm-dot.t2{background:var(--ab-sea)}
+.ab-pm-fact .main{min-width:0;flex:1}
+.ab-pm-fact .text{font-size:13.5px;line-height:1.55;white-space:pre-wrap}
+.ab-pm-fact.old .text{text-decoration:line-through}
+.ab-pm-fact .sub{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:3px;color:var(--ab-sub);font-size:12px}
+.ab-pm-tag{padding:0 6px;border-radius:999px;font-size:11px;background:var(--ab-card-2);border:1px solid var(--ab-line)}
+.ab-pm-tag.warn{color:var(--ab-warn)}
+.ab-pm-acts{flex:none;display:flex;gap:4px;opacity:0;transition:opacity .12s}
+.ab-pm-fact:hover .ab-pm-acts,.ab-pm-fact:focus-within .ab-pm-acts,.ab-pm-tl-item:hover .ab-pm-acts,.ab-pm-tl-item:focus-within .ab-pm-acts{opacity:1}
+.ab-pm-link{border:0;background:none;padding:2px 4px;color:var(--ab-sub);font:inherit;font-size:12px;cursor:pointer;border-radius:6px}
+.ab-pm-link:hover{background:var(--ab-card-2);color:var(--ab-text,inherit)}
+.ab-pm-link.danger:hover{color:var(--ab-err)}
+.ab-pm-groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px}
+.ab-pm-group{display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);min-width:0}
+.ab-pm-group .top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.ab-pm-group .name{font-size:12.5px;color:var(--ab-sub)}
+.ab-pm-group .vibe{font-size:16px;font-weight:620;line-height:1.4}
+.ab-pm-group .vibe.empty{color:var(--ab-dim);font-weight:500;font-size:14px}
+.ab-pm-group .chips{display:flex;flex-wrap:wrap;gap:5px}
+.ab-pm-chip{padding:1px 8px;border-radius:999px;font-size:12px;color:var(--ab-deep);background:var(--ab-foam-2)}
+.ab-pm-group .note{font-size:13px;line-height:1.55;color:var(--ab-sub)}
+.ab-pm-group .foot{display:flex;align-items:center;justify-content:space-between;margin-top:auto;padding-top:4px;color:var(--ab-dim);font-size:12px}
+.ab-pm-filters{display:flex;gap:8px;flex-wrap:wrap}
+.ab-pm-filters .ab-select{max-width:100%}
+.ab-pm-tl{position:relative;padding-left:20px}
+.ab-pm-tl:before{content:"";position:absolute;left:5px;top:6px;bottom:6px;width:1px;background:var(--ab-line-2)}
+.ab-pm-tl-day{position:relative;margin:14px 0 6px;color:var(--ab-sub);font-size:12px;font-weight:600}
+.ab-pm-tl-day:first-child{margin-top:0}
+.ab-pm-tl-item{position:relative;display:flex;gap:8px;padding:6px 0;min-width:0}
+.ab-pm-tl-item:before{content:"";position:absolute;left:-18px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--ab-card);box-shadow:0 0 0 2px var(--ab-sea)}
+.ab-pm-tl-item .main{min-width:0;flex:1}
+.ab-pm-tl-item .text{font-size:13.5px;line-height:1.6}
+.ab-pm-tl-item .from{color:var(--ab-dim);font-size:12px;margin-top:1px}
+.ab-pm-tl-item.feel:before{left:-20px;top:14px;width:11px;height:11px;background:var(--ab-deep);box-shadow:0 0 0 3px var(--ab-foam-2)}
+.ab-pm-tl-item.feel .text{font-size:16px;font-weight:600;color:var(--ab-deep)}
+@media (max-width:760px){
+.ab-pm-split{grid-template-columns:minmax(0,1fr)}
+.ab-pm-list{position:static;max-height:none}
+.ab-pm-split.open .ab-pm-list{display:none}
+.ab-pm-acts{opacity:1}
+}
+@media (min-width:761px){.ab-pm-back{display:none}}
+.ab-memory-entry .ab-flex{margin-top:5px}
 .ab-plist{display:flex;flex-direction:column;gap:6px}
 .ab-pitem{text-align:left;border:1px solid var(--ab-line);background:var(--ab-card);border-radius:10px;padding:10px 12px;cursor:pointer;color:var(--ab-text);font:inherit}
 .ab-pitem:hover{border-color:var(--ab-line-2)}
@@ -541,7 +623,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const TABS = [
       { id: 'overview', label: '概览' },
       { id: 'connect', label: '连接' },
-      { id: 'persona', label: '人格' },
+      { id: 'character', label: '人格' },
       { id: 'access', label: '权限' },
       { id: 'group', label: '聊天', flag: 'group' },
       { id: 'model', label: '模型' },
@@ -552,6 +634,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'speakup', label: '主动搭话', flag: 'speakUp.enabled' },
       { id: 'pet', label: '桌宠' },
       { id: 'mood', label: '心情与记忆', flag: 'mood.enabled' },
+      { id: 'persona', label: '人物记忆', flag: 'memory.enabled' },
       { id: 'song', label: '翻唱', flag: 'song.enabled' },
       { id: 'bili', label: 'B站', flag: 'bili.enabled' },
       { id: 'douyin', label: '抖音', flag: 'douyin.enabled' },
@@ -565,14 +648,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
-    const TAB_MODS = { voice: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'] }
+    const TAB_MODS = { voice: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], persona: ['memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'] }
     const modOn = (st, id) => (st.modules || []).some((m) => m.id === id && m.running)
 
     // 两层导航：上面一排是分组，下面一排是这组里的页面；每组记住上次看的那页，Alt+K 查找功能
     // （分组导航的思路来自社区贡献的「导航布局」扩展，这里改成面板自己实现）
     const NAV_GROUPS = [
       { id: 'home', label: '概览', icon: 'M3 10.5 12 3l9 7.5M5.5 9v11.5h13V9M10 20.5v-6h4v6', tabs: ['overview'] },
-      { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['persona', 'group', 'speakup', 'mood'] },
+      { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['character', 'group', 'speakup', 'mood', 'persona'] },
       { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'stickers', 'imagegen', 'song', 'pet'] },
       { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin', 'heybox'] },
       { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'security', 'backup', 'about', 'logs'] },
@@ -583,7 +666,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const navGroupOf = (t) => NAV_GROUPS.find((g) => g.tabs.includes(t.id)) || (t.ext && PLATFORM_EXT.test(t.label) ? NAV_GROUPS[3] : NAV_GROUPS[4])
     const navOrder = (g, t) => { const i = g.tabs.indexOf(t.id); return i >= 0 ? i : g.tabs.length - (g.tabs.includes('logs') ? 1.5 : 0) }
     const NAV_ALIAS = {
-      overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', persona: '人设 性格 设定 头像', access: '主人 白名单 权限 群管 改资料',
+      overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴', access: '主人 白名单 权限 群管 改资料',
       group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', stickers: '表情 小黄脸 gif 商城表情',
       imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
       bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', security: '安全 防护 ssrf 内网 图片 下载', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错', about: '关于 关于我们 版本 许可 鸣谢 开源', backup: '备份 恢复 换电脑 迁移 导入 导出',
@@ -2476,7 +2559,6 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       if (!memOn) return h('div', { className: 'ab-grid' }, moodCard, h(ModOff, { name: '记忆' }))
       return h('div', { className: 'ab-grid' },
         moodCard,
-        h(ProfilesCard, { toast }),
         h(Card, { title: '相处经验', desc: 'ta对每个人（和每个群）总结出来的相处之道：概括的、不琐碎的，比如「他累的时候不想多聊」。每次整理记忆时ta会回顾一次，越来越懂你。聊天时只带上对当前这个人的那份。' },
           ins === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : ins.length === 0 ? h(Empty, { icon: '🌱', text: '还没有总结出经验。多聊几天，整理记忆时ta会慢慢总结。' }) :
             ins.map((p) => h(InsightCard, { key: p.key, p, toast, onSaved: loadIns, style: styles[p.key] || [] }))),
@@ -2534,28 +2616,246 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       )
     }
 
-    /** 人物小档案：她对每个人的一小段印象，聊天时常驻；整理记忆时按新记忆重写，也可以手改。 */
-    function ProfilesCard({ toast }) {
-      const [list, setList] = useState(null)
-      const load = () => get('/profiles').then((r) => setList(r.list || []))
-      useEffect(() => { load() }, [])
-      return h(Card, { title: '人物小档案', desc: 'ta对每个人的印象：是谁、什么关系、喜好、最近在忙什么。和谁聊天就带上谁的那份（群里带上正在说话的几个人），不用等对方提到关键词ta才想起来。每次整理记忆时，记忆有变化的人会按新记忆重写；你也可以直接改。' },
-        list === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : list.length === 0 ? h(Empty, { icon: '🌱', text: '还没有。关于一个人记住 3 条以上的事后，整理记忆时会写出来。' }) :
-          h('div', { className: 'ab-list' }, list.map((p) => h(ProfileRow, { key: p.qq, p, toast, onChanged: load }))))
+    // 人物记忆的数据直接保存，不走全局设置草稿。
+    const PERSON_FIELDS = [['alias', '称呼'], ['style', '说话方式'], ['persona', '性格'], ['handle', '怎么相处'], ['text', '小档案']]
+    const personName = (p) => p.alias || p.name || p.qq
+    const memoryDate = (at) => {
+      if (!at) return '时间未知'
+      const d = new Date(at)
+      return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    }
+    const gistSource = (id) => String(id || '').startsWith('group:') ? '群 ' + String(id).slice(6)
+      : String(id || '').startsWith('private:') ? '私聊 ' + String(id).slice(8) : (id || '来源未知')
+    const gistLevel = (g) => g.level === 1 ? '梗概' : g.level === 2 ? '印象' : '其他'
+
+    const FACES = ['#4d7fc4', '#3e9c8f', '#8a6fc0', '#c07a4d', '#c05f7e', '#5f8f4e']
+    const faceColor = (qq) => FACES[[...String(qq)].reduce((n, c) => n + c.charCodeAt(0), 0) % FACES.length]
+
+    /** QQ 头像，读不到就用名字的第一个字。 */
+    function PersonFace({ p, big }) {
+      const [broken, setBroken] = useState(false)
+      useEffect(() => { setBroken(false) }, [p.qq])
+      const name = personName(p)
+      return h('span', { className: cx('ab-pm-face', big && 'big'), style: { background: faceColor(p.qq) }, 'aria-hidden': 'true' },
+        broken ? [...name][0] || '?' : h('img', { src: 'https://q1.qlogo.cn/g?b=qq&s=100&nk=' + encodeURIComponent(p.qq), alt: '', loading: 'lazy', referrerPolicy: 'no-referrer', onError: () => setBroken(true) }))
     }
 
-    function ProfileRow({ p, toast, onChanged }) {
-      const [text, setText] = useState(p.text)
-      const [busy, setBusy] = useState(false)
-      useEffect(() => { setText(p.text) }, [p.text])
-      return h('div', { className: 'ab-li', style: { alignItems: 'flex-start' } },
-        h('div', { className: 'meta' }, h('b', null, p.name || p.qq), h('br'), h('span', { className: 'ab-small' }, p.qq), h('br'), h('span', { className: 'ab-small' }, timeAgo(p.at))),
-        h('div', { style: { flex: 1 } },
-          h('textarea', { className: 'ab-input wide', rows: 3, value: text, onChange: (e) => setText(e.target.value) }),
-          [p.alias, p.style, p.persona, p.handle].some(Boolean) ? h('div', { className: 'ab-muted ab-small' }, [['称呼', p.alias], ['说话方式', p.style], ['性格', p.persona], ['怎么相处', p.handle]].filter((x) => x[1]).map((x) => x.join('：')).join('；')) : null),
-        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-          h(Btn, { small: true, kind: 'primary', disabled: text === p.text, onClick: async () => { const r = await post('/profiles/save', { qq: p.qq, text }); toast(r.message, 'ok'); onChanged() } }, '保存'),
-          h(Btn, { small: true, kind: 'ghost', disabled: busy, onClick: async () => { setBusy(true); const r = await post('/profiles/rebuild', { qq: p.qq }); setBusy(false); toast(r.message, r.ok ? 'ok' : 'err'); onChanged() } }, busy ? '重写中…' : '按记忆重写')))
+    function PersonaMemory({ toast }) {
+      const [page, setPage] = useState('wall')
+      return h('div', { className: 'ab-pm' },
+        h('div', { className: 'ab-pm-head' },
+          h(Seg, { value: page, onChange: setPage, options: [{ value: 'wall', label: '人物墙' }, { value: 'chats', label: '群印象' }, { value: 'timeline', label: '时间轴' }] })),
+        page === 'wall' ? h(PersonaWall, { toast }) : page === 'chats' ? h(PersonaChats, { toast }) : h(PersonaTimeline, { toast }))
+    }
+
+    function PersonaWall({ toast }) {
+      const [list, setList] = useState(null)
+      const [error, setError] = useState('')
+      const [query, setQuery] = useState('')
+      const [selected, setSelected] = useState('')
+      const load = async () => {
+        const r = await get('/persona/overview')
+        if (!r.ok) { setError(r.message || '人物列表没读出来'); return }
+        setError(''); setList(r.list || [])
+        setSelected((cur) => cur || (window.innerWidth > 760 && r.list?.[0]?.qq) || '')
+      }
+      useEffect(() => { load() }, [])
+      if (error) return h('div', { className: 'ab-note err' }, error)
+      if (list === null) return h(Empty, { icon: '⏳', text: '加载中…' })
+      if (!list.length) return h(Card, { title: '还没有人物记忆' }, h(Empty, { icon: '🌱', text: '聊过一段时间后，ta记住的人会慢慢出现在这里。' }))
+      const q = query.trim().toLowerCase()
+      const visible = list.filter((p) => !q || [p.qq, p.name, p.alias, p.style, p.persona, p.handle, p.text].some((v) => String(v || '').toLowerCase().includes(q)))
+      return h('div', { className: cx('ab-pm-split', selected && 'open') },
+        h('div', { className: 'ab-pm-list' },
+          h('div', { className: 'ab-pm-search' }, h('input', { className: 'ab-input', placeholder: `在 ${list.length} 个人里找`, 'aria-label': '搜索人物', value: query, onChange: (e) => setQuery(e.target.value) })),
+          h('div', { className: 'ab-pm-rows' },
+            visible.length ? visible.map((p) => h('button', { key: p.qq, type: 'button', className: cx('ab-pm-row', p.qq === selected && 'on'), onClick: () => setSelected(p.qq) },
+              h(PersonFace, { p }),
+              h('span', { className: 'who' },
+                h('span', { className: 'name' }, h('span', null, personName(p)), p.isOwner ? h('span', { className: 'ab-pm-own' }, '主人') : null),
+                h('span', { className: 'line', style: { display: 'block' } }, p.persona || p.style || p.text || `记得 ${p.notes} 件事`))))
+              : h(Empty, { text: '没找到这个人' }))),
+        selected ? h(PersonaDetail, { key: selected, qq: selected, toast, back: () => setSelected(''), onChanged: load }) : h('div', { className: 'ab-pm-detail' }, h(Empty, { text: '选一个人看看' })))
+    }
+
+    function PersonaDetail({ qq, toast, back, onChanged }) {
+      const [data, setData] = useState(null)
+      const [form, setForm] = useState(null)
+      const [editing, setEditing] = useState(false)
+      const [error, setError] = useState('')
+      const load = async (keepForm = false) => {
+        const r = await get('/persona/person?qq=' + encodeURIComponent(qq))
+        if (!r.ok) { setError(r.message || '人物详情没读出来'); return }
+        setError(''); setData(r)
+        if (!keepForm) setForm(Object.fromEntries(PERSON_FIELDS.map(([key]) => [key, r.person[key] || ''])))
+      }
+      useEffect(() => { load() }, [qq])
+      if (error) return h('div', { className: 'ab-pm-detail' }, h('div', { className: 'ab-note err' }, error))
+      if (!data || !form) return h('div', { className: 'ab-pm-detail' }, h(Empty, { icon: '⏳', text: '加载中…' }))
+      const p = data.person
+      const changed = PERSON_FIELDS.some(([key]) => form[key] !== (p[key] || ''))
+      const save = async () => {
+        const r = await post('/persona/person/save', { qq, ...form })
+        toast(r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) { setEditing(false); await load(); onChanged() }
+      }
+      const rebuild = async () => {
+        if (!data.notes.some((m) => !m.invalidAt && m.scope !== 'group' && !['hearsay', 'guess'].includes(m.status))) return toast('还没有能用来重写小档案的事实', 'err')
+        if (changed && !confirm('重写会放弃还没保存的修改，继续吗？')) return
+        const r = await post('/profiles/rebuild', { qq })
+        toast(r.message, r.ok ? 'ok' : 'err')
+        await load(!r.ok)
+      }
+      const traits = [['style', '说话方式'], ['persona', '性格'], ['handle', '怎么相处']]
+      const live = data.notes.filter((m) => !m.invalidAt)
+      const old = data.notes.filter((m) => m.invalidAt)
+      return h('div', { className: 'ab-pm-detail' },
+        h('div', { className: 'ab-pm-back' }, h(Btn, { small: true, kind: 'ghost', onClick: back }, '← 返回名单')),
+        h('div', { className: 'ab-pm-hero' },
+          h(PersonFace, { p, big: true }),
+          h('div', { className: 'body' },
+            h('div', { className: 'ab-flex' },
+              h('h3', null, personName(p)), p.isOwner ? h('span', { className: 'ab-pm-own' }, '主人') : null,
+              h('div', { className: 'ab-spacer' }),
+              h(Btn, { small: true, kind: 'ghost', onClick: rebuild }, '重写'),
+              h(Btn, { small: true, onClick: () => setEditing(!editing) }, editing ? '收起' : '编辑')),
+            h('div', { className: 'meta' }, 'QQ ' + qq + ' · ' + (p.lastActive ? memoryDate(p.lastActive) + ' 来过' : '最近没来过')),
+            h('p', { className: cx('quote', !p.text && 'empty') }, p.text || 'ta对这个人还没有整体印象。'))),
+        editing ? h(Card, { title: '编辑印象' },
+          h('div', { className: 'ab-pm-form' }, PERSON_FIELDS.map(([key, label]) => h('label', { key, className: key === 'text' ? 'full' : '' }, label,
+            h('textarea', { className: 'ab-textarea', rows: key === 'text' ? 3 : 2, value: form[key], onChange: (e) => setForm({ ...form, [key]: e.target.value }) })))),
+          h('div', { className: 'ab-flex', style: { marginTop: 10 } }, h(Btn, { kind: 'primary', disabled: !changed, onClick: save }, '保存'))) :
+        h('div', { className: 'ab-pm-traits' }, traits.map(([key, label]) => h('div', { key, className: 'ab-pm-trait' },
+          h('div', { className: 'k' }, label), h('div', { className: cx('v', !p[key] && 'empty') }, p[key] || '还不了解')))),
+        h(Card, { title: `记得的事 ${live.length ? live.length : ''}`.trim() },
+          live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' })),
+        data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true) })) : null,
+        old.length ? h('details', { className: 'ab-card' }, h('summary', { className: 'ab-small' }, `已过时的 ${old.length} 条`),
+          h('div', { style: { marginTop: 8 } }, old.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })))) : null)
+    }
+
+    function PersonaFact({ m, toast, onChanged }) {
+      const [editing, setEditing] = useState(false)
+      const [text, setText] = useState(m.text || '')
+      useEffect(() => { setText(m.text || '') }, [m.text])
+      const save = async () => {
+        const r = await post('/memory/update', { id: m.id, text: text.trim() })
+        toast(r.ok ? '改好了' : r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) { setEditing(false); await onChanged() }
+      }
+      const remove = async () => {
+        if (!confirm('删除这条？')) return
+        const r = await post('/memory/delete', { id: m.id })
+        toast(r.ok ? '删掉了' : r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) await onChanged()
+      }
+      const restore = async () => { const r = await post('/memory/restore', { id: m.id }); toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err'); if (r.ok) await onChanged() }
+      const tier = { 0: '永久', 1: '琐碎', 3: '重要' }[m.tier]
+      const status = { hearsay: '听说', guess: '可能' }[m.status]
+      return h('div', { className: cx('ab-pm-fact', m.invalidAt && 'old') },
+        h('span', { className: cx('ab-pm-dot', m.tier !== undefined && 't' + m.tier), 'aria-hidden': 'true' }),
+        h('div', { className: 'main' },
+          editing ? h('div', null,
+            h('textarea', { className: 'ab-textarea', style: { width: '100%', boxSizing: 'border-box', minHeight: 60, fontFamily: 'inherit' }, value: text, onChange: (e) => setText(e.target.value) }),
+            h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+              h(Btn, { small: true, kind: 'primary', disabled: !text.trim(), onClick: save }, '保存'),
+              h(Btn, { small: true, kind: 'ghost', onClick: () => { setText(m.text || ''); setEditing(false) } }, '取消')))
+            : h('div', { className: 'text' }, m.text),
+          !editing ? h('div', { className: 'sub' },
+            h('span', null, memoryDate(m.saidAt || m.at)),
+            tier ? h('span', { className: 'ab-pm-tag' }, tier) : null,
+            status ? h('span', { className: 'ab-pm-tag warn' }, status) : null,
+            m.invalidAt && m.supersededText ? h('span', null, '现在是：' + m.supersededText) : null) : null),
+        !editing ? h('div', { className: 'ab-pm-acts' },
+          m.invalidAt ? h('button', { type: 'button', className: 'ab-pm-link', onClick: restore }, '恢复') : h('button', { type: 'button', className: 'ab-pm-link', onClick: () => setEditing(true) }, '改'),
+          h('button', { type: 'button', className: 'ab-pm-link danger', onClick: remove }, '删')) : null)
+    }
+
+    /** 梗概和印象的时间线：印象是压到最后留下的感觉，字更大。 */
+    function GistLine({ list, toast, onChanged, showFrom }) {
+      const remove = async (g) => {
+        if (!confirm('删除这条' + gistLevel(g) + '？')) return
+        const r = await post('/memory/gists/delete', { id: g.id })
+        toast(r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) await onChanged()
+      }
+      let day = ''
+      return h('div', { className: 'ab-pm-tl' }, list.flatMap((g) => {
+        const when = memoryDate(g.saidAt || g.at).split(' ')[0]
+        const head = when !== day ? h('div', { key: 'd' + g.id, className: 'ab-pm-tl-day' }, when) : null
+        day = when
+        return [head, h('div', { key: g.id, className: cx('ab-pm-tl-item', Number(g.level) >= 2 && 'feel') },
+          h('div', { className: 'main' }, h('div', { className: 'text' }, g.text), showFrom ? h('div', { className: 'from' }, gistSource(g.chatId)) : null),
+          h('div', { className: 'ab-pm-acts' }, h('button', { type: 'button', className: 'ab-pm-link danger', onClick: () => remove(g) }, '删')))]
+      }))
+    }
+
+    function PersonaChats({ toast }) {
+      const [list, setList] = useState(null)
+      const [error, setError] = useState('')
+      const load = async () => {
+        const r = await get('/memory/chats')
+        if (!r.ok) { setError(r.message || '群印象没读出来'); return }
+        setError(''); setList(r.list || [])
+      }
+      useEffect(() => { load() }, [])
+      if (error) return h('div', { className: 'ab-note err' }, error)
+      if (list === null) return h(Empty, { icon: '⏳', text: '加载中…' })
+      if (!list.length) return h(Card, { title: '还没有群印象' }, h(Empty, { text: 'ta在群里待一阵子，就会形成自己的印象。' }))
+      return h('div', { className: 'ab-pm-groups' }, list.map((chat) => h(PersonaChatCard, { key: chat.chatId, chat, toast, onChanged: load })))
+    }
+
+    function PersonaChatCard({ chat, toast, onChanged }) {
+      const fields = [['vibe', '气氛'], ['topics', '常聊什么'], ['impression', '印象']]
+      const blank = () => Object.fromEntries(fields.map(([key]) => [key, chat[key] || '']))
+      const [editing, setEditing] = useState(false)
+      const [form, setForm] = useState(blank)
+      useEffect(() => { setForm(blank()) }, [chat.vibe, chat.topics, chat.impression])
+      const save = async (values) => {
+        const r = await post('/memory/chats/save', { chatId: chat.chatId, ...values })
+        toast(r.message, r.ok ? 'ok' : 'err')
+        if (r.ok) { setEditing(false); await onChanged() }
+      }
+      const topics = String(chat.topics || '').split(/[、，,；;\s]+/).filter(Boolean)
+      const name = chat.name || '群 ' + chat.chatId.slice(6)
+      if (editing) return h('div', { className: 'ab-pm-group' },
+        h('div', { className: 'name' }, name),
+        h('div', { className: 'ab-pm-form' }, fields.map(([key, label]) => h('label', { key, className: 'full' }, label,
+          h('textarea', { className: 'ab-textarea', rows: 2, value: form[key], onChange: (e) => setForm({ ...form, [key]: e.target.value }) })))),
+        h('div', { className: 'ab-flex' }, h(Btn, { small: true, kind: 'primary', onClick: () => save(form) }, '保存'), h(Btn, { small: true, kind: 'ghost', onClick: () => { setForm(blank()); setEditing(false) } }, '取消')))
+      return h('div', { className: 'ab-pm-group' },
+        h('div', { className: 'name' }, name),
+        h('div', { className: cx('vibe', !chat.vibe && 'empty') }, chat.vibe || '还说不上来是什么气氛'),
+        topics.length ? h('div', { className: 'chips' }, topics.slice(0, 8).map((t) => h('span', { key: t, className: 'ab-pm-chip' }, t))) : null,
+        chat.impression ? h('div', { className: 'note' }, chat.impression) : null,
+        h('div', { className: 'foot' }, h('span', null, memoryDate(chat.updatedAt) + ' 更新'),
+          h('span', null, h('button', { type: 'button', className: 'ab-pm-link', onClick: () => setEditing(true) }, '编辑'),
+            h('button', { type: 'button', className: 'ab-pm-link danger', onClick: () => { if (confirm('清空这个群的印象？')) return save({ vibe: '', topics: '', impression: '' }) } }, '清空'))))
+    }
+
+    function PersonaTimeline({ toast }) {
+      const [list, setList] = useState(null)
+      const [error, setError] = useState('')
+      const [chat, setChat] = useState('')
+      const [level, setLevel] = useState('')
+      const load = async () => {
+        const r = await get('/memory/gists')
+        if (!r.ok) { setError(r.message || '时间轴没读出来'); return }
+        const next = r.list || []
+        if (chat && !next.some((g) => g.chatId === chat)) setChat('')
+        setError(''); setList(next)
+      }
+      useEffect(() => { load() }, [])
+      if (error) return h('div', { className: 'ab-note err' }, error)
+      if (list === null) return h(Empty, { icon: '⏳', text: '加载中…' })
+      const chats = [...new Set(list.map((g) => g.chatId).filter(Boolean))]
+      const shown = list.filter((g) => (!chat || g.chatId === chat) && (!level || String(g.level) === level))
+      return h(Card, { title: '时间轴', desc: '聊过的日子会慢慢压成一句话，再久一点，只留下感觉。', right: h('div', { className: 'ab-pm-filters' },
+        h('select', { className: 'ab-select', 'aria-label': '筛选聊天', value: chat, onChange: (e) => setChat(e.target.value) },
+          h('option', { value: '' }, '全部聊天'), chats.map((id) => h('option', { key: id, value: id }, gistSource(id)))),
+        h('select', { className: 'ab-select', 'aria-label': '筛选层级', value: level, onChange: (e) => setLevel(e.target.value) },
+          h('option', { value: '' }, '全部'), h('option', { value: '1' }, '梗概'), h('option', { value: '2' }, '印象'))) },
+      shown.length ? h(GistLine, { list: shown, toast, onChanged: load, showFrom: !chat }) : h(Empty, { text: list.length ? '没有符合条件的记录。' : '还没有压缩过的记忆，流水到期后会慢慢出现。' }))
     }
 
     /** 最近几轮她想起了什么、因为哪些词想起来的。 */
@@ -4046,7 +4346,20 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [st, setSt] = useState(null)
       const [err, setErr] = useState('')
       const [draft, setDraft] = useState(null)
-      const [tab, setTab] = useState(() => { try { return localStorage.getItem('aurabot.tab') || 'overview' } catch (e) { return 'overview' } })
+      const [tab, setTab] = useState(() => {
+        try {
+          // 旧版 persona 是人格页；只迁移一次，之后 persona 指向人物记忆。
+          if (!localStorage.getItem('aurabot.persona-tab-v2')) {
+            if (localStorage.getItem('aurabot.tab') === 'persona') localStorage.setItem('aurabot.tab', 'character')
+            let last = {}
+            try { last = JSON.parse(localStorage.getItem('aurabot.navlast') || '{}') || {} } catch (e) {}
+            for (const key of Object.keys(last)) if (last[key] === 'persona') last[key] = 'character'
+            localStorage.setItem('aurabot.navlast', JSON.stringify(last))
+            localStorage.setItem('aurabot.persona-tab-v2', '1')
+          }
+          return localStorage.getItem('aurabot.tab') || 'overview'
+        } catch (e) { return 'overview' }
+      })
       const [toastMsg, setToastMsg] = useState(null)
       const [wizardOpen, setWizardOpen] = useState(false)
       const toastTimer = useRef(null)
@@ -4123,14 +4436,16 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const running = (id) => { const m = mods.find((x) => x.id === id); return Boolean(m && m.running) }
       const hasUi = (m) => m.running === 'user' && !m.builtin && !TABS.some((t) => t.id === m.id) && ((m.settings || []).length || m.panel)
       // 写了 tab 的模块嵌进那个内置标签页；没写（或写的页不存在）的单独一页
-      const intoTab = (m) => Boolean(m.tab && TABS.some((t) => t.id === m.tab))
+      // 旧模块的 tab: 'persona' 原本嵌在「人格」，继续放回原页。
+      const tabOf = (m) => m.tab === 'persona' ? 'character' : m.tab
+      const intoTab = (m) => Boolean(tabOf(m) && TABS.some((t) => t.id === tabOf(m)))
       const extTabs = mods.filter((m) => hasUi(m) && !intoTab(m)).map((m) => ({ id: 'ext:' + m.id, label: m.name, ext: m.id, flag: m.flag ? `ext.${m.id}.${m.flag}` : '', flagDefault: getPath(m.defaults || {}, m.flag || '') }))
       const tabs = TABS.filter((t) => !TAB_MODS[t.id] || TAB_MODS[t.id].some(running))
       tabs.splice(tabs.findIndex((t) => t.id === 'logs'), 0, ...extTabs)
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
-        overview: Overview, connect: Connect, persona: Persona, access: Access, group: Group, model: Model, voice: Voice,
-        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
+        overview: Overview, connect: Connect, character: Persona, access: Access, group: Group, model: Model, voice: Voice,
+        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
       const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
@@ -4164,7 +4479,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
             },
           }),
           showWizard ? null : h(TabBoundary, { key: curTab.id, onHome: () => go('overview') }, h(body, { ...props, mod: curTab.ext })),
-          showWizard || curTab.ext ? null : mods.filter((m) => hasUi(m) && m.tab === curTab.id).map((m) => h('div', { key: 'embed-' + m.id, style: { marginTop: 14 } }, h(ExtPage, { ...props, mod: m.id, embedded: true }))),
+          showWizard || curTab.ext ? null : mods.filter((m) => hasUi(m) && tabOf(m) === curTab.id).map((m) => h('div', { key: 'embed-' + m.id, style: { marginTop: 14 } }, h(ExtPage, { ...props, mod: m.id, embedded: true }))),
           dirty && !showWizard ? h('div', { className: 'ab-savebar' }, h('span', { className: 'msg' }, '有改动还没保存'),
             h('span', { className: 'ab-muted ab-small' }, h('span', { className: 'ab-kbd' }, 'Ctrl'), ' + ', h('span', { className: 'ab-kbd' }, 'S')),
             h(Btn, { kind: 'ghost', onClick: () => setDraft(clone(st.config)) }, '撤销'),

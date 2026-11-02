@@ -86,6 +86,25 @@ export default {
     api.route('/insights', async () => ({ ok: true, items: memory.insights(), styles: memory.styles() }))
     api.route('/memory/recalls', async () => ({ ok: true, list: memory.recalls() }))
     api.route('/memory/restore', async (req) => memory.restore((await http.body(req)).id))
+    api.route('/persona/overview', async () => ({ ok: true, list: memory.personaOverview() }))
+    api.route('/persona/person', async (req) => {
+      const detail = memory.personaPerson(http.query(req).qq || '')
+      return detail ? { ok: true, ...detail } : { ok: false, message: '没有找到这个人' }
+    })
+    api.route('/persona/person/save', async (req) => {
+      const b = await http.body(req)
+      return memory.savePersonaPerson(b.qq, b)
+    })
+    api.route('/memory/chats', async () => ({ ok: true, list: memory.chats() }))
+    api.route('/memory/chats/save', async (req) => {
+      const b = await http.body(req)
+      return memory.saveChat(b.chatId, b)
+    })
+    api.route('/memory/gists', async (req) => {
+      const q = http.query(req)
+      return { ok: true, list: memory.gists({ chatId: q.chatId || '', level: q.level || '', about: q.about || '' }) }
+    })
+    api.route('/memory/gists/delete', async (req) => memory.deleteGist((await http.body(req)).id))
     api.route('/profiles', async () => ({ ok: true, list: memory.profiles() }))
     api.route('/profiles/save', async (req) => {
       const b = await http.body(req)

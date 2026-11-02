@@ -633,6 +633,129 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     save(s)
   }
 
+  // 人物墙会在修改后反复刷新；短暂复用发言时间，避免每次都从头读取所有聊天流水。
+  let activityCache = null
+  function lastActivities(people) {
+    const ids = [...people.keys()].sort()
+    const stamp = JSON.stringify([ids, forgetVersion])
+    if (activityCache && activityCache.stamp === stamp && Date.now() - activityCache.at < 10_000) return activityCache.times
+    const times = new Map()
+    const pending = new Set(ids)
+    // 同一天的记录要全部比较；找到一个人的最近一天后不必再查更早的流水。
+    for (const day of [...(hub?.chatLogDays?.() || [])].sort().reverse()) {
+      const found = new Set()
+      for (const row of hub?.chatLogOf?.(day) || []) {
+        if (!row) continue
+        const id = String(row.uid || '')
+        const at = Number(row.t) || 0
+        if (row.forgottenAt || row.who === 'bot' || !pending.has(id) || !at) continue
+        times.set(id, Math.max(times.get(id) || 0, at))
+        found.add(id)
+      }
+      for (const id of found) pending.delete(id)
+      if (!pending.size) break
+    }
+    activityCache = { stamp, at: Date.now(), times }
+    return times
+  }
+
+  /** 面板上的人物墙：画像、个人事实和个人梗概都可以让一个人出现在列表里。 */
+  function personaOverview() {
+    const s = load()
+    const people = new Map()
+    const spoken = new Map()
+    const ensure = (qq) => {
+      const id = String(qq || '')
+      if (!/^\d+$/.test(id)) return null
+      if (!people.has(id)) people.set(id, { ...(s.profiles || {})[id], qq: id, notes: 0, lastActive: 0 })
+      return people.get(id)
+    }
+    for (const qq of Object.keys(s.profiles || {})) ensure(qq)
+    for (const m of list('')) {
+      const speaker = String(m.speaker || '')
+      if (speaker) spoken.set(speaker, Math.max(spoken.get(speaker) || 0, Number(saidTime(m)) || 0))
+      const p = ensure(m.about)
+      if (!p) continue
+      p.notes++
+      if (!p.name && m.aboutName) p.name = m.aboutName
+    }
+    for (const g of s.gists || []) if (g.kind === 'gist') ensure(g.about)
+    for (const [qq, at] of spoken) if (people.has(qq)) people.get(qq).lastActive = at
+    // 画像的 at 是整理时间，不是发言时间；用仍保留的聊天流水补上最近活跃时间。
+    if (people.size) for (const [qq, at] of lastActivities(people)) {
+      const p = people.get(qq)
+      p.lastActive = Math.max(p.lastActive, at)
+    }
+    const owner = String(getConfig().ownerQQ || '')
+    return [...people.values()].map((p) => ({ ...p, isOwner: Boolean(owner && p.qq === owner) }))
+      .sort((a, b) => Number(b.isOwner) - Number(a.isOwner) || b.lastActive - a.lastActive || a.qq.localeCompare(b.qq))
+  }
+
+  function personaPerson(qq) {
+    const id = String(qq || '')
+    if (!/^\d+$/.test(id)) return null
+    const person = personaOverview().find((p) => p.qq === id)
+    if (!person) return null
+    return { person, notes: list('').filter((m) => String(m.about || '') === id), gists: gists({ about: id }) }
+  }
+
+  /** 只改面板允许编辑的字段，保留旧画像的名字和其他元数据。 */
+  function savePersonaPerson(qq, patch = {}) {
+    const id = String(qq || '')
+    if (!/^\d+$/.test(id)) return { ok: false, message: 'QQ 号不对' }
+    const fields = ['alias', 'style', 'persona', 'handle', 'text']
+    if (!patch || !fields.some((key) => Object.hasOwn(patch, key))) return { ok: false, message: '没有要保存的内容' }
+    const s = load()
+    s.profiles = s.profiles || {}
+    const profile = { ...(s.profiles[id] || {}) }
+    for (const key of fields) if (Object.hasOwn(patch, key)) profile[key] = String(patch[key] ?? '').trim()
+    profile.at = Date.now()
+    s.profiles[id] = profile
+    if (s.dirtyProfiles) delete s.dirtyProfiles[id]
+    s.rev = (s.rev || 0) + 1
+    save(s)
+    return { ok: true, message: '人物印象已保存' }
+  }
+
+  function chats() {
+    const s = load()
+    return Object.entries(s.chats || {}).filter(([id]) => id.startsWith('group:')).map(([chatId, c]) => ({
+      ...c, chatId, name: hub?.groupNames?.get?.(chatId.slice(6)) || c?.name || '',
+    })).sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+  }
+
+  function saveChat(chatId, patch = {}) {
+    const id = String(chatId || '')
+    if (!/^group:\d+$/.test(id)) return { ok: false, message: '群号不对' }
+    const fields = ['vibe', 'topics', 'impression']
+    if (!patch || !fields.some((key) => Object.hasOwn(patch, key))) return { ok: false, message: '没有要保存的内容' }
+    const s = load()
+    s.chats = s.chats || {}
+    const chat = { ...(s.chats[id] || {}) }
+    for (const key of fields) if (Object.hasOwn(patch, key)) chat[key] = String(patch[key] ?? '').trim()
+    s.chats[id] = { ...chat, updatedAt: Date.now() }
+    s.rev = (s.rev || 0) + 1
+    save(s)
+    return { ok: true, message: fields.some((key) => chat[key]) ? '群印象已保存' : '群印象已清空' }
+  }
+
+  /** 梗概的层级 1 是梗概，2 是由旧梗概压成的印象。 */
+  function gists({ chatId = '', level = '', about = '' } = {}) {
+    return (load().gists || []).filter((g) => g.kind === 'gist' && (!chatId || g.chatId === chatId)
+      && (level === '' || level == null || String(g.level) === String(level)) && (!about || String(g.about || '') === String(about)))
+      .sort((a, b) => (Number(saidTime(b)) || 0) - (Number(saidTime(a)) || 0) || (Number(b.at) || 0) - (Number(a.at) || 0))
+  }
+
+  function deleteGist(id) {
+    const s = load()
+    const index = (s.gists || []).findIndex((g) => g.id === id && g.kind === 'gist')
+    if (index < 0) return { ok: false, message: '没有这条梗概' }
+    s.gists.splice(index, 1)
+    s.rev = (s.rev || 0) + 1
+    save(s)
+    return { ok: true, message: '已删除' }
+  }
+
   /** 按这个人的记忆重写小档案（记忆少于 3 条的不写）。 */
   async function buildProfile(qq) {
     const version = forgetVersion
@@ -1790,9 +1913,19 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     return hits.length ? Math.min(1, hits[0].score / 3) : 0
   }
 
+  function list(q) {
+    const items = load().items
+    // 面板里过时的也列出来（排在后面），能看到被哪条取代、能恢复
+    const textOf = new Map(items.map((m) => [m.id, m.text]))
+    const withBy = (m) => (m.supersededBy ? { ...m, supersededText: textOf.get(m.supersededBy) || '' } : m)
+    if (!q) return items.slice().sort((a, b) => (Boolean(a.invalidAt) - Boolean(b.invalidAt)) || b.at - a.at).map(withBy)
+    return search(index(), q, { limit: 100, minScore: 0.01, includeInvalid: true, includeGroup: true }).map((h) => withBy({ ...h.it, score: Number(h.score.toFixed(2)) }))
+  }
+
   return {
     recallHint, handleCommand, vectorHits, shouldAutoRecall,
     add, addEvent, recentEvents, update, remove, restore, recall, contextFor, consolidate, tick, topicScore, importCandidates, importCommit,
+    personaOverview, personaPerson, savePersonaPerson, chats, saveChat, gists, deleteGist,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },
     setProfile, buildProfile,
     recalls: () => recallLog.slice(),
@@ -1804,14 +1937,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       return Object.entries(s.insights || {}).map(([key, list]) => ({ key, name: (s.insightNames || {})[key] || '', list }))
     },
     setInsights: (key, list) => setInsights(key, list.map((x) => (typeof x === 'string' ? { id: randomUUID().slice(0, 8), text: x, at: Date.now() } : x))),
-    list: (q) => {
-      const items = load().items
-      // 面板里过时的也列出来（排在后面），能看到被哪条取代、能恢复
-      const textOf = new Map(items.map((m) => [m.id, m.text]))
-      const withBy = (m) => (m.supersededBy ? { ...m, supersededText: textOf.get(m.supersededBy) || '' } : m)
-      if (!q) return items.slice().sort((a, b) => (Boolean(a.invalidAt) - Boolean(b.invalidAt)) || b.at - a.at).map(withBy)
-      return search(index(), q, { limit: 100, minScore: 0.01, includeInvalid: true, includeGroup: true }).map((h) => withBy({ ...h.it, score: Number(h.score.toFixed(2)) }))
-    },
+    list,
     stats: () => {
       const items = load().items
       const live = items.filter((m) => !m.invalidAt)
