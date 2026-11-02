@@ -861,7 +861,22 @@ export function apply(ctx) {
   // Electron 三键：安装（npmmirror 镜像）→ 启动（清 ELECTRON_RUN_AS_NODE 分离进程）→ 停止（杀 pid）
   // 远端直连模式（配了 publicBaseUrl）下安装/启动不再执行——服务器无桌面，spawn 无头 Electron 的坑从入口上消失，
   // 面板据 remoteClient:true 把这两键换成「下载客户端包」（/panel/pet/client-package）。
-  const remotePetHint = () => ({ ok: false, available: false, remoteClient: true, message: '已配置对外地址（远端直连模式）：服务器上不再安装/启动 Electron。请在「桌宠」页点「下载客户端包」，在你自己的电脑上解压运行' })
+  // 【首审 P2】还要看模块具备不具备 clientPackage 能力：装上的是旧版 pet（1.0.8 及以前）时，
+  // 面板如果照旧提示「点下载客户端包」，用户点下去只会拿到 404/降级文案。这种情况下要说清楚是版本问题。
+  const remotePetHint = () => {
+    const pet = use('pet')
+    const canPackage = typeof pet?.clientPackage === 'function'
+    if (!canPackage) {
+      return {
+        ok: false, available: false, remoteClient: true, needModuleUpgrade: true,
+        message: '已配置对外地址（远端直连模式），但当前桌宠模块太旧、不具备「打包客户端」能力（需要 pet 1.0.10+）：请先在模块市场把桌宠更新到最新版',
+      }
+    }
+    return {
+      ok: false, available: false, remoteClient: true,
+      message: '已配置对外地址（远端直连模式）：服务器上不再安装/启动 Electron。请在「桌宠」页点「下载客户端包」，在你自己的电脑上解压运行',
+    }
+  }
   route('/panel/pet/electron-install', async () => {
     if (publicBaseUrlOf()) return remotePetHint()
     const pet = use('pet')
@@ -883,7 +898,7 @@ export function apply(ctx) {
   // （令牌一旦泄露，只有换掉它才收得回口子）。
   route('/panel/pet/rotate-token', async () => {
     const pet = use('pet')
-    if (typeof pet?.rotateToken !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪 / 版本太旧（需要 1.0.9+），换不了令牌' }
+    if (typeof pet?.rotateToken !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪 / 版本太旧（需要 1.0.10+），换不了令牌' }
     const r = pet.rotateToken()
     log.info(`面板轮换桌宠令牌｜${r.ok ? '成功' : '失败：' + r.message}`)
     return { ok: Boolean(r && r.ok), message: r?.message || '', issuedAt: r?.issuedAt || null }
