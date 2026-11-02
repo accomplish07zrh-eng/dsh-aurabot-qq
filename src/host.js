@@ -48,6 +48,14 @@ const PKG = (() => {
 const VERSION = PKG.version
 const PREFIX = '/aurabot/api'
 
+/**
+ * 这个 DSH 会话是不是 Aurabot 的 QQ 聊天会话（私聊/群聊各对应一个 DSH 会话）。
+ * 桌宠的干活状态只该跟 DSH 自己发起的活儿走，聊天回合不算（#184：每句聊天都弹完工气泡太吵）。
+ */
+export function isChatSession(hub, session) {
+  try { return Boolean(session?.id && hub?.chatOfSession?.(session.id)) } catch (error) { return false }
+}
+
 export function apply(ctx) {
   const logger = createLogger({ dsh: ctx })
   const log = logger.child('core')
@@ -472,7 +480,10 @@ export function apply(ctx) {
         log.warn('会话事件处理出错：', error.message)
       }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
-      try { use('pet')?.onSessionEvent?.(session, event) } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
+      // QQ 聊天会话不转：聊天每句都有 turn/start→turn/end，桌宠会每句话弹一次「完工」气泡/动作（#184）
+      try {
+        if (!isChatSession(hub, session)) use('pet')?.onSessionEvent?.(session, event)
+      } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
       // 审批请求顺手通知到主人私聊（只通知，不代答）
       if (event && event.type === 'approval/asked') notifyApproval(session, event)
     })
