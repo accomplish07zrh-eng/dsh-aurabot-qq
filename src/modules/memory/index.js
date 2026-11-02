@@ -59,11 +59,20 @@ export default {
           properties: { query: str('想找什么') },
           required: ['query'],
           execute: async ({ query }) => {
-            // 群聊 / 非主人私聊里只翻「这个人自己」的记忆，不能把主人的私事翻出来
+            // 群聊 / 非主人私聊里只翻「这个人自己」的记忆，不能把主人的私事翻出来。
+            // F2：群聊的 onlyAbout 必须是本轮说话的人（以前 chat.userId 为空 → 完全不按人物过滤，能翻到不在场的人）。
             const owner = chat.kind === 'private' && String(chat.userId) === String(api.config().ownerQQ || '')
-            const onlyAbout = owner ? undefined : (chat.userId || '')
+            const speakers = owner ? []
+              : chat.kind === 'group'
+                // 群聊 = 本轮所有说话人；拿不到本轮记录就退回 hub 能提供的说话人（都拿不到时 fail closed）
+                ? (typeof hub.turnSenders === 'function'
+                    ? hub.turnSenders(sessionId)
+                    : (typeof hub.speakersOf === 'function' ? hub.speakersOf(sessionId) || [] : []))
+                : (chat.userId ? [String(chat.userId)] : [])
+            const onlyAbout = owner ? undefined : speakers
+            const about = owner ? chat.userId : (chat.kind === 'group' ? speakers : chat.userId)
             const vectorHits = await memory.vectorHits(query)
-            const hits = memory.recall(String(query || ''), { about: chat.userId, onlyAbout, requireAbout: !owner, excludeAbout: owner ? '' : api.config().ownerQQ, includeGroup: owner, groupChatId: chat.kind === 'group' ? current : '', limit: 8, where: current + '（翻记忆）', vectorHits })
+            const hits = memory.recall(String(query || ''), { about, onlyAbout, requireAbout: !owner, excludeAbout: owner ? '' : api.config().ownerQQ, includeGroup: owner, groupChatId: chat.kind === 'group' ? current : '', limit: 8, where: current + '（翻记忆）', vectorHits })
             return hits.length ? { ok: true, message: hits.map((h) => memoryLine(h.it)).join('；') } : { ok: true, message: '没想起相关的事' }
           },
         }),
