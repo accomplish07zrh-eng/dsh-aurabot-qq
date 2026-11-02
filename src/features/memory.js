@@ -2301,11 +2301,14 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     // 失败后退避：10 分钟起步翻倍，最多 2 小时，不每分钟打一次模型
     failures = r.ok ? 0 : failures + 1
     retryAt = r.ok ? 0 : Date.now() + Math.min(120, 10 * 2 ** (failures - 1)) * 60_000
-    if (r.ok && due.length && !r.budgetExhausted && !r.incomplete) {
+    // 提炼预算用完时也要把今天这次标记成「跑过」：否则 tick 每分钟重试一次、日志刷屏到第二天。
+    // 没到预算、只是这次批次上限（incomplete）则继续等下一分钟接着提炼。
+    if (r.ok && due.length && (!r.incomplete || r.budgetExhausted)) {
       const s2 = load()
       s2.runs = { ...(s2.runs || {}) }
       for (const t of due) s2.runs[t] = today
       save(s2)
+      if (r.budgetExhausted) log.info('今天的提炼预算用完了，剩下的流水留到明天或手动「现在整理一次」')
     }
   }
 
