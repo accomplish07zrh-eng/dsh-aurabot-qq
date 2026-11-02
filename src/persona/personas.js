@@ -12,12 +12,14 @@ const BUNDLED = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'perso
 const dir = () => dataDir('personas')
 
 export function seedPersonas() {
-  mkdirSync(dir(), { recursive: true })
   try {
+    mkdirSync(dir(), { recursive: true })
     for (const n of readdirSync(BUNDLED)) {
       if (n.endsWith('.md') && !existsSync(join(dir(), n))) copyFileSync(join(BUNDLED, n), join(dir(), n))
     }
-  } catch (error) {}
+  } catch (error) {
+    // 数据目录可能是只读的（例如 DSH 的 ACL 沙盒）：继续用插件自带人格，不能因此让整个插件挂载失败。
+  }
 }
 
 export function parsePersona(id, raw) {
@@ -41,7 +43,9 @@ const safeId = (id) => String(id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 
 export function listPersonas() {
   seedPersonas()
   const out = []
-  for (const n of readdirSync(dir())) {
+  let names = []
+  try { names = readdirSync(dir()) } catch (error) { return out }
+  for (const n of names) {
     if (!n.endsWith('.md')) continue
     const id = n.slice(0, -3)
     try {
