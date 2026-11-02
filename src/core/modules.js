@@ -21,6 +21,8 @@ export const MIN_API_VERSION = 1
 
 const SRC = fileURLToPath(new URL('../', import.meta.url)) // 插件的 src/
 const BUILTIN_DIR = join(SRC, 'modules')
+/** 内置模块目录（社区安装时判断会不会替换内置用）。 */
+export const builtinDir = () => BUILTIN_DIR
 const ID_RE = /^[a-z][a-z0-9-]{1,39}$/
 const ENTRY = ['index.mjs', 'index.js']
 const DOC = 'API.md'

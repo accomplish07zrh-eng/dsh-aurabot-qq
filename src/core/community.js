@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join, resolve, sep } from 'node:path'
 import { inflateRawSync, crc32 } from 'node:zlib'
 import { dataDir } from './store.js'
-import { API_VERSION, userDir } from './modules.js'
+import { API_VERSION, builtinDir, userDir } from './modules.js'
 
 export const REGISTRY_URL = 'https://raw.githubusercontent.com/aureth-labs/dsh-aurabot-qq-mods/registry/index.json'
 export const SOURCE_FILE = '.aurabot-source.json'
@@ -222,12 +222,16 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
 
   /** 安装或更新。同名但不是社区装的文件夹不碰；替换内置模块要明确 confirmReplace。 */
   const install = (id, { confirmReplace = false } = {}) => exclusive(async () => {
+    // id 会拼进目录路径（modules/.<id>.installing → modules/<id>）：先白名单，防被篡改的索引/调用方越目录写
+    if (typeof id !== 'string' || !ID_RE.test(id)) return { ok: false, message: 'id 不对' }
     progress = { id, name: id, stage: 'index', received: 0, total: 0 }
     const index = await loadIndex({ force: true })
     const e = (index.modules || []).find((x) => x.id === id)
-    if (!e) return { ok: false, message: `社区库里没有「${id}」` }
+    if (!e || e.id !== id) return { ok: false, message: `社区库里没有「${id}」` }
     if (hasFolder(id) && !readSource(id)) return { ok: false, message: `modules/${id} 是你自己的文件夹，不会覆盖；先挪走它` }
-    if (e.replacesBuiltin && !confirmReplace) return { ok: false, needConfirm: true, message: `「${e.name}」会替换内置模块，请确认` }
+    // 替换内置按真实文件判断：index 里的 replacesBuiltin 可能被篡改/漏填，不能只信它
+    const replacesBuiltin = Boolean(e.replacesBuiltin) || existsSync(join(builtinDir(), id))
+    if (replacesBuiltin && !confirmReplace) return { ok: false, needConfirm: true, message: `「${e.name}」会替换内置模块，请确认` }
     const why = blocked(index, e)
     if (why) return { ok: false, message: why }
     const files = readZip(await download(index, e))
