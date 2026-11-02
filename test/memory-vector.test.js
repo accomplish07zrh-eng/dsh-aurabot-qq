@@ -93,6 +93,40 @@ test('假向量补充宠物→猫、医院→护士，关键词仍可命中', as
   assert.equal(s.calls.length, count, '同一查询使用缓存')
 })
 
+test('向量补召回：宠物、太辣、医院上班；关闭向量时明确不命中', async (t) => {
+  const fake = async (url, options) => {
+    const body = JSON.parse(options.body)
+    const vectorOf = (text) => /宠物|橘猫|猫毛|小猫/.test(text) ? [1, 0, 0]
+      : /医院|护士/.test(text) ? [0, 1, 0]
+        : /辣|火锅/.test(text) ? [0, 0, 1]
+          : [0.5, 0.5, 0.5]
+    return { ok: true, json: async () => ({ data: body.input.map((text, index) => ({ index, embedding: vectorOf(text) })) }) }
+  }
+  const s = setup(t, fake)
+  const vector = s.index()
+  const facts = [
+    { id: 'cat', text: '小明养了一只橘猫叫年糕', importance: 0.6, at: Date.now() },
+    { id: 'spicy', text: '小明不吃辣', importance: 0.6, at: Date.now() },
+    { id: 'nurse', text: '阿花在杭州当护士', importance: 0.6, at: Date.now() },
+  ]
+  await vector.sync(facts)
+  const idx = buildIndex(facts)
+  for (const [q, wanted] of [
+    ['他有宠物吗', 'cat'],
+    ['这个火锅太辣了吧', 'spicy'],
+    ['谁在医院上班', 'nurse'],
+  ]) {
+    const qv = await vector.queryVector(q)
+    const vectorHits = vector.search(qv, facts.map((x) => x.id), 10)
+    assert.ok(search(idx, q, { vectorHits }).some((h) => h.it.id === wanted), q)
+  }
+
+  // 默认关闭时这些语义问题仍走纯关键词，不命中是已定义行为。
+  s.cfg.memory.vector.enabled = false
+  assert.equal(await vector.queryVector('他有宠物吗'), null)
+  assert.deepEqual(search(idx, '他有宠物吗', { vectorHits: [] }), [])
+})
+
 test('关键词和向量按各自名次做 RRF，零关键词不能靠人物加分入选', () => {
   const now = Date.now()
   const idx = buildIndex([
