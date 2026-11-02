@@ -30,6 +30,9 @@ function fakePng(w, h, salt = 0) {
 
 // 「模型」脚本
 async function brain({ preset, text, images, callTool }) {
+  // 私聊提示词可能在当前消息前附上她主动说过的话或相关记忆；脚本只按当前消息选分支。
+  const privateAt = text.indexOf('【私聊】')
+  if (privateAt >= 0) text = text.slice(privateAt)
   if (text.includes('at+表情测试')) return '<at:10000001> 看这个<sticker:开心>'
   if (text.includes('热重载探针')) { const r = await callTool('probe73', {}); return r ? '探针:' + r.message : '没有探针工具' }
   if (text.includes('慢工具测试')) { const r = await callTool('slow74', {}); return r ? '慢工具好了' : '没有慢工具' }
@@ -150,6 +153,11 @@ const priv = (user_id, message, extra = {}) => ({ message_type: 'private', sub_t
 const grp = (group_id, user_id, message, nick = '群友') => ({ message_type: 'group', sub_type: 'normal', group_id: Number(group_id), user_id: Number(user_id), message_id: Math.floor(Math.random() * 1e6), sender: { user_id: Number(user_id), nickname: nick, card: nick, role: 'member' }, message })
 const text = (t) => [{ type: 'text', data: { text: t } }]
 const sentTo = (kind, id) => mock.calls.filter((c) => c.action === `send_${kind}_msg` && String(c.params[kind === 'group' ? 'group_id' : 'user_id']) === String(id))
+
+test('假模型按当前私聊消息选择分支，不把主动说过的内容当成新指令', async () => {
+  const reply = await brain({ preset: 'aurabot-private-long', text: '【你之前在这个聊天里主动说过】\n你：发文件发给群\n【私聊】主人：表情语音测试', images: [], callTool: async () => { throw new Error('不应调用工具') } })
+  assert.equal(reply, '<voice>晚安<face:呲牙>😁</voice>')
+})
 
 test('人格与规则通过提示词变量注入', () => {
   assert.match(fake.variables.get('aurabot_persona')(), /大肥鱼/)
@@ -1029,6 +1037,7 @@ test('#52 发文件：主人私聊让她发本机文件，走 OneBot upload_priv
 test('#52 发文件：网关看不到本机路径时，小文件自动改走 base64', async () => {
   mock.state.failUploadPath = true
   try {
+    const replies = sentTo('private', OWNER).length
     const before = mock.sent('upload_private_file').length
     mock.push(priv(OWNER, text('发文件测试二')))
     await until(() => mock.sent('upload_private_file').length >= before + 2)
@@ -1036,7 +1045,7 @@ test('#52 发文件：网关看不到本机路径时，小文件自动改走 bas
     assert.equal(tried[0].params.file, sendFilePath, '先按本机路径发')
     assert.match(String(tried[1].params.file), /^base64:\/\//)
     assert.equal(Buffer.from(String(tried[1].params.file).slice('base64://'.length), 'base64').toString('utf8'), '这是一个测试文件')
-    await until(() => sentTo('private', OWNER).some((c) => c.params.message.some((s) => s.type === 'text' && s.data.text === '文件发出去啦')))
+    await until(() => sentTo('private', OWNER).slice(replies).some((c) => c.params.message.some((s) => s.type === 'text' && s.data.text === '文件发出去啦')))
   } finally {
     mock.state.failUploadPath = false
   }
@@ -1066,6 +1075,7 @@ test('#52 发文件：超过大小上限不发，并说明上限', async () => {
 })
 
 test('#52 发文件：主人让她发给白名单里的群（走 upload_group_file）', async () => {
+  const replies = sentTo('private', OWNER).length
   const before = mock.sent('upload_group_file').length
   mock.push(priv(OWNER, text('发文件发给群一')))
   await until(() => mock.sent('upload_group_file').length > before)
@@ -1073,6 +1083,7 @@ test('#52 发文件：主人让她发给白名单里的群（走 upload_group_fi
   assert.equal(String(call.params.group_id), '555')
   assert.equal(call.params.file, sendFilePath)
   assert.equal(call.params.name, '发个文件.txt')
+  await until(() => sentTo('private', OWNER).slice(replies).some((c) => c.params.message.some((s) => s.type === 'text' && s.data.text === '发到群里啦')))
 })
 
 test('#52 发文件：target 不在白名单里就拒绝', async () => {
@@ -1322,8 +1333,11 @@ test('语音里的表情和语音分开发：表情单独补一条文字气泡�
   await fake.call('/save', { voice: { engine: 'http', emojiSeparate: true, http: { urlTemplate: `http://127.0.0.1:${srv.address().port}/tts?text={text}` } } })
   try {
     const n = sentTo('private', OWNER).length
+    const turns = fake.turns.length
+    const logs = fake.logs.length
     mock.push(priv(OWNER, text('表情语音测试')))
     await until(() => sentTo('private', OWNER).slice(n).some((c) => (c.params.message || []).some((s) => s.type === 'face')), 20000)
+      .catch((error) => { throw new Error(error.message + '；实际轮次：' + JSON.stringify(fake.turns.slice(turns)) + '；日志：' + JSON.stringify(fake.logs.slice(logs))) })
     const after = sentTo('private', OWNER).slice(n)
     assert.equal(after.filter((c) => (c.params.message || []).some((s) => s.type === 'record')).length, 1, '语音条还是单独的 1 条')
     const faceMsg = after.find((c) => (c.params.message || []).some((s) => s.type === 'face'))
@@ -1362,12 +1376,14 @@ test('语音发出去、补发表情失败：这一轮不算没发出去（补�
     const before = bots().length
     const n = sentTo('private', OWNER).length
     mock.state.failFace = true // 只让带系统表情的那条发失败
+    const turns = fake.turns.length
+    const logs = fake.logs.length
     mock.push(priv(OWNER, text('表情补发失败测试')))
     await until(() => sentTo('private', OWNER).slice(n).some((c) => (c.params.message || []).some((s) => s.type === 'record')), 20000)
+      .catch((error) => { throw new Error(error.message + '；实际轮次：' + JSON.stringify(fake.turns.slice(turns)) + '；日志：' + JSON.stringify(fake.logs.slice(logs))) })
     await until(() => bots().length > before, 8000) // 记了流水 = 这一轮算说出口了
     assert.ok(bots().slice(before).some((x) => /晚安/.test(x.text)), '语音发出去了就该记成说过：' + JSON.stringify(bots().slice(before)))
-    const tried = mock.calls.filter((c) => (c.params?.message || []).some((s) => s.type === 'face'))
-    assert.ok(tried.length >= 1, '补发那一步确实试过（这次注定失败）')
+    await until(() => sentTo('private', OWNER).slice(n).some((c) => (c.params.message || []).some((s) => s.type === 'face')), 8000) // 流水在语音发出时就写了，还得等补发表情真的开始
   } finally {
     mock.state.failFace = false
     srv.close()

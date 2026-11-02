@@ -161,8 +161,6 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const groupMembers = new Map() // groupId → { at, list }  群成员（真 @ 时按名字找人，缓存 10 分钟）
   const noticesFor = new Map() // chatId → [一句话]  下次交给她时带上的群事件（撤回、禁言、进群……）
   const saidElsewhere = new Map() // chatId → [{ at, text }]  别处安排她在这里发的话，下次这个聊天交给她时补进去
-  // 正在发送「本轮自己的回复」的聊天。模块在这个窗口里插进来的话仍然照常记账。
-  const deliveringChats = new Set()
 
   let disposed = false
   const disposedError = () => Object.assign(new Error('Aurabot 插件已卸载'), { code: 'AURABOT_DISPOSED' })
@@ -249,25 +247,21 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   /**
    * 统一记账：所有发出去的东西都从这里过。
-   *   写聊天流水；群里记最近 3 句；
+   *   写聊天流水；
    *   不是本轮自己发的（模块代发 / 目的引擎），再记一笔「她在别处说过什么」，
    *   群里的也算她说过话（刷屏刹车、话题参与）。
    */
-  function noteSent(chatId, text) {
+  function noteSent(chatId, text, { ownTurn = false, inDelivery = false } = {}) {
     const said = String(text || '').trim()
     if (!said) return
     try {
       logChat(chatId, 'bot', said)
-      if (chatId.startsWith('group:')) {
-        const gid = chatId.slice(6)
-        groupBotTexts.set(gid, [...(groupBotTexts.get(gid) || []), said].slice(-3))
-      }
       // 这一轮如果正是在这个聊天里回话，内容本来就在会话里，不用再补一遍
-      if (!deliveringChats.has(chatId)) {
+      if (!ownTurn) {
         saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: said.slice(0, 300) }].slice(-10))
         // 模块代发的群消息也算「她在群里说过话」：计入刷屏刹车、并加入话题。
-        // 本轮自己的回复由 deliver() 末尾统一计一次，这里只补模块那条路，避免一句拆三条被算三次。
-        if (chatId.startsWith('group:')) {
+        // deliver() 末尾统一计一次，这里只补直接发送的那条路，避免一句拆三条被算三次。
+        if (!inDelivery && chatId.startsWith('group:')) {
           const gid = chatId.slice(6)
           const saidAt = (groupSaid.get(gid) || []).filter((t) => Date.now() - t < 3600_000)
           saidAt.push(Date.now())
@@ -606,7 +600,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
-  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false, logText = '' } = {}) {
+  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false, logText = '', ownTurn = false, inDelivery = false } = {}) {
     if (disposed) return null
     const cfg = getConfig()
     const tgt = targetOf(chatId)
@@ -646,7 +640,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         if (sentIds.size > 500) sentIds.delete(sentIds.values().next().value)
       }
       bump('sent')
-      noteSent(chatId, logText || readableOf(message))
+      noteSent(chatId, logText || readableOf(message), { ownTurn, inDelivery })
       return r
     } catch (error) {
       bump('errors')
@@ -671,7 +665,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60), opts)
   }
 
-  async function sendVoice(chatId, text, replyId, userId) {
+  async function sendVoice(chatId, text, replyId, userId, opts = {}) {
     let b64, engine, extras
     try {
       // 表情标签 / emoji 不念出来：TTS 只念能说的字（用户反馈：发语音时「呲牙」被读出来）
@@ -683,20 +677,20 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       b64 = readFileSync(voice.file).toString('base64')
     } catch (error) {
       log.warn('语音没合成出来，改发文字：', error.message)
-      await sendText(chatId, text, replyId, undefined, userId)
+      await sendText(chatId, text, replyId, undefined, userId, opts)
       return false
     }
     // QQ 客户端不支持「引用 / @ + 语音」同一条消息：语音条一律单独成条（issue #103）。
     if (replyId || userId) log.debug(`语音条不能带引用/@（QQ 限制），单独发：${chatId}`)
     try {
-      const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], `[语音·${engine}] ${text.slice(0, 40)}`, { throwOnError: true, timeoutMs: FILE_TIMEOUT_MS, logText: text })
+      const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], `[语音·${engine}] ${text.slice(0, 40)}`, { ...opts, throwOnError: true, timeoutMs: FILE_TIMEOUT_MS, logText: text })
       if (r || getConfig().dryRun || !getConfig().enabled) {
         bump('voice')
         // 表情不念出来，但要补上：语音条发完再单独发一条文字里的表情（用户反馈：希望表情和语音分开发）
         if (extras && getConfig().voice.emojiSeparate !== false) {
           // 补发是额外的一条：失败只记日志，不算这一轮发失败（不然语音明明发出去了也会被当成没发）
           try {
-            const sent = await sendText(chatId, extras, undefined, undefined, undefined, { quiet: true })
+            const sent = await sendText(chatId, extras, undefined, undefined, undefined, { ...opts, quiet: true })
             log.debug(sent ? `语音后面补发了一条表情：${chatId}` : '表情没补发出去（不影响语音条）')
           } catch (error) {
             log.debug('表情没补发出去：', error.message)
@@ -711,7 +705,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     } catch (error) {
       if (isDefiniteFailure(error)) {
         log.warn('语音没发出去，改发文字：', error.message)
-        await sendText(chatId, text, replyId, undefined, userId)
+        await sendText(chatId, text, replyId, undefined, userId, opts)
       } else {
         log.warn('语音发送结果不确定，不再改发文字：', error.message)
         failStore.getStore()?.push(error.message)
@@ -839,7 +833,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
   }
 
-  async function sendSticker(chatId, query, replyId, userId) {
+  async function sendSticker(chatId, query, replyId, userId, opts = {}) {
     // 面板里把表情包关了：回复里的 <sticker:…>、工具、扩展模块要发的一律不发（#31）
     if (!getConfig().stickers.enabled) {
       log.debug(`表情包关着，「${typeof query === 'object' ? query?.name || '' : query}」不发`)
@@ -852,7 +846,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     const seg = stickers.segmentFor(item)
     if (!seg) return false
-    await sendSegments(chatId, [...quote(replyId), ...mention(userId), seg], `[表情] ${item.name || item.md5.slice(0, 8)}`)
+    await sendSegments(chatId, [...quote(replyId), ...mention(userId), seg], `[表情] ${item.name || item.md5.slice(0, 8)}`, opts)
     stickers.markUsed?.(item.md5)
     bump('stickers')
     return true
@@ -883,7 +877,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       // Windows 上 'file://' + 'C:\...' 不是合法 URL，网关读不到；pathToFileURL 会给出 file:///C:/... 这种正确形态
       const file = local.startsWith('file://') ? local : pathToFileURL(local).href
       try {
-        const r = await sendSegments(chatId, [...head, { type: 'image', data: { file } }], `[图片·路径] ${local.slice(-40)}`, { throwOnError: true })
+        const r = await sendSegments(chatId, [...head, { type: 'image', data: { file } }], `[图片·路径] ${local.slice(-40)}`, { ...opts, throwOnError: true })
         if (r) {
           log.debug(`${chatId}：按路径发图「${local.slice(-40)}」`)
           return r
@@ -902,7 +896,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     try {
       const buf = await fetchImage(s, { maxBytes: MAX_IMAGE_BYTES })
-      return sendSegments(chatId, [...head, { type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[图片] ${s.slice(-40)}`)
+      return sendSegments(chatId, [...head, { type: 'image', data: { file: 'base64://' + buf.toString('base64') } }], `[图片] ${s.slice(-40)}`, opts)
     } catch (error) {
       log.warn('图片发不出去：', error.message)
       return null
@@ -982,8 +976,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const firstSendable = items.findIndex((item) => item.kind === 'text' || item.kind === 'voice' || item.kind === 'image' || (item.kind === 'sticker' && cfg.stickers.enabled && Boolean(item.value && typeof item.value === 'object' ? item.value : stickers.match(item.value))))
     const missedAt = [] // 写了 @ 却没对上群里人的名字
     const failures = []
-    // 这一轮自己的回复：先登记，发送过程中才不会被当成「她在别处说过」再记一遍
-    if (!opts.simulate) deliveringChats.add(chatId)
+    // 逐条标明来源；群聊刹车仍在这一轮结束时统一计一次。
+    const sendOpts = { ownTurn: Boolean(opts.currentTurn), inDelivery: true }
     await failStore.run(failures, async () => {
       for (let i = 0; i < items.length; i++) {
         if (disposed) return
@@ -993,15 +987,15 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         // 她自己引用了 @ 她的人就照常 @；自动回复只有一个人说话时才有（#160）
         const userId = selected && (selected.direct || opts.autoReply?.uid === selected.uid) ? selected.uid : undefined
         if (it.replyTo && !replyId) log.debug(`${chatId}：引用的编号 ${it.replyTo} 对不上，正常发`)
-        if (it.kind === 'text') await sendText(chatId, it.value, replyId, missedAt, userId)
+        if (it.kind === 'text') await sendText(chatId, it.value, replyId, missedAt, userId, sendOpts)
         else if (it.kind === 'voice') {
-          if (cfg.voice.enabled) await sendVoice(chatId, it.value, replyId, userId)
-          else await sendText(chatId, it.value, replyId, missedAt, userId)
-        } else if (it.kind === 'sticker') await sendSticker(chatId, it.value, replyId, userId)
+          if (cfg.voice.enabled) await sendVoice(chatId, it.value, replyId, userId, sendOpts)
+          else await sendText(chatId, it.value, replyId, missedAt, userId, sendOpts)
+        } else if (it.kind === 'sticker') await sendSticker(chatId, it.value, replyId, userId, sendOpts)
         else if (it.kind === 'poke') { if (!opts.simulate) await pokeBack(chatId) }
         else if (it.kind === 'image') {
           if (localImageBlocked(chatId, it.value)) log.warn(`${chatId}：回复里的本机图片不在允许的目录里，没发`)
-          else await sendImage(chatId, it.value, replyId, userId)
+          else await sendImage(chatId, it.value, replyId, userId, sendOpts)
         }
         if (i < items.length - 1 && !opts.simulate) await pause(bubbleDelay(items[i + 1].kind === 'text' ? items[i + 1].value : '') * mood().delay)
       }
@@ -1010,10 +1004,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (opts.simulate) return items
     // 一条都没发出去：不记流水，她没说出口的话不能算说过
     if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) {
-      deliveringChats.delete(chatId)
       return { missedAt, failed: failures.length, errors: failures }
     }
-    deliveringChats.delete(chatId)
     if (inGroup) {
       const gid = chatId.slice(6)
       const said = (groupSaid.get(gid) || []).filter((t) => Date.now() - t < 3600_000)
@@ -1092,7 +1084,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       if (chatId.startsWith('system:')) return // 已超时的后台轮次不能误发到 QQ
       if (!text) return release(chatId)
       // 发完再放开：发送期间来的消息也攒到下一段
-      deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true }).catch((error) => log.warn('发送出错：', error.message)).finally(() => release(chatId))
+      deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true, currentTurn: true }).catch((error) => log.warn('发送出错：', error.message)).finally(() => release(chatId))
     }
   }
 
