@@ -7,6 +7,22 @@ import { clipText } from '../../core/text.js'
 
 const RESULT_CHARS = 3000
 
+// 会把内容/动作发到「目标」的接口：主人开口也不许发给白名单外的人/群，
+// 否则模型被诱导就能把消息/转发/拍一拍/点赞发到任意 QQ（qq_send_message 的白名单在这里也得有）。
+const OUT_USER_TARGET = new Set(['forward_friend_single_msg', 'send_private_forward_msg', 'send_forward_msg', 'send_custom_face', 'friend_poke', 'send_like', 'send_tuwen_ark', 'set_friend_remark', 'set_qzone_ban'])
+const OUT_GROUP_TARGET = new Set(['forward_group_single_msg', 'send_group_forward_msg', 'send_forward_msg', 'send_custom_face', 'group_poke', 'send_tuwen_ark', 'set_group_remark', 'set_group_card', 'set_group_admin', 'set_group_kick_members', 'set_group_name', 'set_group_whole_ban'])
+
+/** 目标是白名单外的人/群就返回原因。 */
+export function outboundRefusal({ action, params, cfg }) {
+  const allowP = (cfg.allow?.private || []).map(String)
+  const allowG = (cfg.allow?.groups || []).map(String)
+  const uid = params.user_id ?? params.target_id
+  if (OUT_USER_TARGET.has(action) && uid !== undefined && uid !== null && uid !== '' && !allowP.includes(String(uid))) return '只能发给白名单里的好友'
+  const gid = params.group_id
+  if (OUT_GROUP_TARGET.has(action) && gid !== undefined && gid !== null && gid !== '' && !allowG.includes(String(gid))) return '只能发给白名单里的群'
+  return ''
+}
+
 /** 这一轮能不能调这个接口，不能就返回原因。 */
 export function refusal({ action, params, cfg, owner, chat }) {
   const entry = QQ_API[action]
@@ -14,6 +30,8 @@ export function refusal({ action, params, cfg, owner, chat }) {
   for (const p of paramsOf(action)) if (p.required && (params[p.name] === undefined || params[p.name] === '')) return `缺参数 ${p.name}`
   if (owner) {
     if (entry[0] === 'owner' && (cfg.dryRun || !cfg.enabled)) return '现在是试运行，不真的执行'
+    const out = outboundRefusal({ action, params, cfg })
+    if (out) return out
     return ''
   }
   if (entry[0] !== 'open') return '这个只有主人开口才能用'
