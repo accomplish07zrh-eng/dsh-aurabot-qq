@@ -1231,16 +1231,38 @@ test('来源章标明说话人：主人 owner，别人 guest，后台任务 none
   assert.deepEqual((await last(() => api.hub.runSystemTurn('source-test', '来源章', '后台任务', { timeoutMs: 5000 }).catch(() => {}))).speaker, { role: 'none' })
 })
 
-test('DSH 要授权时通知主人私聊，同一请求只发一次（#136）', async () => {
+test('DSH 要授权时只通知 Aurabot · QQ 会话，别的项目不转到 QQ（#136）', async () => {
+  let sid = api.hub.sessions()['private:10000001']?.sessionId
+  if (!sid) {
+    const n = fake.turns.length
+    mock.push(priv(OWNER, text('建审批测试会话')))
+    await until(() => fake.turns.length > n, 8000)
+    sid = api.hub.sessions()['private:10000001']?.sessionId
+  }
+  assert.ok(sid, '主人私聊会话已建好')
+  await sleep(300)
   const before = mock.calls.length
   const ask = { type: 'approval/asked', data: { id: 'approval-1', toolName: 'pwsh', reason: '要跑命令' } }
-  fake.emit('session/event', { id: 's', title: '测试会话' }, ask)
-  fake.emit('session/event', { id: 's', title: '测试会话' }, ask)
+  fake.emit('session/event', { id: sid, title: '测试会话' }, ask)
+  fake.emit('session/event', { id: sid, title: '测试会话' }, ask)
   await until(() => mock.calls.slice(before).some((c) => c.action === 'send_private_msg'))
   await sleep(100)
   const sent = mock.calls.slice(before).filter((c) => c.action === 'send_private_msg' && String(c.params.user_id) === OWNER)
   assert.equal(sent.length, 1)
   assert.match(JSON.stringify(sent[0].params.message), /要授权.*pwsh.*DSH 界面/)
+
+  // 调试会话也是 Aurabot · QQ 工作区的会话，不能因为不是当前 sessionId 就漏通知
+  const dbgSid = api.hub.sessions()['private:10000001']?.sessions?.debug
+  if (dbgSid) {
+    const afterLive = mock.calls.length
+    fake.emit('session/event', { id: dbgSid, title: 'QQ · 主人私聊（调试）' }, { type: 'approval/asked', data: { id: 'approval-debug', toolName: 'pwsh', reason: '调试会话' } })
+    await until(() => mock.calls.slice(afterLive).some((c) => c.action === 'send_private_msg'))
+  }
+
+  const afterFirst = mock.calls.length
+  fake.emit('session/event', { id: 'external-workspace-session', title: '另一个项目' }, { type: 'approval/asked', data: { id: 'approval-external', toolName: 'pwsh', reason: '别的项目' } })
+  await sleep(150)
+  assert.equal(mock.calls.slice(afterFirst).filter((c) => c.action === 'send_private_msg').length, 0, '非 Aurabot 工作区不能发 QQ 通知')
 })
 
 test('主人私聊里这一轮的说话人记录丢了，也按主人算（#90 兜底）', async () => {
