@@ -212,15 +212,17 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   // ---------- 聊天流水（给空间日记、主动搭话、面板用） ----------
-  function logChat(chatId, who, text, uid = '') {
+  function logChat(chatId, who, text, uid = '', { via, at } = {}) {
     try {
-      const d = new Date()
+      const timestamp = Number(at) > 0 && Number.isFinite(Number(at)) && Number.isFinite(new Date(Number(at)).getTime()) ? Number(at) : Date.now()
+      const d = new Date(timestamp)
       const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       const dir = dataDir('chatlog')
       mkdirSync(dir, { recursive: true })
       const forgotten = String(chatId).startsWith('private:') && getConfig().memory?.enabled && getConfig().memory?.instantCommands !== false && parseMemoryCommand(text)?.action === 'forget'
-      appendFileSync(join(dir, `${day}.jsonl`), JSON.stringify({ t: Date.now(), chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(forgotten ? { forgottenAt: Date.now() } : {}) }) + '\n', 'utf8')
-    } catch (error) {}
+      appendFileSync(join(dir, `${day}.jsonl`), JSON.stringify({ t: timestamp, chatId, who, ...(uid ? { uid: String(uid) } : {}), text: redact(String(text).slice(0, 500)), ...(via ? { via } : {}), ...(forgotten ? { forgottenAt: Date.now() } : {}) }) + '\n', 'utf8')
+      return true
+    } catch (error) { return false }
   }
 
   /** 有聊天流水的日期（升序）。 */

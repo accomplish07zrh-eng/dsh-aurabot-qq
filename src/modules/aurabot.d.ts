@@ -133,6 +133,13 @@ export interface Events {
   [custom: string]: (...args: any[]) => any
 }
 
+/** 平台是工具；确认平台账号对应的 QQ 后，才能写入和读取同一份私聊记忆。 */
+export interface MemoryModule {
+  [key: string]: any
+  noteVia(args: { via: string; qq: string | number; who: 'user' | 'bot'; text: string; at?: number }): { ok: boolean }
+  contextVia(args: { qq: string | number; query?: string }): string
+}
+
 export interface Api {
   id: string
   source: 'builtin' | 'user'
@@ -183,6 +190,7 @@ export interface Api {
   onDispose(fn: () => void): Off
 
   // ---- 别的模块和插件内部 ----
+  use(id: 'memory'): MemoryModule | null
   use<T = any>(id: string): T | null
   lazy<T = any>(id: string): Partial<T>
   has(id: string): boolean

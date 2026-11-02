@@ -21,6 +21,7 @@ import { shouldDeferBackground } from '../core/offpeak.js'
 
 const NO_ARRAY = '提炼记忆时模型没有返回 JSON 数组'
 const EXTRACT_RETRY_TOKENS = 16000
+const VIA_NAMES = { douyin: '抖音', heybox: '小黑盒' }
 
 // ---------------- 纯函数：切词与打分 ----------------
 
@@ -1369,7 +1370,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     const owner = String(getConfig().ownerQQ || '')
     const ownerNames = chatId.startsWith('group:') && owner ? human.filter((l) => String(l.uid || '') === owner).map((l) => String(l.who || '')).filter((name) => name && name !== owner) : []
     // 自己说的话只供理解对话，不能作为事实来源。
-    const line = (l) => (l.t ? `[${stamp(l.t)}] ` : '') + (l.who === 'bot' ? '我（仅上下文，不是事实来源）' : l.uid ? `${l.who}(${l.uid})` : l.who) + '：' + l.text
+    const line = (l) => (l.t ? `[${stamp(l.t)}] ` : '') + (l.via ? `[${Object.hasOwn(VIA_NAMES, l.via) ? VIA_NAMES[l.via] : l.via}] ` : '') + (l.who === 'bot' ? '我（仅上下文，不是事实来源）' : l.uid ? `${l.who}(${l.uid})` : l.who) + '：' + l.text
     const times = talk.map((l) => Number(l.t) || 0).filter(Boolean)
     const version = forgetVersion
     try {
@@ -2279,8 +2280,22 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     return search(index(), q, { limit: 100, minScore: 0.01, includeInvalid: true, includeGroup: true }).map((h) => withBy({ ...h.it, score: Number(h.score.toFixed(2)) }))
   }
 
+  function noteVia({ via, qq, who, text, at } = {}) {
+    const id = String(qq ?? '')
+    if (!/^\d+$/.test(id) || typeof via !== 'string' || !via.trim() || typeof text !== 'string' || !text.trim() || !['user', 'bot'].includes(who) || typeof hub?.logChat !== 'function') return { ok: false }
+    const name = who === 'bot' ? 'bot' : (id === String(getConfig().ownerQQ || '') ? (getConfig().ownerName || '主人') : id)
+    return { ok: hub.logChat(`private:${id}`, name, text, who === 'user' ? id : '', { via: via.trim(), at }) === true }
+  }
+
+  function contextVia({ qq, query } = {}) {
+    const id = String(qq ?? '')
+    if (!/^\d+$/.test(id)) return ''
+    const chat = { kind: 'private', userId: id, chatId: `private:${id}` }
+    return [contextFor(chat, ''), recallHint(chat, query, '', '')].filter(Boolean).join('\n')
+  }
+
   return {
-    recallHint, handleCommand, vectorHits, shouldAutoRecall,
+    noteVia, contextVia, recallHint, handleCommand, vectorHits, shouldAutoRecall,
     add, addEvent, recentEvents, update, remove, restore, recall, contextFor, consolidate, tick, topicScore, compressDetails, importCandidates, importCommit,
     personaOverview, personaPerson, savePersonaPerson, chats, saveChat, gists, deleteGist, saveRelation, deleteRelation, lookupPerson, lookupChat,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },
