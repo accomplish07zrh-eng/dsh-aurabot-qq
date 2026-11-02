@@ -34,7 +34,10 @@ export const DEFAULTS = {
   files: { enabled: true, maxMB: 50, imageByPath: true, dirs: [] },
   // 危险命令确认（可选保护，默认关）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
   // 终端命令前，先发 QQ 私聊问主人，回复「确认」才执行；超时或「取消」就拦下。
-  security: { dangerConfirm: false, ssrfMode: 'strict' },
+  // panelRemoteAccess：允许远端（非回环）访问管理接口；默认 false = 只有本机能管。
+  // trustedProxy：可信反向代理地址（逗号分隔）；只有请求确实从这些地址进来，才采信
+  //   X-Forwarded-For 的最后一跳作为真实来源。留空 = 从不相信任何转发头（最安全）。
+  security: { dangerConfirm: false, ssrfMode: 'strict', panelRemoteAccess: false, trustedProxy: '' },
   // DeepSeek 峰谷省钱模式（默认关，现有行为不变）：打开后只把「不着急的后台模型调用」尽量挪到谷时，
   // 聊天回复/工具/审批/定时任务本身不变。offPeakHolidays 是中国法定节假日（北京时间日期 'YYYY-MM-DD'）。
   cost: { offPeak: false, offPeakHolidays: [] },
@@ -345,6 +348,9 @@ export function normalize(raw) {
   if (!isObj(c.security)) c.security = {}
   c.security.dangerConfirm = bool(c.security.dangerConfirm, false)
   c.security.ssrfMode = c.security.ssrfMode === 'loose' ? 'loose' : 'strict'
+  // 远端管理开关与可信反代：放 security 段（顶层对象，不会被下面「ext 只留对象」的规则删掉）
+  c.security.panelRemoteAccess = bool(c.security.panelRemoteAccess, false)
+  c.security.trustedProxy = String(c.security.trustedProxy || '').trim()
   // DeepSeek 峰谷省钱模式：默认关；节假日列表去重、只留合法的 'YYYY-MM-DD'（北京时间日期）
   if (!isObj(c.cost)) c.cost = {}
   c.cost.offPeak = bool(c.cost.offPeak, false)

@@ -344,40 +344,58 @@ export function apply(ctx) {
     }
   }
   // ---------- 面板级访问闸（安全基线，2026-11-02） ----------
-  // 背景：DSH 的 webServer 对插件路由**没有服务器级鉴权**，而 /aurabot/api/panel/* 是给本机
-  // 面板用的管理接口（能改配置、能下客户端包）。同机部署时它只绑回环，本来打不到；
-  // 但一旦用户把插件端口经反代发布到公网，整组面板接口就裸奔了。
-  // 因此：**面板接口默认只允许回环访问**。要做远端管理必须显式开 panelRemoteAccess（并在
+  // 背景：DSH 的 webServer 对插件路由**没有服务器级鉴权**，而面板接口是给本机面板用的管理接口
+  //（能改配置、能装模块、能取联动密钥、能下客户端包）。同机部署时它只绑回环，本来打不到；
+  // 但一旦用户把插件端口经反代发布到公网，整组管理接口就裸奔了。
+  // 因此：**所有管理面默认只允许回环访问**。要做远端管理必须显式开 panelRemoteAccess（并在
   // 反代层再加一道认证——README 写明这是硬要求）。
-  // 注意：/ext/<模块>/* 与 /asset/* 是桌宠客户端从用户电脑直连用的，不受此闸限制
-  //（它们各自有 x-pet-token 校验）。
+  // 【首审 P1-1】闸的覆盖范围不能只有 /panel/*：/state（能读到全部配置与密钥）、/save（能改配置）、
+  // /logs、/modules*（能装代码）、/bridge/token（直接返回联动密钥）、/snowluma/*（能改机器人密码）
+  // 这些**都是管理面**，必须一起纳入。只有客户端直连用的 /ext/<模块>/* 与 /asset/* 不受此闸限制
+  //（它们各自有 token 校验）。
   const isLoopbackAddr = (ip) => {
     const s = String(ip || '')
     return s === '::1' || s === '127.0.0.1' || s === '::ffff:127.0.0.1' || /^127\./.test(s) || s.startsWith('::ffff:127.')
   }
+  const normAddr = (ip) => String(ip || '').trim().replace(/^::ffff:/i, '').replace(/^\[|\]$/g, '')
+  /** 可信反代地址列表（security.trustedProxy，逗号分隔；留空 = 从不相信任何转发头）。 */
+  const trustedProxies = () => String(getConfig().security?.trustedProxy || '').split(',').map(normAddr).filter(Boolean)
   /** 请求是否来自本机回环。
-   *  【关键】反代场景下 socket 一定是 127.0.0.1（反代自己连进来的），所以**不能先看 socket**——
-   *  必须先看 X-Forwarded-For 的**最后一跳**：那是反代追加的真实直连来源，客户端自报的前几跳可伪造。
-   *  只有完全没有 X-Forwarded-For 时，才用 socket 地址判断。 */
+   *  【首审 P1-2 修法】**socket 地址才是唯一可信来源**，X-Forwarded-For 是客户端自己能写的头。
+   *  旧实现「有 XFF 就只认最后一跳、不看 socket」→ 直连暴露时客户端自带
+   *  `X-Forwarded-For: 127.0.0.1` 就能 200 绕过（含 client-package 令牌下载）。
+   *  新口径：
+   *    ① socket 非回环 → 一律按 socket 判，转发头完全不看；
+   *    ② socket 是回环且来源命中 trustedProxy → 才采信 XFF 的**最后一跳**（反代追加的真实来源）；
+   *    ③ 其余（本机直连 / 进程内直调）→ 算本机。 */
   const requestIsLocal = (req) => {
-    const sock = String(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '')
-    const xff = String(req?.headers?.['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean)
-    if (xff.length) return isLoopbackAddr(xff[xff.length - 1]) // 有反代头：只认最后一跳
+    const sock = normAddr(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '')
     // 没有 socket 信息 = 进程内直调（测试 / 内部转发），按本机处理。
     // 真实 HTTP 请求一定有 remoteAddress，所以这里不会削弱对外拦截。
     if (!sock) return true
-    return isLoopbackAddr(sock)
+    if (!isLoopbackAddr(sock)) return false // ① 直连：只信 socket
+    const list = trustedProxies()
+    if (list.length && list.includes(sock)) { // ② 可信反代：看最后一跳
+      const hops = String(req?.headers?.['x-forwarded-for'] || '').split(',').map((x) => normAddr(x)).filter(Boolean)
+      if (hops.length) return isLoopbackAddr(hops[hops.length - 1])
+    }
+    return isLoopbackAddr(sock) // ③ 本机直连
   }
-  const panelNeedsLocal = () => getConfig().ext?.panelRemoteAccess !== true
-  /** 面板闸：命中 /panel/* 且不允许远端时拒绝。 */
+  const panelNeedsLocal = () => getConfig().security?.panelRemoteAccess !== true
+  /** 管理面白名单：这些前缀之外的一律不算管理接口（客户端直连用的模块接口与素材不拦）。 */
+  const ADMIN_EXEMPT_PREFIXES = [PREFIX + '/ext/', PREFIX + '/asset/']
+  /** 面板闸：命中管理面且不允许远端时拒绝。
+   *  【首审 P1-1】从「只拦 /panel/*」扩到「拦整个 PREFIX 下除客户端接口外的所有路由」——
+   *  默认拒绝比逐条列举安全：将来新增管理路由忘了登记也不会裸奔。 */
   const panelBlocked = (req, res) => {
     let path = ''
     try { path = new URL(req.url, 'http://x').pathname } catch { return false }
-    if (!path.startsWith(PREFIX + '/panel/')) return false
+    if (!path.startsWith(PREFIX + '/') && path !== PREFIX) return false
+    if (ADMIN_EXEMPT_PREFIXES.some((p) => path.startsWith(p))) return false
     if (!panelNeedsLocal()) return false
     if (requestIsLocal(req)) return false
-    log.warn(`面板接口拒绝远端访问：${path}（来源不是回环；如需远端管理请开 ext.panelRemoteAccess 并在反代加认证）`)
-    send(res, 403, { ok: false, message: '面板接口只允许本机访问。远端管理需在配置里显式开启 ext.panelRemoteAccess，并务必在反向代理层再加一道认证' })
+    log.warn(`管理接口拒绝远端访问：${path}（来源不是回环；如需远端管理请开 ext.panelRemoteAccess 并在反代加认证）`)
+    send(res, 403, { ok: false, message: '管理接口只允许本机访问。远端管理需在配置里显式开启 ext.panelRemoteAccess，并务必在反向代理层再加一道认证' })
     return true
   }
   /** 面板闸：面板写/读接口统一过它（见上方 panelBlocked 说明）。 */
@@ -870,8 +888,21 @@ export function apply(ctx) {
     log.info(`面板轮换桌宠令牌｜${r.ok ? '成功' : '失败：' + r.message}`)
     return { ok: Boolean(r && r.ok), message: r?.message || '', issuedAt: r?.issuedAt || null }
   })
-  // 对外公网地址：保存 + 验证。验证 = 服务端向 <publicBaseUrl>/aurabot/api/state（现有只读接口）发一次请求，
-  // 回 200 即通；hairpin NAT 等打不通自己的公网地址时可带 force:true 跳过验证直接保存（客户端能不能连上以实测为准）。
+  // 对外公网地址：保存 + 验证。验证 = 服务端向 <publicBaseUrl>/aurabot/api/state 发一次请求，
+  // 回 200 且响应带本插件标识才算通；hairpin NAT 打不通自己的公网地址时可带 force:true 跳过。
+  // 【首审 P1-5】旧实现只校验 `^https?://` 就 fetch，是个 SSRF 面：实测 `http://127.0.0.1:<port>` 能过、
+  // 302 到内网也判「验证通过」。现在补四道：
+  //   ① 默认只允许 https（明文 http 仅在本机回环时放行，方便自测）；
+  //   ② 目标主机不能是私网/本机/链路本地地址（除非显式 force 且明显是自测）；
+  //   ③ `redirect: 'error'`：不许被 302 带去内网；
+  //   ④ 校验响应里带本插件可识别标记（/state 会回 ok:true + version），不能只看 200。
+  const PRIVATE_HOST_RE = /^(?:localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|0\.|\[?::1\]?$)/i
+  const isPrivateHost = (hostname) => {
+    const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
+    if (PRIVATE_HOST_RE.test(h)) return true
+    // IPv6 唯一本地地址 fc00::/7 与链路本地 fe80::/10
+    return /^f[cd][0-9a-f]{2}:/i.test(h) || /^fe[89ab][0-9a-f]:/i.test(h)
+  }
   route('/panel/pet/public-base', async (req) => {
     const b = await readBody(req)
     const raw = String(b.publicBaseUrl ?? '').trim().replace(/\/+$/, '').slice(0, 300)
@@ -881,13 +912,41 @@ export function apply(ctx) {
       return { ok: true, publicBaseUrl: '', message: '已清空：回到同机模式（host.json 恢复回环地址）' }
     }
     if (!/^https?:\/\//i.test(raw)) return { ok: false, message: '要填 http(s):// 开头的完整地址，如 https://bot.example.com' }
+    let parsed
+    try { parsed = new URL(raw) } catch { return { ok: false, message: '这个地址解析不了，检查一下有没有写错' } }
+    // ① 明文只放行本机回环（自测）；跨机一律要求 https
+    if (parsed.protocol === 'http:' && !isLoopbackAddr(parsed.hostname)) {
+      return { ok: false, publicBaseUrl: raw, message: '跨机对外地址必须用 https：令牌与聊天内容走明文等于送人。确实只在局域网自测，请在本机回环地址（127.0.0.1）上试' }
+    }
+    // ② 私网/本机地址默认拒绝（SSRF：别让它被当成内网探测工具）
+    if (isPrivateHost(parsed.hostname) && b.force !== true) {
+      return { ok: false, publicBaseUrl: raw, verified: false, message: `这个地址指向本机/内网（${parsed.hostname}），默认不允许作为对外地址。确实要内网自测，请点「跳过验证保存」明确确认` }
+    }
     let detail = ''
     let ok = false
     try {
-      const r = await fetch(raw + '/aurabot/api/state', { signal: AbortSignal.timeout(8000) })
-      ok = r.ok
-      detail = `HTTP ${r.status}`
-    } catch (error) { detail = error.message }
+      // ③ 不许重定向（否则 302 到内网就打穿了上面所有检查）；④ 还要看响应标识
+      const r = await fetch(raw + '/aurabot/api/state', {
+        signal: AbortSignal.timeout(8000),
+        redirect: 'error',
+        headers: { accept: 'application/json' },
+      })
+      if (!r.ok) {
+        detail = `HTTP ${r.status}`
+      } else {
+        // 校验确实是我们自己的插件在回话（有 ok 且带 version），而不是随便一个 200 页面
+        let body = null
+        try { body = await r.json() } catch { body = null }
+        if (body && body.ok === true && (body.version || body.apiVersion)) {
+          ok = true
+          detail = 'HTTP 200 + 插件标识匹配'
+        } else {
+          detail = 'HTTP 200 但响应不像本插件（缺少 version/apiVersion 标识）'
+        }
+      }
+    } catch (error) {
+      detail = error?.name === 'AbortError' ? '请求超时' : String(error?.message || error)
+    }
     if (!ok && b.force !== true) {
       return { ok: false, publicBaseUrl: raw, verified: false, message: `验证没过（${detail}）：确认反代已把 ${raw} 指到本插件。地址确实打不通自己的公网（如 hairpin NAT）可再点一次「跳过验证保存」` }
     }
@@ -908,8 +967,12 @@ export function apply(ctx) {
       if (typeof pet?.clientPackage !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，打不了客户端包' }
       const r = await Promise.resolve(pet.clientPackage())
       if (!r.ok) return { ok: false, message: r.message }
+      // 【安全 P2】内含 bearer 令牌：任何缓存层都不许留；文件名要清洗（模块来自磁盘，不完全可信）
+      const safeName = String(r.filename || 'aurabot-pet-client.zip').replace(/[^\w.-]/g, '_')
       res.setHeader?.('content-type', 'application/zip')
-      res.setHeader?.('content-disposition', `attachment; filename="${r.filename}"`)
+      res.setHeader?.('content-disposition', `attachment; filename="${safeName}"`)
+      res.setHeader?.('cache-control', 'no-store, no-cache, must-revalidate, private')
+      res.setHeader?.('pragma', 'no-cache')
       send(res, 200, r.buffer, 'application/zip') // answer 只在返回非 undefined 时才发 JSON，这里已手动发过
       return undefined
     }),

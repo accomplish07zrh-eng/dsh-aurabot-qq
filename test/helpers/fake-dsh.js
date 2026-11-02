@@ -143,7 +143,7 @@ export function createFakeDsh({ brain }) {
     },
   }
 
-  async function call(path, body, headers = {}) {
+  async function call(path, body, headers = {}, socket) {
     const full = '/aurabot/api' + path.split('?')[0]
     // 先精确匹配，再找最长的前缀路由（和 DSH 的网页服务一样）
     const r = routes.get(full) || [...routes.values()].filter((x) => x.kind === 'prefix' && (full === x.path || full.startsWith(x.path + '/'))).sort((a, b) => b.path.length - a.path.length)[0]
@@ -155,6 +155,9 @@ export function createFakeDsh({ brain }) {
       headers,
       async *[Symbol.asyncIterator]() { if (body) yield JSON.stringify(body) },
     }
+    // 模拟真实连接的来源地址：不传 = 进程内直调（无 socket，插件按本机处理）；
+    // 传 '203.0.113.7' = 外网直连；传 '127.0.0.1' = 本机/反代接入。
+    if (socket) req.socket = { remoteAddress: socket }
     const res = { set statusCode(v) { status = v }, setHeader() {}, end(s) { out = s } }
     await r.handler(req, res)
     return { status, raw: () => out, json: () => JSON.parse(out) }
