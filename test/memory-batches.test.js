@@ -25,11 +25,12 @@ function setup(t, lines, day = dateKey(new Date())) {
       if (failOnce && text.includes(failOnce)) { failOnce = ''; throw new Error('模型暂时失败') }
       if (invalidOnce && text.includes(invalidOnce)) { invalidOnce = ''; yield { type: 'text-delta', text: '没有 JSON' } }
       else yield { type: 'text-delta', text: '[]' }
-    } else yield { type: 'text-delta', text: '{"insights":[],"style":[]}' }
+    } else if (system.includes('整理自己的记忆')) yield { type: 'text-delta', text: '{"text":"我记得和对方聊过这些事情"}' }
+    else yield { type: 'text-delta', text: '{"insights":[],"style":[]}' }
     yield { type: 'finish', reason: { kind: 'completed' } }
   } } }
   const hub = { chatLogDays: () => [...logs.keys()], chatLogOf: (d) => logs.get(d) || [], deleteChatLog: (d) => logs.delete(d) }
-  const cfg = normalize({ model: { provider: 'p', model: 'm' }, memory: { keepChatlogDays: 0, keepChatlogSet: true } })
+  const cfg = normalize({ model: { provider: 'p', model: 'm' }, memory: { keepChatlogDays: 0, keepChatlogSet: true, gistDailyBatches: 12 } })
   const make = () => createMemoryStore({ dsh, getConfig: () => cfg, hub, log })
   t.after(() => {
     if (old === undefined) delete process.env.AURABOT_DATA_DIR

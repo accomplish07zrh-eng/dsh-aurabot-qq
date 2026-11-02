@@ -1538,7 +1538,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     })
     groupRefs.set(chat.groupId, refs)
     const query = fresh.map((x) => x.text).filter(Boolean).join('\n')
-    const speakers = [...new Set(fresh.map((x) => String(x.uid)).filter(Boolean))]
+    // 按每个人最后一次发言的先后排列，供记忆挑选最近的说话人。
+    const speakers = [...new Set(fresh.map((x) => String(x.uid || '')).filter(Boolean).reverse())].reverse()
     const hint = mode === 'interject' ? '（没人叫你。只有你对这个话题真有话说、能自然接上时才插一句：接着话题说，别突然开新话题；接不上就只回 [沉默]）'
       : mode === 'engaged' ? engagedHint(groupEngagedRun.get(chat.groupId) || 0)
       : '（有人在叫你，看完这一段再回；不是主人又不想理，就只回 [沉默]）'

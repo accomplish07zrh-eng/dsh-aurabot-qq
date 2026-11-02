@@ -22,7 +22,7 @@ export default {
     api.on('prompt', async (content, info) => {
       try {
         if (!info || !info.chat || info.chat.kind === 'system' || !Array.isArray(content)) return content
-        const hits = await memory.vectorHits(info.queryText || '', { respectForget: true })
+        const hits = memory.shouldAutoRecall(info.queryText || '') ? await memory.vectorHits(info.queryText || '', { respectForget: true }) : []
         const hint = memory.recallHint(info.chat, info.queryText || '', info.prevText || '', info.sessionId, info.speakers || [], hits)
         if (!hint) return content
         return [{ type: 'text', text: hint }, ...content]
