@@ -2054,6 +2054,17 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return ''
   }
 
+  /**
+   * 这个 DSH 会话是不是 aurabot 自己开出来的（由 QQ 聊天映射过来）。
+   * 主人自己在 DSH 面板 / CLI 里开的会话不算——危险命令守卫是进程级钩子，
+   * 会收到同一个 DSH 进程里所有会话的工具调用，得能把它们区分开。
+   */
+  function isOwnedSession(sessionId) {
+    if (chatOfSession(sessionId)) return true
+    // 刚挂上还没落盘时 chatOfSession 查不到，再看一眼 mounted
+    return mounted.has(sessionKey(sessionId))
+  }
+
   /** 只让一个聊天重新开始：归档它的会话，下一条消息开新会话。 */
   function resetChat(chatId) {
     const reg = dsh.workspaceRegistry || dsh.get('workspaceRegistry')
@@ -2285,6 +2296,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     joinTopic: (gid) => groupEngaged.set(String(gid), Date.now() + ENGAGE_MS),
     leaveTopic: (gid) => groupEngaged.delete(String(gid)),
     chatOfSession,
+    isOwnedSession,
     canSeeImages: canSeeFor,
     resetSessions,
     lastTextOf: (sessionId) => turnState.get(sessionKey(sessionId))?.lastText || '',

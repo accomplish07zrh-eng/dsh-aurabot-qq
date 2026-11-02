@@ -142,3 +142,58 @@ test('H04：等待确认期间关闭 dangerConfirm，旧确认不能执行', asy
   assert.equal(result.kind, 'deny')
   assert.equal(ran, false, '关闭确认后旧命令不能执行')
 })
+// ---- 回归：进程级钩子不该拦主人自己的 GUI/CLI 会话 ----
+// 只给一个会话传 isOwnedSession（模拟 aurabot 自己开的 QQ 会话），其余会话不归它管。
+function makeScopedGuard ({ enabled = true, timeoutMs = 5000, owned = () => true } = {}) {
+  const delivered = []
+  const cfg = { security: { dangerConfirm: enabled } }
+  const guard = createDangerGuard({
+    getConfig: () => cfg,
+    deliver: async (chatId, text) => { delivered.push({ chatId, text }) },
+    chatOfSession: (sid) => (sid === 'sid-owner' ? ownerChat : sid === 'sid-other' ? 'private:999' : ''),
+    isOwnedSession: (sid) => owned(sid),
+    ownerQQ: () => owner,
+    timeoutMs,
+  })
+  return { guard, delivered, cfg }
+}
+
+test('主人自己的 GUI/CLI 会话（不归 aurabot 管）：危险命令也直接放行', async () => {
+  // isOwnedSession 只认 aurabot 自己开的会话；面板里手敲的会话不属于它
+  const { guard, delivered } = makeScopedGuard({ owned: (sid) => sid === 'sid-owner' || sid === 'sid-other' })
+  assert.equal(await guard.preExecute(execOf('rm -rf /', { sid: 'sid-gui' }), () => 'NEXT'), 'NEXT')
+  assert.equal(await guard.preExecute(execOf('mkfs.ext4 /dev/sda1', { sid: 'sid-cli' }), () => 'NEXT'), 'NEXT')
+  assert.equal(delivered.length, 0, '不该给主人发确认消息')
+})
+
+test('是 aurabot 的会话但认不出 chatId：仍然 fail-closed 拦下', async () => {
+  const { guard } = makeScopedGuard()
+  const d = await guard.preExecute(execOf('rm -rf /', { sid: 'sid-unknown-chat' }), () => 'NEXT')
+  assert.equal(d.kind, 'deny')
+})
+
+test('isOwnedSession 抛错：按老逻辑走（仍然拦），不静默放行', async () => {
+  const { guard } = makeScopedGuard({ owned: () => { throw new Error('boom') } })
+  // 抛错 → owned=null → 继续往下判断；sid-owner 能映射到主人私聊，所以会走确认流程而不是放行
+  const p = guard.preExecute(execOf('rm -rf /'), () => 'NEXT')
+  await sleep(10)
+  assert.equal(guard.pendingCount, 1, '应该进入等确认，而不是直接放行')
+  guard.handleReply(ownerChat, owner, '取消')
+  assert.equal((await p).kind, 'deny')
+})
+
+test('dd：只拦往裸块设备写，测速/只读备份放行，逆序写法照样拦', () => {
+  // 误伤（原来全拦）
+  for (const cmd of [
+    'dd if=/dev/zero of=/dev/null bs=1M count=1024',
+    'dd if=/dev/sda of=/tmp/disk.img bs=4M',
+    'dd if=/dev/zero bs=1M count=200 | ssh root@h "cat > /dev/null"',
+  ]) assert.equal(isDangerousCommand(cmd), null, '不该拦：' + cmd)
+  // 该拦（含原来漏掉的逆序写法）
+  for (const cmd of [
+    'dd if=/dev/zero of=/dev/sda bs=1M',
+    'dd of=/dev/sda if=/tmp/img.img',
+    'dd if=/dev/zero of=/dev/nvme0n1',
+    'dd if=/tmp/x of="/dev/mmcblk0"',
+    'cat /tmp/x > /dev/vda',
+  ]) assert.ok(isDangerousCommand(cmd), '应拦：' + cmd)})

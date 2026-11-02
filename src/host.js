@@ -365,6 +365,8 @@ export function apply(ctx) {
     log: logger.child('危险命令'),
     deliver: (chatId, text) => hub.sendText(chatId, text),
     chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    // tools/pre-execute 是进程级的，同一个 DSH 里主人自己开的会话也会走到这里；那些会话不归这个守卫管
+    isOwnedSession: (sessionId) => { try { return !!hub.isOwnedSession?.(sessionId) } catch (error) { return false } },
     ownerQQ: () => cfg.ownerQQ,
   })
   core.dangerGuard = dangerGuard
