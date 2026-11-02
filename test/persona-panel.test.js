@@ -298,3 +298,66 @@ test('说忘掉时相处经验和说话习惯里的也一起忘', (t) => {
   assert.deepEqual(mem.personaPerson('424242').insights.map((x) => x.text), ['别太正经'])
   assert.deepEqual(mem.personaPerson('424242').styles, ['爱用叠字'])
 })
+
+test('人物关系：只认本人或主人说的，别人传的和规则都不记', async () => {
+  const { normalizeRelation } = await import('../src/features/memory.js')
+  const names = new Map([['111', '小明'], ['222', '路人'], ['999', '主人']])
+  const base = { chatId: 'group:1', names, owner: '999' }
+  assert.equal(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '111' }, base).subj, '小明')
+  assert.equal(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '222' }, base), null)
+  assert.ok(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '999' }, base))
+  assert.equal(normalizeRelation({ subj: '小明', pred: '的女朋友是', obj: '阿花', speaker: '333' }, base), null, '不在这批发言人里')
+  assert.equal(normalizeRelation({ subj: '小明', pred: '', obj: '阿花', speaker: '111' }, base), null)
+})
+
+const relation = (over) => ({ id: 'r' + Math.random(), subj: '小明', subjQq: '424242', pred: '的女朋友是', obj: '阿花', objQq: '', chatId: 'group:777', speaker: '424242', at: 1, ...over })
+
+test('人物关系：同一对人只留最新的，别的聊天看不到，主人私聊都看得到', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  mem.saveRelation(relation())
+  mem.saveRelation(relation({ pred: '的前女友是' }))
+  assert.deepEqual(mem.personaPerson('424242')?.relations?.map((r) => r.text) ?? [], ['小明 的前女友是 阿花'])
+  const owner = { kind: 'private', userId: OWNER, chatId: `private:${OWNER}` }
+  const here = { kind: 'group', groupId: '777', chatId: 'group:777' }
+  const there = { kind: 'group', groupId: '888', chatId: 'group:888' }
+  assert.match(mem.lookupPerson(owner, '424242').message, /前女友/)
+  assert.match(mem.lookupPerson(here, '424242', ['424242']).message, /前女友/)
+  assert.doesNotMatch(mem.lookupPerson(there, '424242', ['424242']).message, /前女友/)
+  const id = mem.personaPerson('424242').relations[0].id
+  assert.equal(mem.deleteRelation(id).ok, true)
+  assert.equal(mem.deleteRelation(id).ok, false)
+})
+
+test('查人物：别人查不到主人，也看不到不在场的人的小档案', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  mem.savePersonaPerson('424242', { text: '私聊里说过的心事', persona: '安静' })
+  const owner = { kind: 'private', userId: OWNER, chatId: `private:${OWNER}` }
+  const group = { kind: 'group', groupId: '777', chatId: 'group:777' }
+  assert.match(mem.lookupPerson(owner, '424242').message, /心事/)
+  assert.match(mem.lookupPerson(group, '424242', ['424242']).message, /心事/, '本人在说话就能看自己的')
+  assert.match(mem.lookupPerson(group, '424242', ['1']).message, /没什么印象/, '这个群里没见过的人查不到')
+  assert.match(mem.lookupPerson(group, OWNER, ['1']).message, /没什么印象/)
+  assert.equal(mem.lookupPerson(group, '', ['1']).ok, false)
+})
+
+test('查群印象：群里只看当前群，别人私聊看不了，主人能查任意群', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  const owner = { kind: 'private', userId: OWNER, chatId: `private:${OWNER}` }
+  assert.match(mem.lookupChat({ kind: 'group', groupId: '777', chatId: 'group:777' }, '888').message, /热闹/)
+  assert.equal(mem.lookupChat({ kind: 'private', userId: '5', chatId: 'private:5' }).ok, false)
+  assert.match(mem.lookupChat(owner, '777').message, /热闹/)
+  assert.match(mem.lookupChat(owner).message, /777/)
+})
+
+test('人物关系进常驻上下文，说忘掉时一起忘', (t) => {
+  const s = setup(t)
+  const mem = s.make()
+  mem.saveRelation(relation({ chatId: 'private:424242', obj: '奶茶店老板' }))
+  const chat = { kind: 'private', userId: '424242', chatId: 'private:424242' }
+  assert.match(mem.contextFor(chat, 's'), /人物关系.*奶茶店老板/)
+  mem.handleCommand(chat, '忘掉奶茶店')
+  assert.doesNotMatch(mem.contextFor(chat, 's'), /奶茶店老板/)
+})

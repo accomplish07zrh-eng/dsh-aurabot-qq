@@ -2880,6 +2880,15 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
           h('div', { className: 'k' }, label), h('div', { className: cx('v', !p[key] && 'empty') }, p[key] || '还不了解')))),
         h(Card, { title: '私聊里的相处经验', desc: '私聊时优先用这里，上面的「说话方式」和「怎么相处」在群里用。' },
           h(InsightCard, { p: { key: 'qq:' + qq, list: data.insights || [] }, style: data.styles || [], toast, onSaved: () => load(true) })),
+        (data.relations || []).length ? h(Card, { title: '人物关系' }, data.relations.map((r) => h('div', { key: r.id, className: 'ab-pm-fact' },
+          h('span', { className: 'ab-pm-dot', 'aria-hidden': 'true' }),
+          h('div', { className: 'main' }, h('div', { className: 'text' }, r.text), h('div', { className: 'sub' }, h('span', null, memoryDate(r.at)), h('span', null, gistSource(r.chatId)))),
+          h('div', { className: 'ab-pm-acts' }, h('button', { type: 'button', className: 'ab-pm-link danger', onClick: async () => {
+            if (!confirm('删除这条关系？')) return
+            const res = await post('/memory/relations/delete', { id: r.id })
+            toast(res.message, res.ok ? 'ok' : 'err')
+            if (res.ok) await load(true)
+          } }, '删'))))) : null,
         h(Card, { title: `记得的事 ${live.length ? live.length : ''}`.trim() },
           live.length ? live.map((m) => h(PersonaFact, { key: m.id, m, toast, onChanged: () => load(true) })) : h(Empty, { text: '还没记住关于这个人的事。' })),
         data.gists.length ? h(Card, { title: '留下的感觉' }, h(GistLine, { list: data.gists, toast, onChanged: () => load(true) })) : null,
