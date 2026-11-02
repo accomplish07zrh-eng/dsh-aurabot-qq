@@ -17,6 +17,7 @@ import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel, lastEmptyInfo } from '../core/llm.js'
 import { clipText } from '../core/text.js'
 import { createVectorIndex } from './memory-vector.js'
+import { shouldDeferBackground } from '../core/offpeak.js'
 
 const NO_ARRAY = '提炼记忆时模型没有返回 JSON 数组'
 const EXTRACT_RETRY_TOKENS = 16000
@@ -1207,6 +1208,12 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   async function compressDetails ({ now = Date.now(), maxCalls = COMPRESS.maxCallsPerRun } = {}) {
     const memCfg = getConfig().memory || {}
     if (memCfg.compress === false) return { clusters: 0, calls: 0, created: 0 }
+    // 峰谷省钱：峰时不花模型调用做压缩，等谷时整理再补（记忆条目本身不动）
+    if (shouldDeferBackground(getConfig(), new Date(now))) {
+      if (!compressDeferLogged) { log.debug?.('峰时：记忆压缩推迟到谷时再做'); compressDeferLogged = true }
+      return { clusters: 0, calls: 0, created: 0, deferred: true }
+    }
+    compressDeferLogged = false
     const afterDays = Number.isFinite(Number(memCfg.compressAfterDays)) ? Number(memCfg.compressAfterDays) : 14
     const clusters = compressionClusters(load().items, { now, afterDays })
     let calls = 0
@@ -1285,6 +1292,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   let busy = false
   let failures = 0
   let retryAt = 0
+  // 峰谷省钱：同一种推迟只记一次日志，免得每分钟/每次整理都刷屏
+  let compressDeferLogged = false
+  let consolidateDeferLogged = false
+  let idleDeferLogged = false
+  let vectorDeferLogged = false
 
   /**
    * 整理临时记忆。
@@ -1387,11 +1399,21 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
         days++
         if (batches >= EXTRACT_LIMIT || budgetExhausted) break
       }
-      if (days) await learnSelfStyle()
-      profiles = await refreshProfiles(startedAt)
-      // 先合并（内部 load→改→save），再重新读快照，否则下面那次 save(s) 会把合并结果覆盖回旧数据
-      try { await mergeGroups() } catch (error) { log.warn('合并记忆出错：', error.message) }
+      // 峰谷省钱：提炼（extraction）照常跑，不然聊天流水会过期；人物档案/说话风格/重复合并/
+      // 记忆压缩这些额外模型调用推迟到谷时整理再补。
+      const deferExtra = shouldDeferBackground(getConfig())
+      if (!deferExtra) {
+        consolidateDeferLogged = false
+        if (days) await learnSelfStyle()
+        profiles = await refreshProfiles(startedAt)
+        // 先合并（内部 load→改→save），再重新读快照，否则下面那次 save(s) 会把合并结果覆盖回旧数据
+        try { await mergeGroups() } catch (error) { log.warn('合并记忆出错：', error.message) }
+      } else if (!consolidateDeferLogged) {
+        log.info('峰时：人物档案 / 说话风格 / 重复记忆合并 / 记忆压缩推迟到谷时再整理')
+        consolidateDeferLogged = true
+      }
       // 细节淡化 → 长期印象（A；每次整理最多 COMPRESS.maxCallsPerRun 次模型调用）
+      // 峰时 compressDetails() 内部会直接返回 deferred，不花调用。
       let compressed = 0
       try { const cr = await compressDetails(); compressed = cr.created } catch (error) { log.warn('压缩记忆出错：', error.message) }
       const s = load()
@@ -1400,7 +1422,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       s.items = s.items.filter((m) => !shouldForget(m, Date.now(), getConfig().memory.eventExpireDays ?? 90))
       const forgot = before - s.items.length
       if (forgot) s.rev = (s.rev || 0) + 1
-      s.lastConsolidate = { day: today, at: Date.now(), added, insights, days, forgot, profiles, compressed }
+      s.lastConsolidate = { day: today, at: Date.now(), added, insights, days, forgot, profiles, compressed, deferred: deferExtra }
       save(s)
       log.info(`整理临时记忆：处理了 ${days} 天，新增或更新 ${added} 条长期记忆，更新了 ${insights} 份相处经验、${profiles} 份人物小档案${forgot ? `，忘掉 ${forgot} 条不重要的旧记忆` : ''}${compressed ? `，压缩出 ${compressed} 条长期印象` : ''}`)
       return { ok: true, added, insights, days, forgot, profiles, compressed, budgetExhausted, incomplete: batches >= EXTRACT_LIMIT, message: `整理好了：新增或更新 ${added} 条记忆，更新 ${insights} 份相处经验、${profiles} 份人物小档案${forgot ? `，忘掉 ${forgot} 条旧的` : ''}${compressed ? `，压缩出 ${compressed} 条长期印象` : ''}` }
@@ -1499,6 +1521,12 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
 
   async function extractIdle() {
     if (busy) return { ok: true, busy: true }
+    // 峰谷省钱：峰时空闲提炼先不跑，聊天流水保留 7 天，谷时/下次整理再补
+    if (shouldDeferBackground(getConfig())) {
+      if (!idleDeferLogged) { log.debug?.('峰时：空闲提炼推迟到谷时再做（聊天流水还在，不会丢）'); idleDeferLogged = true }
+      return { ok: true, deferred: true }
+    }
+    idleDeferLogged = false
     busy = true
     const startedAt = Date.now()
     let batches = 0
@@ -1588,8 +1616,14 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   async function tickOnce() {
     const cfg = getConfig().memory
     if (cfg.enabled && cfg.vector?.enabled) {
-      try { await vector.sync(load().items, () => load().items) }
-      catch (error) { log.debug?.('向量索引同步失败，稍后再试') }
+      // 峰谷省钱：峰时跳过这一轮 embedding 同步，谷时下一次 tick 再补（向量检索本身仍然可用，只是索引旧一点）
+      if (shouldDeferBackground(getConfig())) {
+        if (!vectorDeferLogged) { log.debug?.('峰时：向量索引同步推迟到谷时再同步'); vectorDeferLogged = true }
+      } else {
+        vectorDeferLogged = false
+        try { await vector.sync(load().items, () => load().items) }
+        catch (error) { log.debug?.('向量索引同步失败，稍后再试') }
+      }
     }
     if (!cfg.enabled || !cfg.dailyConsolidate) {
       // 没开每日整理时也按 keepChatlogDays 清理：-1 不清、0 沿用原来的 14 天、N 按 N 天
@@ -1633,7 +1667,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
 
   return {
     recallHint, handleCommand, vectorHits,
-    add, addEvent, recentEvents, update, remove, restore, recall, contextFor, consolidate, tick, topicScore, importCandidates, importCommit,
+    add, addEvent, recentEvents, update, remove, restore, recall, contextFor, consolidate, tick, topicScore, compressDetails, importCandidates, importCommit,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },
     setProfile, buildProfile,
     recalls: () => recallLog.slice(),

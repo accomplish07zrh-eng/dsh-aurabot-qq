@@ -241,3 +241,24 @@ test('群公共记忆压缩后仍是该群可见，别的群看不到', async ()
   assert.ok(g555.some((t) => t.includes('大家相处得不错')), '本群能看到')
   assert.equal(g556.some((t) => t.includes('大家相处得不错')), false, '别的群看不到')
 })
+
+// ---------- 峰谷省钱：峰时压缩推迟到谷时，不花模型调用 ----------
+test('峰谷省钱：峰时 compressDetails 不调模型、返回 deferred；谷时照常压缩', async () => {
+  const { cfg, asked, mem } = setup('offpeak-compress', { memory: { compress: true } })
+  for (let i = 0; i < 4; i++) addOld(mem, `DETAIL_${i}`, { saidAt: Date.now() - 40 * DAY })
+  cfg.cost.offPeak = true
+  cfg.cost.offPeakHolidays = []
+  const callsBefore = compressCalls(asked)
+  const peakNow = Date.UTC(2026, 10, 2, 2, 0) // 北京时间周一 10:00 → 峰时
+  const d = await mem.compressDetails({ now: peakNow })
+  assert.equal(d.deferred, true, '峰时要标记推迟')
+  assert.equal(d.calls, 0)
+  assert.equal(d.created, 0)
+  assert.equal(compressCalls(asked), callsBefore, '峰时不能调压缩模型')
+  // 谷时（周末）→ 正常压缩
+  const valleyNow = Date.UTC(2026, 10, 7, 2, 0) // 北京时间周六 10:00 → 谷时
+  const r = await mem.compressDetails({ now: valleyNow })
+  assert.notEqual(r.deferred, true, '谷时不再推迟')
+  assert.equal(r.calls, 1)
+  assert.equal(r.created, 1)
+})

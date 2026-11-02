@@ -35,6 +35,9 @@ export const DEFAULTS = {
   // 危险命令确认（可选保护，默认关）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
   // 终端命令前，先发 QQ 私聊问主人，回复「确认」才执行；超时或「取消」就拦下。
   security: { dangerConfirm: false, ssrfMode: 'strict' },
+  // DeepSeek 峰谷省钱模式（默认关，现有行为不变）：打开后只把「不着急的后台模型调用」尽量挪到谷时，
+  // 聊天回复/工具/审批/定时任务本身不变。offPeakHolidays 是中国法定节假日（北京时间日期 'YYYY-MM-DD'）。
+  cost: { offPeak: false, offPeakHolidays: [] },
   update: { unstable: null }, // 订阅不稳定版本（beta、rc）；null = 没选过，按正在用的版本定
   snowluma: {
     dir: 'C:\\Aurabot\\snowluma', // 主人自己下载解压到这里（EULA 不允许自动部署）
@@ -282,6 +285,14 @@ const bool = (v, d) => (typeof v === 'boolean' ? v : d)
 const qq = (v) => String(v ?? '').replace(/\D/g, '')
 const qqList = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split(/[\s,，;；]+/)).map(qq).filter(Boolean))]
 const hhmm = (v, d) => (/^\d{1,2}:\d{2}$/.test(String(v)) ? String(v) : d)
+// 严格校验 'YYYY-MM-DD'（面板手填/配置文件手改都可能乱），非法日期当没填。
+const dateKey = (v) => {
+  const s = String(v ?? '').trim()
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return ''
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? s : ''
+}
 // 请求头：正常是字符串（一行一个）；手写成对象 / 数组时展开成同样的多行文本，
 // 免得下游按行解析时认不出来，静默把头全丢掉。
 const headerLines = (v) => {
@@ -326,6 +337,11 @@ export function normalize(raw) {
   if (!isObj(c.security)) c.security = {}
   c.security.dangerConfirm = bool(c.security.dangerConfirm, false)
   c.security.ssrfMode = c.security.ssrfMode === 'loose' ? 'loose' : 'strict'
+  // DeepSeek 峰谷省钱模式：默认关；节假日列表去重、只留合法的 'YYYY-MM-DD'（北京时间日期）
+  if (!isObj(c.cost)) c.cost = {}
+  c.cost.offPeak = bool(c.cost.offPeak, false)
+  const rawHolidays = Array.isArray(c.cost.offPeakHolidays) ? c.cost.offPeakHolidays : String(c.cost.offPeakHolidays || '').split(/[\n,，;；\s]+/)
+  c.cost.offPeakHolidays = [...new Set(rawHolidays.map(dateKey).filter(Boolean))].sort().slice(0, 60)
   c.update = { unstable: typeof c.update?.unstable === 'boolean' ? c.update.unstable : null }
   c.files.enabled = bool(c.files.enabled, true)
   c.files.maxMB = num(c.files.maxMB, 50, 1, BIG)
