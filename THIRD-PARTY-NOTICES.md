@@ -5,7 +5,7 @@
 
 ## 桌宠
 
-桌宠模块和素材都不在本仓库，署名和许可见 [dsh-aurabot-qq-mods](https://github.com/accomplish07zrh-eng/dsh-aurabot-qq-mods) 的 `modules/pet/THIRD-PARTY-NOTICES.md` 和仓库 README。
+桌宠模块和素材都不在本仓库，署名和许可见 [dsh-aurabot-qq-mods](https://github.com/aureth-labs/dsh-aurabot-qq-mods) 的 `modules/pet/THIRD-PARTY-NOTICES.md` 和仓库 README。
 
 ## Mieksido/surfcore — 目的引擎（MIT）
 
