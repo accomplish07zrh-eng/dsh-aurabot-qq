@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { pickParams, refusal } from '../src/modules/qq-api/index.js'
 import { QQ_API, paramsOf } from '../src/modules/qq-api/actions.js'
 
-const cfg = { enabled: true, dryRun: false }
+const cfg = { enabled: true, dryRun: false, allow: { private: ['5'], groups: ['9'] } }
 const group = { kind: 'group', groupId: '9', chatId: 'group:9' }
 const check = (action, params, o = {}) => refusal({ action, params, cfg, owner: false, chat: group, ...o })
 
@@ -64,4 +64,17 @@ test('工具接到网关：查询走 onebot，别人写操作被拒', async () =
   assert.equal((await call.execute({ action: 'get_essence_msg_list', param: 'x' })).ok, false)
   assert.equal(calls.length, 1)
   assert.deepEqual(build({ chat: { kind: 'system' }, level: 'social' }), [])
+})
+
+test('主人也不能把转发/点赞/拍一拍/资料操作发到白名单外的人或群', () => {
+  const o = (action, params) => check(action, params, { owner: true })
+  assert.equal(o('forward_friend_single_msg', { message_id: 1, user_id: 5 }), '')
+  assert.match(o('forward_friend_single_msg', { message_id: 1, user_id: 6 }), /白名单/)
+  assert.equal(o('forward_group_single_msg', { message_id: 1, group_id: 9 }), '')
+  assert.match(o('forward_group_single_msg', { message_id: 1, group_id: 10 }), /白名单/)
+  assert.equal(o('send_like', { user_id: 5 }), '')
+  assert.match(o('send_like', { user_id: 6 }), /白名单/)
+  assert.match(o('friend_poke', { user_id: 6 }), /白名单/)
+  assert.match(o('send_custom_face', { emoji_id: 1, group_id: 10 }), /白名单/)
+  assert.equal(o('delete_msg', { message_id: 1 }), '', '不带目标的写操作不受影响')
 })

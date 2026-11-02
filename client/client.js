@@ -29,6 +29,42 @@ window.__ModuleLoader__.load({
       cur[ks[ks.length - 1]] = value
       return next
     }
+    // ---------------- DeepSeek 峰谷（前端只读展示，逻辑与 src/core/offpeak.js 保持一致） ----------------
+    const BJ_OFFSET = 8 * 3600_000 // 北京时间 = UTC+8（中国无夏令时）
+    const pad2 = (n) => String(n).padStart(2, '0')
+    const bjKeyOf = (ms) => { const d = new Date(ms + BJ_OFFSET); return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}` }
+    const bjPartsOf = (ms) => { const d = new Date(ms + BJ_OFFSET); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate(), dow: d.getUTCDay() } }
+    // 峰时：工作日北京时间 09:00–12:00 / 14:00–18:00（= UTC 01–04 / 06–10）；周末和节假日全天谷价
+    const isPeakAt = (ms, holidays) => {
+      const p = bjPartsOf(ms)
+      if (p.dow === 0 || p.dow === 6) return false
+      if ((holidays || []).includes(bjKeyOf(ms))) return false
+      const hh = new Date(ms).getUTCHours()
+      return (hh >= 1 && hh < 4) || (hh >= 6 && hh < 10)
+    }
+    const nextChangeAt = (ms, holidays) => {
+      const nowPeak = isPeakAt(ms, holidays)
+      const p = bjPartsOf(ms)
+      const cands = []
+      for (let off = 0; off <= 8; off++) {
+        const dayStart = Date.UTC(p.y, p.m - 1, p.d + off) - BJ_OFFSET // 北京时间当天 0 点
+        for (const hh of [0, 6, 9, 12, 14, 18]) { const at = dayStart + hh * 3600_000; if (at > ms) cands.push(at) }
+      }
+      cands.sort((a, b) => a - b)
+      for (const at of cands) if (isPeakAt(at, holidays) !== nowPeak) return at
+      return null
+    }
+    const fmtNextChange = (at, now) => {
+      const bj = new Date(at + BJ_OFFSET)
+      const hm = pad2(bj.getUTCHours()) + ':' + pad2(bj.getUTCMinutes())
+      const a = bjPartsOf(at)
+      const n = bjPartsOf(now)
+      const days = Math.round((Date.UTC(a.y, a.m - 1, a.d) - Date.UTC(n.y, n.m - 1, n.d)) / 86400_000)
+      if (days <= 0) return hm
+      if (days === 1) return '明天 ' + hm
+      return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][a.dow] + ' ' + hm
+    }
+
     const getPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj)
     const pct = (v) => Math.round((Number(v) || 0) * 100)
     const cx = (...a) => a.filter(Boolean).join(' ')
@@ -605,6 +641,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return {
         sw: (path, extra) => h(Switch, { on: !!getPath(draft, path), onChange: (v) => setDraft(setPath(draft, path, v)), ...(extra || {}) }),
         text: (path, props) => h('input', { className: cx('ab-input', props && props.size), value: getPath(draft, path) ?? '', placeholder: props && props.placeholder, type: (props && props.type) || 'text', onChange: (e) => setDraft(setPath(draft, path, e.target.value)) }),
+        area: (path, props) => h('textarea', { className: cx('ab-input', props && props.size), rows: (props && props.rows) || 3, spellCheck: false, style: { fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12, lineHeight: 1.5, resize: 'vertical' }, value: getPath(draft, path) ?? '', placeholder: props && props.placeholder, onChange: (e) => setDraft(setPath(draft, path, e.target.value)) }),
         num: (path, props) => h('input', { className: 'ab-input sm', type: 'number', min: props && props.min, max: props && props.max, step: (props && props.step) || 1, value: getPath(draft, path) ?? '', onChange: (e) => setDraft(setPath(draft, path, e.target.value === '' ? '' : Number(e.target.value))) }),
         percent: (path) => h(Range, { min: 0, max: 100, value: pct(getPath(draft, path)), onChange: (v) => setDraft(setPath(draft, path, v / 100)), fmt: (v) => v + '%' }),
         // 滑块只是常用范围；超过的值在旁边的框里直接填（概率这种 0~1 的不用）
@@ -1153,26 +1190,58 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       h('span', null, busy ? '润色中' : empty ? 'AI 写一版' : 'AI 润色'))
     }
 
+    const personaDraftKey = (id) => 'aurabot.persona.draft.' + id
     function Persona({ st, toast, reload }) {
       const [list, setList] = useState(st.personas)
       const [current, setCurrent] = useState(st.config.persona.current)
-      const [sel, setSel] = useState(st.config.persona.current)
+      // 记住上次编辑的人格：切走标签页再回来还编辑同一个，而不是跳回正在用的那个
+      const [sel, setSel] = useState(() => { try { return localStorage.getItem('aurabot.persona.sel') || st.config.persona.current } catch (e) { return st.config.persona.current } })
       const [edit, setEdit] = useState(null) // { id, name, tags, secs }
       const [dirty, setDirty] = useState(false)
       const [pending, setPending] = useState({}) // 节的 k → { text, view: 'new' | 'old' } AI 润色还没选定的
       const [whole, setWhole] = useState(() => { try { return localStorage.getItem('aurabot.persona.whole') === '1' } catch (e) { return false } })
+      // 上次没保存的草稿：进来时只提示「要不要恢复」，不自动覆盖当前内容
+      const [restore, setRestore] = useState(null)
+      useEffect(() => { try { localStorage.setItem('aurabot.persona.sel', sel) } catch (e) {} }, [sel])
       const load = async (id) => {
         const r = await get('/persona/get?id=' + encodeURIComponent(id))
-        if (r.ok) { setEdit({ id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), secs: splitPersona(r.persona.body) }); setDirty(false); setPending({}) }
+        if (!r.ok) return
+        const server = { id: r.persona.id, name: r.persona.name, tags: (r.persona.tags || []).join('，'), secs: splitPersona(r.persona.body) }
+        let draft = null
+        try { const raw = localStorage.getItem(personaDraftKey(id)); if (raw) { const d = JSON.parse(raw); if (d && d.id === id && typeof d.body === 'string' && d.body !== r.persona.body) draft = d } } catch (e) {}
+        setEdit(server)
+        setDirty(false)
+        setRestore(draft ? { body: draft.body, name: draft.name, tags: draft.tags, at: draft.at || 0 } : null)
+        setPending({})
       }
       useEffect(() => { load(sel) }, [sel])
+      // 编辑中的草稿只写 localStorage（不动磁盘）；切标签/刷新后在下次进来时提示是否恢复
+      useEffect(() => {
+        if (!edit || !dirty) return
+        const t = setTimeout(() => {
+          try { localStorage.setItem(personaDraftKey(edit.id), JSON.stringify({ id: edit.id, name: edit.name, tags: edit.tags, body: joinPersona(edit.secs), at: Date.now() })) } catch (e) {}
+        }, 200)
+        return () => clearTimeout(t)
+      }, [edit, dirty])
+      const restoreDraft = () => {
+        if (!restore) return
+        setEdit({ ...edit, name: restore.name ?? edit.name, tags: restore.tags ?? edit.tags, secs: splitPersona(restore.body) })
+        setDirty(true)
+        setRestore(null)
+        toast('已恢复上次的改动（还没保存，确认后点「保存人格」）', 'ok')
+      }
+      const discardDraft = () => {
+        try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {}
+        setRestore(null)
+        toast('已丢弃上次没保存的改动')
+      }
       const refresh = async () => { const r = await get('/personas'); if (r.ok) { setList(r.list); setCurrent(r.current) } }
       const body = edit ? joinPersona(edit.secs) : ''
       const waiting = Object.keys(pending).length
       const save = async () => {
         const r = await post('/persona/save', { id: edit.id, name: edit.name, tags: edit.tags.split(/[,，\s]+/).filter(Boolean), body })
         toast(r.message || (r.ok ? '保存好了' : '没保存成功'))
-        if (r.ok) { setDirty(false); refresh() }
+        if (r.ok) { setDirty(false); setRestore(null); try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {} refresh() }
       }
       const patch = (p) => { setEdit({ ...edit, ...p }); setDirty(true) }
       const setSecs = (secs) => patch({ secs })
@@ -1204,10 +1273,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Btn, { kind: 'ghost', onClick: () => { const id = 'persona-' + Date.now().toString(36); setEdit({ id, name: '新人格', tags: '', secs: splitPersona('你是……\n\n【打字习惯】\n- 短句、口语，一次只说一两句。') }); setSel(id); setDirty(true); setPending({}) } }, '＋ 新建人格'),
           h(AvatarCard, { st, toast, reload }),
         ),
-        edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面，按节写更好改。保存后，大肥鱼下一轮回复起就按新的来。',
+        edit ? h(Card, { title: '编辑人格', desc: '人格写在系统提示词的最前面，按节写更好改。离开不会自动保存；切标签/切页面会先记住草稿，下次进来会问你要不要恢复；输入框里 Ctrl+Z 可撤回。保存后大肥鱼下一轮回复起就按新的来。',
           right: h('div', { className: 'ab-flex' },
             edit.id !== current ? h(Btn, { small: true, onClick: async () => { const r = await post('/persona/use', { id: edit.id }); toast(r.message); refresh(); reload() } }, '设为当前') : null,
-            edit.id !== current ? h(Btn, { small: true, kind: 'danger', onClick: async () => { if (!confirm('删掉这个人格？')) return; const r = await post('/persona/delete', { id: edit.id }); if (r.ok) { setList(r.list); setSel(current) } else toast(r.message) } }, '删除') : null) },
+            edit.id !== current ? h(Btn, { small: true, kind: 'danger', onClick: async () => { if (!confirm('删掉这个人格？')) return; const r = await post('/persona/delete', { id: edit.id }); if (r.ok) { try { localStorage.removeItem(personaDraftKey(edit.id)) } catch (e) {} setList(r.list); setSel(current) } else toast(r.message) } }, '删除') : null) },
+          restore ? h('div', { className: 'ab-flex', style: { marginTop: 12, padding: '8px 10px', border: '1px solid #4a4a55', borderRadius: 8, background: 'rgba(255,255,255,.04)' } },
+            h('span', { className: 'ab-small' }, '发现上次没保存的人格改动（' + String(restore.body || '').length + ' 字' + (restore.at ? '，' + new Date(restore.at).toLocaleString() : '') + '）。要恢复吗？'),
+            h('div', { className: 'ab-spacer' }),
+            h(Btn, { small: true, kind: 'primary', onClick: restoreDraft }, '恢复'),
+            h(Btn, { small: true, kind: 'ghost', onClick: discardDraft }, '丢弃')) : null,
           h(Row, { label: '名字' }, h('input', { className: 'ab-input', value: edit.name, onChange: (e) => patch({ name: e.target.value }) })),
           h(Row, { label: '标签', hint: '用逗号隔开' }, h('input', { className: 'ab-input', value: edit.tags, onChange: (e) => patch({ tags: e.target.value }) })),
           h('div', { className: 'ab-flex', style: { marginTop: 14 } },
@@ -1255,6 +1329,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Choices, { value: draft.longTasks ? 'on' : 'off', onChange: (v) => setDraft(setPath(draft, 'longTasks', v === 'on')), options: [
               { value: 'off', label: '关', desc: '工具少一点，回话快一点' },
               { value: 'on', label: '开', desc: '干长活时能接着聊（默认）' },
+            ] })),
+          h(Row, { label: '后台子智能体', hint: '默认关。关着时只有你本人最近 5 分钟内说过话，模块才被允许派子智能体（拿本机命令/文件能力干活动）；打开后，定时任务这类没人应答的后台流程也能派——等于把这份能力也交给后台。' },
+            h(Choices, { value: draft.subagentBackground ? 'on' : 'off', onChange: (v) => setDraft(setPath(draft, 'subagentBackground', v === 'on')), options: [
+              { value: 'off', label: '关', desc: '后台任务不派子智能体（默认）' },
+              { value: 'on', label: '开', desc: '后台任务也可以派子智能体' },
             ] })),
         ),
         h(ProfilePerms, { st, draft, setDraft }),
@@ -1415,7 +1494,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
           h(Row, { label: '新会话先补看聊天记录', hint: '会话第一次开口时先读最近几条，接得上话。默认关' }, f.sw('chat.seedHistory')),
           h(Row, { label: '唤醒词', hint: '一行一个' },f.list('group.wakeWords', { placeholder: '大肥鱼\n肥鱼' })),
         ),
-        h(Card, { title: '安全刹车', desc: '只防失控（比如和别的机器人聊停不下来）：ta在一个群里短时间说太多就歇一会儿，主人 @ ta除外。平时碰不到。' },
+        h(Card, { title: '安全刹车', desc: '只防失控（比如和别的机器人聊停不下来）：ta在一个群里短时间说太多就歇一会儿；别人 @ ta、引用 ta、喊 ta 名字或追问 ta 不算主动接话，不会被刹车拦。平时碰不到。' },
           h(Row, { label: '连着接话几次', hint: '她会自己判断该不该停，这里只是兜底：没人叫她时最多连着接几次。0 = 不接话' }, f.range('group.engagedMax', 0, 10, 1, (v) => v + ' 次')),
           h(Row, { label: '最多说几次' }, f.range('group.burstMax', 1, 20, 1, (v) => v + ' 次'), h('span', { className: 'ab-muted' }, '/'), f.range('group.burstWindowSec', 30, 600, 30, (v) => Math.round(v / 6) / 10 + ' 分钟')),
         ),
@@ -1479,6 +1558,33 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
             h(Btn, { small: true, disabled: !add.id || !add.sel, onClick: addRow }, '添加'))) : null)
     }
 
+    /** 模型页：DeepSeek 峰谷省钱模式（默认关，只影响后台模型调用时机，聊天回复不变）。 */
+    function CostCard({ draft, setDraft }) {
+      const f = useField(draft, setDraft)
+      const [now, setNow] = useState(Date.now())
+      useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), 30_000)
+        return () => clearInterval(timer)
+      }, [])
+      const off = !!getPath(draft, 'cost.offPeak')
+      const holidays = getPath(draft, 'cost.offPeakHolidays') || []
+      const peak = isPeakAt(now, holidays)
+      const next = nextChangeAt(now, holidays)
+      return h(Card, {
+        title: 'DeepSeek 峰谷省钱模式',
+        right: f.sw('cost.offPeak'),
+        desc: '默认为关，现有行为不变。打开后只把「不着急的后台模型调用」尽量放到谷时，聊天回复不受影响。峰时 = 工作日北京时间 09:00–12:00、14:00–18:00；周末和法定节假日全天谷价，谷价约为峰价一半（以 DeepSeek 官网为准）。',
+      },
+        h(Row, { label: '现在的时段', hint: '按北京时间算；周末和下面填的节假日全天都算谷时' },
+          h('span', { className: 'ab-small', style: { color: peak ? 'var(--ab-warn)' : 'var(--ab-ok)' } }, peak ? '峰时 · 省着用' : '谷时 · 可以跑'),
+          next ? h('span', { className: 'ab-small ab-muted', style: { marginLeft: 8 } }, '下次切换 ' + fmtNextChange(next, now) + '（北京时间）') : null),
+        off ? h(Row, { label: '峰时推迟什么', hint: '这些是额外的后台模型调用；聊天、工具、审批、定时任务本身不受影响，到点照常' },
+          h('span', { className: 'ab-small ab-muted' }, '心情模型判断（退回关键词）/ 空闲提炼 / 记忆压缩 / 重复记忆合并 / 人物档案与说话风格整理 / 向量同步')) : null,
+        off ? h(Row, { label: '法定节假日', hint: '一行一个 YYYY-MM-DD（北京时间）。中国法定节假日日期每年不同，这里不硬编码，按官网公布的放假日期自己填；填了当天全天按谷价' },
+          f.list('cost.offPeakHolidays', { placeholder: '2026-10-01\n2026-10-02' })) : null,
+      )
+    }
+
     function Model({ draft, setDraft, toast }) {
       const [list, setList] = useState(null)
       const [ping, setPing] = useState({})
@@ -1522,6 +1628,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
             cur && ping[cur] ? h('span', { className: 'ab-muted ab-small' }, ping[cur]) : null),
         ),
         h(ChatModels, { draft, setDraft, list }),
+        h(CostCard, { draft, setDraft }),
         h(Card, { title: '可用的模型', desc: '点「测速」会真的问一次模型（花一点点额度），看它回一句话要多久。' },
           list === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : list.length === 0 ? h(Empty, { text: 'DSH 没有列出模型' }) :
             h('table', { className: 'ab-table' }, h('tbody', null, list.map((m) => h('tr', { key: key(m) },
@@ -1590,9 +1697,17 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
             h(Row, { key: 'a', label: '参考音频路径', hint: '服务那台电脑上的路径' }, f.text('voice.gptsovits.refAudio', { size: 'wide' })),
             h(Row, { key: 'p', label: '参考音频的文字' }, f.text('voice.gptsovits.promptText', { size: 'wide' })),
           ] : null,
-          draft.voice.engine === 'http' ? h(Row, { label: '地址模板', hint: '{text} 会换成要念的话，返回 wav/mp3' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'http://127.0.0.1:8000/tts?text={text}' })) : null,
+          draft.voice.engine === 'http' ? [
+            h(Row, { key: 'u', label: '接口地址', hint: 'GET：地址里带 {text}；POST：填接口地址就行' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'https://openspeech.bytedance.com/api/v1/tts' })),
+            h(Row, { key: 'm', label: '请求方式' }, f.select('voice.http.method', [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }], { width: 140 })),
+            h(Row, { key: 'h', label: '请求头', hint: '一行一个。多个头就多写几行' }, f.area('voice.http.headers', { size: 'wide', rows: 2, placeholder: 'Authorization: Bearer;你的token' })),
+            String((draft.voice.http || {}).method || 'GET').toUpperCase() !== 'GET'
+              ? h(Row, { key: 'b', label: '请求体', hint: '{text} 换成要念的话（自动转义），{reqid} 换成每次不同的随机串' }, f.area('voice.http.body', { size: 'wide', rows: 6, placeholder: '{"app":{"appid":"你的appid","token":"随便填","cluster":"volcano_tts"},"user":{"uid":"aurabot"},"audio":{"voice_type":"zh_female_wanwanxiaohe_moon_bigtts","encoding":"mp3"},"request":{"reqid":"{reqid}","text":"{text}"}}' }))
+              : null,
+          ] : null,
           h(Row, { label: '短回复变语音的概率' }, f.percent('voice.autoChance')),
           h(Row, { label: '多短算短回复' }, f.range('voice.autoMaxChars', 10, 200, 5, (v) => v + ' 字')),
+          h(Row, { label: '表情和语音分开发', hint: '语音条里的表情 / emoji 不念出来，语音发完再单独补一条文字发出去（没有表情就不补）；关掉 = 表情直接丢掉，不补发' }, f.sw('voice.emojiSeparate')),
           h(Row, { label: '试听', hint: '先保存设置再试听' },
             h('input', { className: 'ab-input', value: txt, onChange: (e) => setTxt(e.target.value) }),
             h(Btn, { small: true, onClick: async () => { const r = await post('/voice/test', { text: txt }); if (r.ok) setSrc('data:' + r.mime + ';base64,' + r.data); else toast(r.message) } }, '生成'),
@@ -2134,6 +2249,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [pkUrl, setPkUrl] = useState(null)
       // Electron 下载镜像的本地编辑态（同上；留空 = 用内置默认 npmmirror）
       const [emUrl, setEmUrl] = useState(null)
+      // 对话框（pet 1.0.5）配置草稿：快捷键/关键字/数字/城市要「保存」才下发，开关即点即存
+      const [cc, setCc] = useState(null)
       const load = async () => {
         const [pr, pu] = await Promise.all([get('/panel/pet/status'), get('/panel/purpose/status')])
         if (pr.ok) { setPet(pr.pet); setWs((old) => old || (pr.pet && pr.pet.whisper ? { ...pr.pet.whisper } : null)) }
@@ -2182,6 +2299,14 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         } catch (e) { toast(e.message) } finally { setBusy(''); load() }
       }
       const work = (pet && pet.work) || null
+      // ---------- 对话框（pet 1.0.5，模块库里的 petChat）：文本/数字走草稿 + 保存，开关即点即存 ----------
+      const chatCfg = (pet && pet.chat) || null
+      const cg = (k, fallback) => (cc && cc[k] != null ? cc[k] : (chatCfg ? chatCfg[k] : fallback))
+      const setCg = (k, v) => setCc((old) => ({ ...(old || {}), [k]: v }))
+      const saveChat = async (patch, msg) => { await savePet(patch, msg); setCc(null) }
+      const hotkeyStateText = !chatCfg ? '' : chatCfg.hotkeyState === 'registered' ? '当前已注册：' + (chatCfg.hotkey || '—')
+        : chatCfg.hotkeyState === 'failed' ? '注册失败：这个组合键被别的程序占用了，换一个试试'
+          : '当前未注册（没填或对话框关着）'
       // 可编辑字段用本地编辑态（改了一半别被轮询冲掉），实时字段（thinking/today/nextAt/上次说了什么）用服务端的
       const liveW = (pet && pet.whisper) || null
       const whisper = (liveW || ws) ? {
@@ -2273,6 +2398,35 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         // 只有 1.0.4 以上的桌宠模块才支持松手落地开关（老模块不显示，免得拨了没反应）
         pet?.releaseLand != null ? h(Row, { label: '松手后落地', hint: '开：拖动松手后按甩出速度抛出去、落回屏幕底部（带 Q 弹挤压）。关：松手停在哪就在哪，不抛也不落' },
           h(Switch, { on: pet.releaseLand !== false, onChange: async (v) => { setBusy('land'); try { await savePet({ petReleaseLand: v }, v ? '松手落地已开启' : '松手落地已关闭：松手停在哪就在哪') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })) : null,
+        // 只有 pet 1.0.5 以上的模块才有对话框（老模块不显示这些行，免得拨了没反应）
+        chatCfg ? h('div', { style: { marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--ab-line, #dbe5ea)' } },
+          h('div', { className: 'ab-small ab-muted', style: { marginBottom: 2 } },
+            '对话框：ta 自己的小窗，只在桌面里聊，永不发 QQ。现在 ' + (chatCfg.enabled ? (chatCfg.windowOpen ? '开着' : '开着（窗没开）') : '关着')
+            + (chatCfg.thinking ? ' · 正在想上一句' : '') + (chatCfg.historyCount ? ' · 历史 ' + chatCfg.historyCount + ' 条' : '')),
+          h(Row, { label: '开启对话框', hint: '关掉后快捷键会一起注销；开着才能用快捷键/右键菜单唤出小窗' },
+            h(Switch, { on: chatCfg.enabled !== false, onChange: async (v) => { setBusy('chat-on'); try { await savePet({ petChatEnabled: v }, v ? '对话框已开启' : '对话框已关闭（快捷键已注销）') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })),
+          h(Row, { label: '对话框快捷键', hint: '全局快捷键，按一次开、再按一次关（如 Alt+P）。留空 = 不启用。' + hotkeyStateText },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: 'Alt+P', value: cg('hotkey', ''), onChange: (e) => setCg('hotkey', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petChatHotkey: String(cg('hotkey', '')).trim() }, '快捷键已保存：桌宠会立刻重新注册') } }, '保存'))),
+          h(Row, { label: '关闭关键字', hint: '在对话框里发送这句话 → 直接关窗、不请求模型。留空 = 不启用关键字关闭' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: '关闭', value: cg('closeKeyword', ''), onChange: (e) => setCg('closeKeyword', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petChatCloseKeyword: String(cg('closeKeyword', '')).trim() }, '关闭关键字已保存') } }, '保存'))),
+          h(Row, { label: '失焦自动收起', hint: '点别处（小窗失焦）时自动关掉对话框' },
+            h(Switch, { on: chatCfg.blurHide !== false, onChange: async (v) => { setBusy('chat-blur'); try { await savePet({ petChatBlurHide: v }, v ? '失焦会收起' : '失焦不再收起') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })),
+          h(Row, { label: '历史条数 / 保留天数', hint: '只存桌宠本地（不进 QQ、不进工作区）。超限从头部截断；天数填 0 = 永久保留' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', type: 'number', min: 10, max: 2000, style: { width: 96 }, value: cg('maxEntries', 200), onChange: (e) => setCg('maxEntries', e.target.value) }),
+              h('span', { className: 'ab-muted ab-small' }, '条'),
+              h('input', { className: 'ab-input', type: 'number', min: 0, max: 3650, style: { width: 96 }, value: cg('retentionDays', 30), onChange: (e) => setCg('retentionDays', e.target.value) }),
+              h('span', { className: 'ab-muted ab-small' }, '天'),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petChatMaxEntries: Number(cg('maxEntries', 200)), petChatRetentionDays: Number(cg('retentionDays', 30)) }, '历史设置已保存') } }, '保存'))),
+          h(Row, { label: '天气城市', hint: '填城市名（如 上海）才接入天气，进对话框和碎碎念的「现在」；留空 = 不接入' },
+            h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+              h('input', { className: 'ab-input', style: { width: 'min(200px, 100%)' }, placeholder: '留空 = 不接入', value: cg('weatherCity', ''), onChange: (e) => setCg('weatherCity', e.target.value) }),
+              h(Btn, { small: true, disabled: busy === 'cfg', onClick: async () => { await saveChat({ petWeatherCity: String(cg('weatherCity', '')).trim() }, '天气城市已保存') } }, '保存'),
+              chatCfg.weather ? h('span', { className: 'ab-muted ab-small' }, '现在：' + chatCfg.weather) : null))) : null,
         clientBad ? h('div', { className: 'ab-note warn', style: { marginTop: 8 } },
           h('div', null, '⚠ 客户端和插件版本对不上：' + (clientInfo.message || '需要重新生成')),
           clientInfo.missing && clientInfo.missing.length ? h('div', { className: 'ab-small', style: { marginTop: 4 } }, '缺文件：' + clientInfo.missing.join('、') + '（缺 behavior.js 时行为层整个不生效，只打日志）') : null,
@@ -2526,7 +2680,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       )
     }
 
-    const SOURCE = { tool: 'ta自己记的', auto: '每日整理', diary: '空间日记', panel: '你加的', event: 'ta的经历', import: '导入的' }
+    const SOURCE = { tool: 'ta自己记的', auto: '每日整理', diary: '空间日记', panel: '你加的', event: 'ta的经历', import: '导入的', abstract: '长期印象' }
     function Mood({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [mem, setMem] = useState(null)
@@ -2594,6 +2748,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
           h(Row, { label: '琐碎事实保留多少天' }, f.num('memory.tierDays.1', { min: 0 })),
           h(Row, { label: '一般事实保留多少天' }, f.num('memory.tierDays.2', { min: 0 })),
           h(Row, { label: '重要事实保留多少天', hint: '永久档不会自动过期；没有档位的老记忆沿用原来的遗忘方式' }, f.num('memory.tierDays.3', { min: 0 })),
+          h(Row, { label: '把细节浓缩成长期印象', hint: '具体的事慢慢淡忘，留下更概括的关系和感受（比如「主人很疼她，总惦记她爱吃的东西」）。这些印象不会被自动整理改掉，也不会过期；手动加的和你自己总结的不会被压缩。每次整理最多多两次模型调用，默认开。' }, f.sw('memory.compress')),
+          h(Row, { label: '多久以前的事开始浓缩', hint: '这些天以前的琐碎记忆才会被概括；最近的事先留着具体细节。默认 14 天' }, f.num('memory.compressAfterDays', { min: 1, max: 365 }), h('span', { className: 'ab-muted' }, '天')),
           h(Row, { label: '私聊时想起别处的话', hint: '和你私聊时，带上她最近 24 小时在别的聊天里说过的话，每轮多占约 300 字。只进你的私聊，别处一律不带。默认关。' }, f.sw('memory.crossContext')),
           h('div', { className: 'ab-section-title' }, '向量检索（实验性）'),
           h('div', { className: 'ab-note' }, '默认关闭。请自己准备兼容 OpenAI 的 embedding 服务，例如 Ollama 的 bge-m3。开启后会把记忆文字和查询文字发给填写的地址；使用云端服务时请自行确认。'),
@@ -2750,10 +2906,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         if (r.ok) await onChanged()
       }
       const restore = async () => { const r = await post('/memory/restore', { id: m.id }); toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err'); if (r.ok) await onChanged() }
-      const tier = { 0: '永久', 1: '琐碎', 3: '重要' }[m.tier]
+      const tier = { 0: '永久', 1: '琐碎', 3: '重要', core: '长期印象' }[m.tier]
       const status = { hearsay: '听说', guess: '可能' }[m.status]
       return h('div', { className: cx('ab-pm-fact', m.invalidAt && 'old') },
-        h('span', { className: cx('ab-pm-dot', m.tier !== undefined && 't' + m.tier), 'aria-hidden': 'true' }),
+        h('span', { className: cx('ab-pm-dot', m.tier !== undefined && m.tier !== 'core' && 't' + m.tier), 'aria-hidden': 'true' }),
         h('div', { className: 'main' },
           editing ? h('div', null,
             h('textarea', { className: 'ab-textarea', style: { width: '100%', boxSizing: 'border-box', minHeight: 60, fontFamily: 'inherit' }, value: text, onChange: (e) => setText(e.target.value) }),
@@ -3735,6 +3891,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
 
 
     const HEYBOX_KIND = { browse: '逛了一圈', like: '点了赞', comment: '发了评论', post: '发了帖', delete: '删了帖' }
+    // 发帖风格的中文名（面板和排期卡片共用，避免两处写岔）
+    const HEYBOX_STYLE_LABEL = { diary: '大肥鱼日记', news: '热搜文', mix: '肥鱼热搜', deal: '每日羊毛' }
 
 
     /** 「小黑盒」页：账号、逛法、额度、热榜预览、发帖分区与自检提醒、逛过什么。 */
@@ -3745,6 +3903,99 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [hot, setHot] = useState(null)
       const [cookieText, setCookieText] = useState('')
       const load = () => get('/heybox/state').then(setS)
+      // ── 话题/分区下拉 + 每天每篇排期 ──
+      const [topicKw, setTopicKw] = useState({})
+      const splitHashtags = (v) => String(v ?? '').split(/[\s,，、]+/).filter(Boolean)
+      const joinHashtags = (arr) => arr.filter(Boolean).join(',')
+      const topicOpts = (s && Array.isArray(s.topicsList)) ? s.topicsList : []
+      const actOpts = (s && Array.isArray(s.actsList)) ? s.actsList : []
+      const selFor = (i) => {
+        const dp = draft.heybox && draft.heybox.dailyPosts && draft.heybox.dailyPosts[i]
+        return splitHashtags(dp && dp.hashtagsText)
+      }
+      const findAct = (n) => (actOpts || []).find(function (t) { return t.name === n && t.isAct })
+      const countSel = function (i) {
+        const parts = selFor(i)
+        const actN = parts.filter(findAct).length
+        return { act: actN, plain: parts.length - actN }
+      }
+      // 选话题：活动 / 普通互斥；活动只能 1 个，普通最多 3 个
+      const toggleTopic = (i, name) => setDraft(function (d) {
+        const hb = d.heybox || {}
+        const list = (Array.isArray(hb.dailyPosts) ? hb.dailyPosts : []).slice()
+        const item = { ...(list[i] || {}) }
+        const parts = splitHashtags(item.hashtagsText)
+        const wantAct = Boolean((actOpts || []).find(function (t) { return t.name === name && t.isAct }))
+        const isActIn = function (n) { return Boolean((actOpts || []).find(function (t) { return t.name === n && t.isAct })) }
+        let nextVals
+        if (parts.includes(name)) {
+          nextVals = parts.filter(function (x) { return x !== name })
+        } else if (wantAct) {
+          nextVals = [name]
+        } else {
+          const plainOnly = parts.filter(function (x) { return !isActIn(x) })
+          if (plainOnly.length >= 3) { toast('普通话题最多选 3 个', 'err'); return d }
+          nextVals = plainOnly.concat([name])
+        }
+        item.hashtagsText = joinHashtags(nextVals)
+        item.hashtags = nextVals.slice()
+        list[i] = item
+        return { ...d, heybox: { ...hb, dailyPosts: list } }
+      })
+      const fmtHeat = function (n) {
+        n = Number(n) || 0
+        if (n >= 100000000) return (n / 100000000).toFixed(1) + '亿'
+        if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+        return String(n)
+      }
+      const renderSelSummary = function (i) {
+        const c = countSel(i)
+        if (c.act > 0) return h('span', { className: 'ab-small', style: { whiteSpace: 'nowrap', color: 'var(--ab-ok)' } }, '已选创作活动 ' + c.act + '/1')
+        if (c.plain > 0) {
+          const color = c.plain >= 3 ? 'var(--ab-warn)' : 'var(--ab-ok)'
+          return h('span', { className: 'ab-small', style: { whiteSpace: 'nowrap', color: color } }, '已选普通话题 ' + c.plain + '/3')
+        }
+        return h('span', { className: 'ab-small ab-muted', style: { whiteSpace: 'nowrap' } }, '未选（活动 / 普通各选一种）')
+      }
+      // 搜索 + 分组渲染（创作活动在前）
+      const renderTopicGroups = function (i) {
+        const kw = String(topicKw[i] || '').trim().toLowerCase()
+        const all = (actOpts || []).filter(function (t) {
+          if (!kw) return true
+          return String(t.name).toLowerCase().indexOf(kw) >= 0 || String(t.actTitle || '').toLowerCase().indexOf(kw) >= 0
+        })
+        if (!all.length) return h('span', { className: 'ab-small ab-muted' }, (actOpts || []).length ? '没匹配到话题' : '还没拉到话题，点上面「刷新话题」')
+        const cur = selFor(i)
+        const groups = [
+          { key: 'act', title: '创作活动', items: all.filter(function (t) { return t.isAct }) },
+          { key: 'plain', title: '普通话题', items: all.filter(function (t) { return !t.isAct }) },
+        ]
+        return h('div', null, groups.map(function (g) {
+          if (!g.items.length) return null
+          return h('div', { key: g.key, style: { marginTop: 6 } },
+            h('div', { className: 'ab-small ab-muted', style: { marginBottom: 4 } }, g.title + '（' + g.items.length + '）'),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 6 } },
+              g.items.slice(0, 24).map(function (t) {
+                const on = cur.indexOf(t.name) >= 0
+                return h(Btn, { key: t.id, small: true, kind: on ? 'primary' : 'ghost', onClick: function () { toggleTopic(i, t.name) } },
+                  (on ? '✓ ' : '') + '#' + t.name + '#  ' + fmtHeat(t.contentNum))
+              }),
+              g.items.length > 24 ? h('span', { className: 'ab-small ab-muted' }, '还有 ' + (g.items.length - 24) + ' 个，用搜索缩小范围') : null)
+          )
+        }))
+      }
+      const addPostSlot = () => setDraft(function (d) {
+        const hb = d.heybox || {}
+        const list = Array.isArray(hb.dailyPosts) ? hb.dailyPosts : []
+        if (list.length >= 5) { toast('最多 5 篇', 'err'); return d }
+        return { ...d, heybox: { ...hb, dailyPosts: [...list, { style: 'mix', topic: '', hashtagsText: '', hashtags: [], wordsMin: 0, wordsMax: 0, hint: '' }] } }
+      })
+      const removePostSlot = (i) => setDraft(function (d) {
+        const hb = d.heybox || {}
+        const list = Array.isArray(hb.dailyPosts) ? hb.dailyPosts.slice() : []
+        list.splice(i, 1)
+        return { ...d, heybox: { ...hb, dailyPosts: list } }
+      })
       useEffect(() => { load() }, [])
       const act = (path, label, body) => async () => {
         setBusy(label)
@@ -3846,7 +4097,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       return h('div', { className: 'ab-grid' },
         h(Card, {
           title: '刷小黑盒', right: f.sw('heybox.enabled'),
-          desc: '用你的小黑盒账号逛游戏社区：定时看信息流、读帖子正文和热评，按性格决定点不点赞、评不评论；ta自己会写帖子（先看热榜找角度，再看社区高赞帖在聊什么，配图走小黑盒图床），发完把链接报给你。写操作各有权限（「权限」页，默认仅主人），每天有额度上限。',
+          desc: '用你的小黑盒账号逛游戏社区：定时看信息流、读帖子正文和热评，按性格决定点不点赞、评不评论；ta自己会写帖子（先看热榜找角度，再看社区高赞帖在聊什么）。配图按正文字数自动配：500 字以内文末 1 张、500-1000 字首段后加 1 张、1000 字以上每多 1000 字文中再加 1 张，每张优先按内容和心情现画，画不出来才用表情包库兜底。写操作各有权限（「权限」页，默认仅主人），每天有额度上限。',
         },
           h(Row, { label: '小黑盒账号', hint: '从浏览器登录后把整串 Cookie 粘到下面。pkey 必须有；想让它能点赞评论发帖，还要有 x_xhh_tokenid（F12 → Application → Cookies 里能复制到）' },
             h('div', null,
@@ -3917,13 +4168,44 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
               { value: 'diary', label: '大肥鱼日记', desc: '第一人称随手记，跟空间日记一个味，120-300字' },
               { value: 'news', label: '热搜文', desc: '报道新闻体，摆具体数字，200-800字' },
               { value: 'mix', label: '肥鱼热搜', desc: '用日记口吻写热搜，150-500字' },
+              { value: 'deal', label: '每日羊毛', desc: '游戏折扣 / 限免 / 黑盒活动，带直达链接，150-450字' },
             ], { width: 220 })),
-          h(Row, { label: '发帖默认分区', hint: '文章帖必须挂分区，否则会报「请添加分区」。这三个是实测存在的' },
-            f.select('heybox.defaultTopic', [
-              { value: 7214, label: '盒友杂谈', desc: '最常用，什么都能聊' },
-              { value: 18745, label: '数码硬件', desc: '显卡、笔记本、外设' },
-              { value: 806933, label: 'AI', desc: 'AI 相关，容易涨浏览' },
-            ], { width: 200 })),
+          h(Row, { label: '发帖字数范围', hint: '留 0 = 用所选风格自带的字数。填了就覆盖所有风格' },
+            h('div', { className: 'ab-flex' },
+              f.num('heybox.postWordsMin', { min: 0, max: 2000 }), h('span', { className: 'ab-muted' }, '–'),
+              f.num('heybox.postWordsMax', { min: 0, max: 3000 }), h('span', { className: 'ab-muted' }, '字')),
+          ),
+          h(Row, { label: '分区怎么选', hint: '自动 = 按正文里的游戏名/分区名挑，挑不到回落默认分区；手动 = 永远用默认分区' },
+            f.choices('heybox.topicMode', [
+              { value: 'manual', label: '手动', desc: '总是用默认分区' },
+              { value: 'auto', label: '自动', desc: '按内容挑，挑不到回落默认' },
+            ], { width: 180 })),
+          h(Row, { label: '发帖默认分区', hint: s && (s.topicsList || []).length ? '文章帖必须挂分区，否则会报「请添加分区」。下面是接口拉到的全部分区（' + (s.topicsList || []).length + ' 个）' : '文章帖必须挂分区，否则会报「请添加分区」；点「刷新分区」能拉到全部' },
+            f.select('heybox.defaultTopic',
+              // 优先用接口拉到的真实分区全表；拉不到才退回内置那几个
+              (s && (s.topicsList || []).length)
+                ? (s.topicsList || []).map((t) => ({
+                  value: Number(t.id) || t.id,
+                  label: t.name,
+                  desc: [t.game ? '游戏分区' : '综合分区', t.hot ? '热度 ' + t.hot : ''].filter(Boolean).join(' · '),
+                }))
+                : [
+                  { value: 7214, label: '盒友杂谈', desc: '最常用，什么都能聊' },
+                  { value: 18745, label: '数码硬件', desc: '显卡、笔记本、外设' },
+                  { value: 806933, label: 'AI', desc: 'AI 相关，容易涨浏览' },
+                  { value: 549999, label: '校园生活', desc: '学生党话题' },
+                  { value: 73907, label: '沙雕日常', desc: '搞笑日常' },
+                  { value: 425422, label: 'Steam', desc: 'Steam 促销 / 游戏库' },
+                ],
+              { width: 220 })),
+          s && s.topicsCache ? h(Row, { label: '分区表', hint: '每天自动拉一次，不用手动管' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small ab-muted' }, (s.topicsCache.count || 0) + ' 个分区 · ' + (s.topicsCache.cached ? '今天已更新' : '刚更新')),
+              h(Btn, { small: true, onClick: () => post('/heybox/topics/refresh').then((r) => { toast(r.message || '已刷新', r.ok === false ? 'err' : 'ok'); load() }).catch(() => toast('刷新失败', 'err')) }, '刷新分区'))) : null,
+          s && s.actsCache ? h(Row, { label: '话题表', hint: '创作活动（有奖励，排最前）和普通话题，都带热度。每天自动更新一次' },
+            h('div', { className: 'ab-flex' },
+              h('span', { className: 'ab-small ab-muted' }, '活动 ' + (s.actsCache.actCount || 0) + ' 个 · 普通 ' + (s.actsCache.plainCount || 0) + ' 个'),
+              h(Btn, { small: true, onClick: () => post('/heybox/acts/refresh').then((r) => { toast(r.message || '已刷新', r.ok === false ? 'err' : 'ok'); load() }).catch(() => toast('刷新失败', 'err')) }, '刷新话题'))) : null,
           s ? h(Row, { label: '今天已经用掉', hint: '到 0 就等明天，或者手动清零（重启一次会话不会重置）' },
             h('div', { className: 'ab-flex' },
               h('span', { className: 'ab-small ab-muted' },
@@ -3933,6 +4215,123 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
                 ' · 帖 ' + (quota.post || 0) + '/' + (limits.maxPostsPerDay || 0) + ' · 分享 ' + (quota.share || 0) + '/' + (limits.shareDaily || 0)),
               h(Btn, { small: true, kind: 'ghost', onClick: act('/heybox/clear-quota', 'quota') }, busy === 'quota' ? '清零中…' : '清零')))
             : null,
+        ),
+        h(Card, {
+          title: '每天发多篇：每篇各管各的',
+          desc: '配了就按篇数来：今天第 1 篇用第 1 项、第 2 篇用第 2 项……排期用完或没配就回到上面的全局设置。每篇可以单独指定风格、分区、话题、字数。',
+          right: h('div', { className: 'ab-flex' },
+            h('span', { className: 'ab-small ab-muted' }, '已发 ' + ((s && s.postPlan && s.postPlan.done) || 0) + ' / ' + (((draft.heybox && draft.heybox.dailyPosts) || []).length)),
+            h(Btn, { small: true, kind: 'primary', onClick: addPostSlot }, '新增一篇')),
+        },
+          ((draft.heybox && draft.heybox.dailyPosts) || []).length === 0
+            ? h(Empty, { icon: '📅', text: '还没配排期。点右上角「新增一篇」，就能让今天第几篇发什么各不相同。' })
+            : h('div', null, ((draft.heybox && draft.heybox.dailyPosts) || []).map(function (p, i) {
+                const done = ((s && s.postPlan && s.postPlan.done) || 0) > i
+                return h('div', { key: i, style: { marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid var(--ab-line)' } },
+                  h(Row, { label: '第 ' + (i + 1) + ' 篇' + (done ? '（已发）' : '') },
+                    h('div', { className: 'ab-flex' },
+                      f.select('heybox.dailyPosts.' + i + '.style', [
+                        { value: '', label: '跟全局', desc: '用上面的默认风格' },
+                        { value: 'diary', label: '大肥鱼日记' },
+                        { value: 'news', label: '热搜文' },
+                        { value: 'mix', label: '肥鱼热搜' },
+                        { value: 'deal', label: '每日羊毛' },
+                      ], { width: 150 }),
+                      h(Btn, { small: true, kind: 'ghost', onClick: function () { removePostSlot(i) } }, '删')),
+                  ),
+                  h(Row, { label: '分区', hint: '留空 = 按上面的模式走（手动用默认 / 自动按内容挑）' },
+                    f.select('heybox.dailyPosts.' + i + '.topic', [
+                      { value: '', label: '跟全局', desc: '' },
+                    ].concat((topicOpts || []).map(function (t) { return { value: t.id, label: t.name + (t.game ? '（游戏）' : ''), desc: t.id } })),
+                    { width: 200 })),
+                  h(Row, { label: '字数' },
+                    h('div', { className: 'ab-flex' },
+                      f.num('heybox.dailyPosts.' + i + '.wordsMin', { min: 0, max: 2000 }), h('span', { className: 'ab-muted' }, '–'),
+                      f.num('heybox.dailyPosts.' + i + '.wordsMax', { min: 0, max: 3000 }), h('span', { className: 'ab-muted' }, '字')),
+                  ),
+                  h(Row, { label: '话题', hint: '创作活动和普通话题只能选一种：选活动会自动清掉普通（限 1 个），选普通会清掉活动（最多 3 个）' },
+                    h('div', { style: { width: '100%' } },
+                      h('div', { className: 'ab-flex', style: { marginBottom: 6 } },
+                        h('input', {
+                          className: 'ab-input sm', style: { flex: 1, minWidth: 120 },
+                          placeholder: '搜话题关键词，如 游戏 / 养鱼 / steam',
+                          value: (topicKw[i] || ''),
+                          onChange: function (e) { const v = e.target.value; setTopicKw(function (m) { const n = { ...m }; n[i] = v; return n }) },
+                        }),
+                        renderSelSummary(i)),
+                      renderTopicGroups(i)),
+                  ),
+                  h(Row, { label: '本篇额外要求', hint: '一句话写进她的提示词，比如「写养鱼日常」「必须带 Steam 折扣链接」' },
+                    f.text('heybox.dailyPosts.' + i + '.hint', { placeholder: '可留空', width: 300 })),
+                )
+              })),
+        ),
+        // ── 今天发到第几篇（只读概览）──────────────────────────
+        // 排期是可编辑的，但「今天实际会按哪一项发、下一篇是什么」只有 state 的
+        // postPlan 知道（done / current / items 的 empty 标记）。这里补一个只读视图，
+        // 免得要自己数「已发了几篇」再去对照上面第几项。
+        h(Card, {
+          title: '今天发到第几篇',
+          right: h('div', { className: 'ab-flex' },
+            h(Btn, { small: true, onClick: load }, '刷新')),
+          desc: '按今天已发了几篇，依次取上面排期里的对应项。字数低于该项下限会被直接拒发，所以这里的数字要和实际想发的长度对得上。',
+        },
+          !s ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : !(s.postPlan && s.postPlan.configured)
+              ? h(Empty, { icon: '📅', text: '还没配排期：她发帖会走上面的默认风格和默认字数。' })
+              : h('div', null,
+                h('div', { className: 'ab-list' }, ((s.postPlan && s.postPlan.items) || []).map((it) => h('div', { key: it.index, className: 'ab-li' },
+                  h('div', { className: 'meta' },
+                    '第 ' + it.index + ' 篇',
+                    it.done ? h('span', { style: { color: 'var(--ab-ok)', marginLeft: 4 } }, '✓ 已发') : null),
+                  h('div', { className: 'body' },
+                    h('div', null,
+                      h('span', { className: 'ab-badge' }, it.empty ? '跟全局' : (HEYBOX_STYLE_LABEL[it.style] || it.style || '默认')),
+                      h('span', { className: 'ab-muted' }, '  ·  分区 ' + (it.topic || '默认') + '  ·  ' + (it.wordsMin || '?') + '-' + (it.wordsMax || '?') + ' 字')),
+                    (it.hashtagsText || (it.hashtags || []).join(', '))
+                      ? h('div', { className: 'ab-muted' }, '话题：' + (it.hashtagsText || (it.hashtags || []).join(', ')))
+                      : null,
+                    it.hint ? h('div', { className: 'ab-muted' }, '提示：' + it.hint) : null)))),
+                (s.postPlan && s.postPlan.current)
+                  ? h('div', { className: 'ab-note', style: { marginTop: 8 } },
+                    '下一篇（第 ' + (s.postPlan.current.index || '?') + ' 篇）会按：' +
+                    (HEYBOX_STYLE_LABEL[s.postPlan.current.style] || s.postPlan.current.style || '默认风格') +
+                    ' / ' + (s.postPlan.current.wordsMin || '?') + '-' + (s.postPlan.current.wordsMax || '?') + ' 字' +
+                    (s.postPlan.current.hashtagsText ? ' / 话题「' + s.postPlan.current.hashtagsText + '」' : ''))
+                  : h('div', { className: 'ab-note', style: { marginTop: 8 } }, '排期已经走完了，后面几篇都会回到全局设置。'),
+              ),
+        ),
+        // ── 话题库（只读）────────────────────────────────────
+        // state 早就返回 actsList（活动在前、带热度）。上面只有「刷新话题」按钮和数量，
+        // 看不到具体有哪些活动可挂，这里补一个可读列表。
+        h(Card, {
+          title: '话题库',
+          right: h('div', { className: 'ab-flex' },
+            h(Btn, { small: true, kind: 'primary', onClick: () => post('/heybox/acts/refresh').then((r) => { toast(r.message || '已刷新', r.ok === false ? 'err' : 'ok'); load() }).catch(() => toast('刷新失败', 'err')), disabled: !!busy }, busy === 'acts' ? '刷新中…' : '刷新话题'),
+            h(Btn, { small: true, onClick: load }, '重新读')),
+          desc: '写帖要挂话题就从这里挑（带「活动」角标的优先，有奖励）。活动和普通话题**可以一起挂**：活动最多 1 个 + 普通最多 3 个（共 4 个）。她发帖时话题是以**纯文本名字**提交的，服务端自己匹配成话题；传对象（name+hashtag_id）会让发帖直接失败。',
+        },
+          (() => {
+            const acts = s && (s.actsList || [])
+            if (!acts || !acts.length) return h(Empty, { icon: '🏷️', text: '还没拉到话题。点右上角「刷新话题」（要扫十几页信息流，慢一点）。' })
+            const actOnly = acts.filter((x) => x.isAct)
+            const plainOnly = acts.filter((x) => !x.isAct)
+            const line = (x) => h('div', { key: 'a' + x.id, className: 'ab-li' },
+              h('div', { className: 'body' },
+                h('div', null,
+                  h('span', { style: { fontWeight: 600 } }, x.name),
+                  x.isAct ? h('span', { className: 'ab-badge', style: { marginLeft: 6 } }, '活动') : null,
+                  x.contentNum ? h('span', { className: 'ab-muted', style: { marginLeft: 6 } }, '热度 ' + x.contentNum) : null),
+                x.actTitle ? h('div', { className: 'ab-muted' }, x.actTitle) : null))
+            return h('div', null,
+              s && s.actsCache
+                ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 6 } },
+                  '共 ' + (s.actsCache.count || 0) + ' 个（活动 ' + (s.actsCache.actCount || 0) + '，普通 ' + (s.actsCache.plainCount || 0) + '）' +
+                  (s.actsCache.cached ? ' · 今天已缓存' : ' · 缓存是 ' + (s.actsCache.date || '旧的')))
+                : null,
+              actOnly.length ? h('div', { style: { marginBottom: 10 } }, h('div', { className: 'ab-small', style: { fontWeight: 600, marginBottom: 4 } }, '创作活动（优先挂，有奖励）'), h('div', { className: 'ab-list' }, actOnly.slice(0, 8).map(line))) : null,
+              plainOnly.length ? h('div', null, h('div', { className: 'ab-small', style: { fontWeight: 600, marginBottom: 4 } }, '普通话题（按热度）'), h('div', { className: 'ab-list' }, plainOnly.slice(0, 12).map(line))) : null)
+          })(),
         ),
         h(Card, {
           title: '热榜预览', right: h('div', { className: 'ab-flex' },
@@ -3954,11 +4353,18 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
               '① 先看热榜挑题（不许跳过），挑不出来就说今天没合适的，别硬凑。',
               '② 再看社区高赞帖在聊什么角度，可以借角度但用自己的话。',
               '③ 素材里必须有具体的东西：价格、销量、时长、机制名、star 增速——没具体信息就是水文。',
-              '④ 标题别和正文第一行重复；不编造第一人称经历；正文 200-800 字；配图越多越好。',
-              '⑤ 不碰政治、医疗法律建议、评价真人、判断价格是否合理；读一遍像不像人话（转折词堆砌就是 AI 腔）。',
+              '④ 标题别和正文第一行重复；不编造第一人称经历；正文要达到排期要求的字数（低于下限会被直接拒发）。',
+              '⑤ 配图不用ta操心：不传图时按字数自动配（≤500 字文末 1 张、500-1000 字首段后+文末、1000 字以上每多 1000 字文中再加），画不出来才用表情包库兜底；一张都拿不到就按纯文字发并标 textOnly。',
+              '⑥ 不碰政治、医疗法律建议、评价真人、判断价格是否合理；读一遍像不像人话（转折词堆砌就是 AI 腔）。',
             ].join('\n')),
           h('div', { className: 'ab-note warn' },
-            '格式上的坑（已修在内核里）：帖子类型必须是「文章」(link_tag=11) 才能解析 HTML 并把图插在文字中间；分区 id 必须是真实存在的 7214 / 18745 / 806933，乱填会一直报「错误的帖子类型」。'),
+            [
+              '格式上的坑（已修在内核里）：',
+              '· 帖子类型必须是「文章」(link_tag=11) 才能解析 HTML 并把图插在文字中间；分区 id 必须是真实存在的，乱填会报「错误的帖子类型」。',
+              '· 话题（hashtag）必须传**话题名字**的纯文本数组，不能传 {name,hashtag_id} 对象——对象会让发帖直接 HTTP 500。话题写进帖子的 content_tags（style_type=2），不在 hashtags 字段，别拿那个字段当验收标准。',
+              '· 图片必须按真实宽高上传；以前写死 1000x600，方图会被压扁。',
+              '· 「每日羊毛」必须带真实直达链接，没链接会被 no_link 拒发。',
+            ].join('\n')),
         ),
         h(Card, {
           title: 'ta逛过什么', right: h('div', { className: 'ab-flex' },

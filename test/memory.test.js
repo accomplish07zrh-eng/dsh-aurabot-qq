@@ -113,7 +113,7 @@ test('经历：她做过的事常驻上下文；群里优先想起正在说话�
   assert.equal(mem.recentEvents()[0].text, '给主人唱了《小幸运》')
   const ctx = mem.contextFor({ kind: 'private', userId: '10000001', chatId: 'private:10000001' }, 's1')
   assert.match(ctx, /你最近做过的事：刚才给主人唱了《小幸运》/)
-  mem.add({ text: '阿花最近在减肥', about: '30000003', aboutName: '阿花', importance: 0.6, source: 'tool' })
+  mem.add({ text: '阿花最近在减肥', about: '30000003', aboutName: '阿花', importance: 0.6, source: 'tool', chatId: 'group:555' })
   hubState.text = '今天吃什么'
   hubState.speakers = ['30000003']
   const g = mem.contextFor({ kind: 'group', groupId: '555', chatId: 'group:555' }, 's2')
@@ -157,9 +157,11 @@ test('想起来的记忆带时间；最近想起了什么有记录（含想不�
   assert.equal(whenText(now - 86400_000, now), '昨天')
   assert.equal(whenText(now - 3 * 86400_000, now), '3 天前')
   assert.equal(whenText(now - 400 * 86400_000, now).startsWith('去年'), true)
+  // 新契约：非主人私聊只看当前聊天来源的记忆，这里补一条“小七私聊里说过”的可见记忆
+  mem.add({ text: '阿花最近爱晒太阳', about: '30000003', aboutName: '阿花', importance: 0.6, source: 'tool', chatId: 'private:30000003' })
   hubState.text = '阿花最近怎么样'
   const hint = mem.recallHint({ kind: 'private', userId: '30000003', chatId: 'private:30000003' }, '阿花最近怎么样')
-  assert.ok(hint.includes('[今天] [阿花(30000003)] 阿花'), hint)
+  assert.ok(hint.includes('[今天 私聊] [阿花(30000003)] 阿花'), hint)
   const log = mem.recalls()[0]
   assert.equal(log.where, 'private:30000003')
   assert.ok(log.hits.length && log.hits[0].why.length)
@@ -249,7 +251,7 @@ test('短句（「嗯嗯」）：群里不翻无主记忆，主人私聊仍可�
 })
 
 test('相关记忆提示有长度上限（#79：上下文增长优化）', () => {
-  for (let i = 0; i < 20; i++) mem.add({ text: '测试记忆第' + i + '条，内容是阿花喜欢的东西和周末计划', about: '30000003', aboutName: '阿花', importance: 0.5, source: 'tool' })
+  for (let i = 0; i < 20; i++) mem.add({ text: '测试记忆第' + i + '条，内容是阿花喜欢的东西和周末计划', about: '30000003', aboutName: '阿花', importance: 0.5, source: 'tool', chatId: 'group:555' })
   hubState.speakers = ['30000003']
   const hint = mem.recallHint({ kind: 'group', groupId: '555', chatId: 'group:555' }, '阿花喜欢什么 周末计划')
   assert.ok(hint.length > 0 && hint.length <= 350, 'hint 长度 ' + hint.length)

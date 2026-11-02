@@ -45,7 +45,9 @@
     "docs/USER-MANUAL.md",
     "docs/MODULE-TUTORIAL.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "README_EN.md",
+    "docs/DESIGN.md"
   ],
   "repository": {
     "type": "git",

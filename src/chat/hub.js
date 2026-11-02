@@ -22,7 +22,7 @@ import { findFfmpeg, findSharp, shrinkImage, shrinkWithSharp } from '../core/img
 import { redact } from '../core/redact.js'
 import { defaultModel, pickReasoningEffort, canSeeImages, modelVision } from '../core/llm.js'
 import { resolveChatModel } from './chat-model.js'
-import { createFaces, textToSegments, stripFaceTags, speakableText } from './faces.js'
+import { createFaces, textToSegments, stripFaceTags, splitSpeakable } from './faces.js'
 import { expandMentions, hasMention } from './mentions.js'
 import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
@@ -66,7 +66,7 @@ const sessionKey = (id) => {
 // 模拟测试：这里面发出去的消息只记下来，不真发
 const captureStore = new AsyncLocalStorage()
 const failStore = new AsyncLocalStorage() // deliver 这一次里发失败的原因，好让调用方如实告诉她
-export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, moodEffects, localApi, hooks, availableModels, toolsGeneration }) {
+export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
   const mood = () => (typeof moodEffects === 'function' ? moodEffects() : null) || { sticker: 1, voice: 1, delay: 1, chatty: 1 }
   const mapFile = () => dataDir('sessions.json')
@@ -555,7 +555,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return kind === 'group' ? { kind: 'group', id } : kind === 'private' ? { kind: 'private', id } : null
   }
 
-  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, timeoutMs } = {}) {
+  // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
+  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false } = {}) {
     if (disposed) return null
     const cfg = getConfig()
     const tgt = targetOf(chatId)
@@ -600,7 +601,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       bump('errors')
       log.warn(`发到 ${chatId} 失败：`, error.message)
       if (throwOnError) throw error
-      failStore.getStore()?.push(error.message)
+      if (!quiet) failStore.getStore()?.push(error.message)
       return null
     }
   }
@@ -620,12 +621,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   async function sendVoice(chatId, text, replyId, userId) {
-    let b64, engine
+    let b64, engine, extras
     try {
       // 表情标签 / emoji 不念出来：TTS 只念能说的字（用户反馈：发语音时「呲牙」被读出来）
-      const spoken = speakableText(text)
-      if (!spoken) throw new Error('这条语音里只有表情/符号，没有能念的字')
-      const voice = await tts.speak(spoken)
+      const split = splitSpeakable(text)
+      extras = split.extras
+      if (!split.spoken) throw new Error('这条语音里只有表情/符号，没有能念的字')
+      const voice = await tts.speak(split.spoken)
       engine = voice.engine
       b64 = readFileSync(voice.file).toString('base64')
     } catch (error) {
@@ -637,7 +639,20 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (replyId || userId) log.debug(`语音条不能带引用/@（QQ 限制），单独发：${chatId}`)
     try {
       const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], `[语音·${engine}] ${text.slice(0, 40)}`, { throwOnError: true, timeoutMs: FILE_TIMEOUT_MS })
-      if (r || getConfig().dryRun || !getConfig().enabled) { bump('voice'); return true }
+      if (r || getConfig().dryRun || !getConfig().enabled) {
+        bump('voice')
+        // 表情不念出来，但要补上：语音条发完再单独发一条文字里的表情（用户反馈：希望表情和语音分开发）
+        if (extras && getConfig().voice.emojiSeparate !== false) {
+          // 补发是额外的一条：失败只记日志，不算这一轮发失败（不然语音明明发出去了也会被当成没发）
+          try {
+            const sent = await sendText(chatId, extras, undefined, undefined, undefined, { quiet: true })
+            log.debug(sent ? `语音后面补发了一条表情：${chatId}` : '表情没补发出去（不影响语音条）')
+          } catch (error) {
+            log.debug('表情没补发出去：', error.message)
+          }
+        }
+        return true
+      }
       const message = '语音没有发送'
       log.warn(message)
       failStore.getStore()?.push(message)
@@ -1253,7 +1268,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     let groupEntry = null
     if (msg.kind === 'group') {
       const buf = groupBuf.get(msg.groupId) || []
-      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: msg.text, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId }
+      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: msg.text, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId, images: msg.images, stickers: msg.stickers }
       buf.push(groupEntry)
       while (buf.length > 40) buf.shift()
       groupBuf.set(msg.groupId, buf)
@@ -1354,6 +1369,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       try { memScore = typeof memoryScore === 'function' ? memoryScore(recentTexts.join(' ')) : 0 } catch (error) {}
       const quotedBot = await repliedToBot(msg.replyId, msg)
       if (disposed) return
+      // 这一条之前最近一条是不是她说的：判断「人呢」是不是在追问她（#182）
+      const gbuf = groupBuf.get(msg.groupId) || []
+      const priorMsg = gbuf.length >= 2 ? gbuf[gbuf.length - 2] : null
+      const lastBotAt = (groupSaid.get(msg.groupId) || []).at(-1) || 0
       const decision = decideGroupReply({
         policy: pol,
         relevance: topicRelevance(recentTexts, pol.interests, memScore),
@@ -1361,7 +1380,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         engagedRun: groupEngagedRun.get(msg.groupId) || 0,
         mentioned: msg.mentioned,
         atOthers: cfg.group?.ignoreAtOthers ? msg.atOthers : false,
+        atOthersAny: msg.atOthers,
         repliedToBot: quotedBot,
+        lastIsBot: Boolean(lastBotAt && (!priorMsg || lastBotAt > priorMsg.t)),
         fromOwner: isOwner(cfg, msg.userId),
         text: msg.wakeText,
         now,
@@ -1383,7 +1404,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         log.debug(`群 ${msg.groupId}：不回（${decision.reason}）`)
         logChat(msg.chatId, msg.nickname, msg.text, msg.userId)
         // 已经有一段在等她回：这条也算进去（她回的时候能看到），但不单独再触发一次
-        if (pending.has(msg.chatId)) await addGroupImages(msg)
+        if (pending.has(msg.chatId)) await addGroupImages(msg, groupEntry)
         return
       }
       groupEntry.direct = Boolean(msg.messageId && msg.messageId !== '0' && msg.userId && (msg.mentioned || quotedBot))
@@ -1420,6 +1441,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const content = msg.kind === 'group' ? [] : [{ type: 'text', text: `【私聊】${msg.nickname}(${msg.userId})：` + (text || '（没有文字）') + (quoted ? '\n' + quoteInline(quoted) : '') }]
     const imgs = await imagesOf(msg)
     if (disposed) return
+    if (imgs.length && groupEntry) groupEntry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
     if (imgs.length) {
       // 图片先留着，prompt 钩子里的模块可以接管（#167）；模型看不了图时 pushToSession 再换成文字
       for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
@@ -1505,14 +1527,44 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   /** 没触发回复的群消息带的图：如果正有一段在等她回，把图也带上（最多 4 张）。 */
-  async function addGroupImages(msg) {
+  async function addGroupImages(msg, entry = null) {
     const p = pending.get(msg.chatId)
     if (!p || p.images.length >= MAX_MESSAGE_IMAGES) return
     try {
       const imgs = await imagesOf(msg)
       for (let i = 0; i < imgs.length && p.images.length < MAX_MESSAGE_IMAGES; i++) p.images.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
+      if (imgs.length && entry) entry.mediaPending = true // 这些图已经进 pending.images，groupPrompt 不用再带
       if (animatedNote(imgs) && (await canSeeFor(p.chat)) !== false) p.images.push({ type: 'text', text: animatedNote(imgs) })
     } catch (error) {}
+  }
+
+  // 群聊这一段里群友发的图：只带最近 5 分钟内、最多 2 张（#181）。触发回复那条的图走 pending.images，这里跳过。
+  const GROUP_IMAGE_WINDOW_MS = 5 * 60_000
+  const GROUP_IMAGE_MAX = 2
+
+  async function freshGroupImages(fresh, room) {
+    const take = Math.min(GROUP_IMAGE_MAX, room)
+    if (take <= 0) return []
+    const out = []
+    let got = 0
+    const cutoff = Date.now() - GROUP_IMAGE_WINDOW_MS
+    for (const x of fresh.slice().reverse()) {
+      if (got >= take) break
+      if (x.mediaPending || !x.t || x.t < cutoff || (!x.images?.length && !x.stickers?.length)) continue
+      try {
+        const imgs = await imagesOf(x)
+        for (const img of imgs) {
+          if (got >= take) break
+          got++
+          out.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: `qq-${x.mid || 'group'}-${got}` })
+        }
+        const note = animatedNote(imgs)
+        if (note) out.push({ type: 'text', text: note })
+      } catch (error) {
+        log.debug('群聊图片读取失败：', error.message)
+      }
+    }
+    return out
   }
 
   /** 群聊这一段的提示词：之前的几句当背景，上次交给她之后群里新说的话全部列出来，让她看完整段再回。 */
@@ -1559,7 +1611,20 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         quotedImages.push(...await quoteImages(x.quote, take))
       }
     }
-    return { text, query, speakers, autoReply: pickAutoReply(fresh), images: quotedImages }
+    // 这一段里群友发的图也给她看；看不了图就明说有几张，别让她照着占位编（#181）
+    const mediaNow = Date.now()
+    const mediaEntries = fresh.filter((x) => !x.mediaPending && (x.images?.length || x.stickers?.length) && x.t && mediaNow - x.t < GROUP_IMAGE_WINDOW_MS)
+    let mediaNote = ''
+    let extraImages = []
+    if (mediaEntries.length) {
+      const mediaCount = mediaEntries.reduce((n, x) => n + (x.images?.length || 0) + (x.stickers?.length || 0), 0)
+      if ((await canSeeFor(chat)) === false) {
+        mediaNote = '\n（这一段里对方一共发了 ' + mediaCount + ' 张图/表情，你现在的模型看不了图，只能知道有这回事；别猜图里是什么，也别当成自己看过）'
+      } else {
+        extraImages = await freshGroupImages(fresh, Math.max(0, imageRoom - quotedImages.length))
+      }
+    }
+    return { text: text + mediaNote, query, speakers, autoReply: pickAutoReply(fresh), images: [...quotedImages, ...extraImages] }
   }
 
   // ---------- 连发合并：人常常一口气发好几句，等对方说完再一起交给她，别一句一回 ----------
@@ -1981,10 +2046,24 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     // 重启后会话还没被第一条消息唤醒时，内存映射是空的：退回持久化的 聊天→会话 映射（#90 兜底要用）
     try {
       for (const [chatId, entry] of Object.entries(map().chats || {})) {
-        if (entry && entry.sessionId && sessionKey(entry.sessionId) === key) return chatId
+        if (!entry) continue
+        if (entry.sessionId && sessionKey(entry.sessionId) === key) return chatId
+        // 调试 / 正式模式各有一条会话，都算这个 QQ 会话
+        if (Object.values(entry.sessions || {}).some((sid) => sessionKey(sid) === key)) return chatId
       }
     } catch (error) {}
     return ''
+  }
+
+  /**
+   * 这个 DSH 会话是不是 aurabot 自己开出来的（由 QQ 聊天映射过来）。
+   * 主人自己在 DSH 面板 / CLI 里开的会话不算——危险命令守卫是进程级钩子，
+   * 会收到同一个 DSH 进程里所有会话的工具调用，得能把它们区分开。
+   */
+  function isOwnedSession(sessionId) {
+    if (chatOfSession(sessionId)) return true
+    // 刚挂上还没落盘时 chatOfSession 查不到，再看一眼 mounted
+    return mounted.has(sessionKey(sessionId))
   }
 
   /** 只让一个聊天重新开始：归档它的会话，下一条消息开新会话。 */
@@ -2045,10 +2124,117 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     turnState.set(sessionKey(sessionId), { lastTurn: -1, text: '', senders: new Set(senders.map(String)) })
   }
 
+  // ---------- 子智能体委派（DSH subagent 服务，spawn 后端 + delivery:'caller'）----------
+  let subagentParentAgent = null // 常驻父级 agent：spawn 子级必须有活的 parent 句柄，这里挂一次反复用
+  async function subagentParent() {
+    if (subagentParentAgent) {
+      const live = dsh.agents?.get?.(subagentParentAgent.id) || dsh.agents?.get?.('session-' + subagentParentAgent.id)
+      if (live === subagentParentAgent) return subagentParentAgent // 还活着就直接复用
+      subagentParentAgent = null
+    }
+    // 父级不能 noTools：spawn 子级继承父级的工具配置，父级没工具子级就拿不到 shell，跑不了 adb。
+    // 父级本身从不发起回合（只当 spawn 挂钩），带工具没有副作用。
+    const chat = { chatId: 'system:ext-subagent-parent', kind: 'system', title: '子智能体调度' }
+    const { agent } = await agentFor(chat)
+    subagentParentAgent = agent
+    return agent
+  }
+
+  /** 现在这次调用算不算「主人开口」：最近 5 分钟有主人私聊消息算 owner，否则后台（一审 #177 复审：source 由宿主判断）。 */
+  const OWNER_ACTIVE_MS = 5 * 60_000
+  function ownerSourceNow() {
+    const qq = String(getConfig().ownerQQ || '')
+    if (qq && lastOwnerChatAt && Date.now() - lastOwnerChatAt <= OWNER_ACTIVE_MS) return { kind: 'owner', chatId: `private:${qq}` }
+    return { kind: 'system', reason: 'background' }
+  }
+
+  /**
+   * 宿主给模块的委派入口（模块 API 层唯一暴露的形态）：moduleId 由宿主注入、source 由宿主判断，
+   * 调用方传的 moduleId / source 一律不认——模块写 `moduleId: 'phone'` 也变不成别人（一审 #177 复审第 1 条）。
+   */
+  function subagentFor(moduleId) {
+    return (name, title, prompt, opts = {}) => runSubagentTurn(name, title, prompt, { ...opts, moduleId, source: ownerSourceNow() })
+  }
+
+  /**
+   * 子智能体委派：spawn 一个全新子 agent（空对话、继承工作目录与模型）跑一轮自足任务，
+   * 结果经 Promise 直接返回给调用方——不占用工作区会话窗的常规聊天流（子级按 subagent 族归档展示）。
+   * 调用方（模块）自己把关：任务提示词必须自足（子级看不到任何对话历史）。
+   * @returns {Promise<string>} 子智能体的最终输出文本
+   */
+  async function runSubagentTurn(name, title, prompt, { timeoutMs = 600000, moduleId = '', source = null } = {}) {
+    assertActive()
+    // 权限边界（一审 #177）：① 调用模块必须在 module.json 的 capabilities 里声明 plugin-internals；
+    // ② 必须带「主人开口」的来源（source.kind='owner' + 主人私聊 chatId）；
+    // ③ 定时任务这类没人应答的场合，只有 config.subagentBackground=true 才放行；都没有就拒绝（无人应答 = 拒绝）。
+    const caps = typeof capabilitiesOf === 'function' ? capabilitiesOf(moduleId) : []
+    if (!moduleId || !Array.isArray(caps) || !caps.includes('plugin-internals')) {
+      throw Object.assign(new Error(`模块「${moduleId || '未声明'}」没有 plugin-internals 能力，不能用子智能体委派（在 module.json 的 capabilities 里声明）`), { code: 'CAPABILITY_REQUIRED' })
+    }
+    const c = getConfig()
+    const ownerQQ = String(c.ownerQQ || '')
+    const ownerChat = source && source.kind === 'owner' ? String(source.chatId || '') : ''
+    const fromOwner = Boolean(ownerQQ) && ownerChat === `private:${ownerQQ}`
+    const fromBackground = Boolean(source && source.kind === 'system') && c.subagentBackground === true
+    if (!fromOwner && !fromBackground) {
+      throw Object.assign(new Error('子智能体委派要主人开口：source 必须是主人私聊，或打开「后台子智能体」开关（没人应答时一律拒绝）'), { code: 'OWNER_REQUIRED' })
+    }
+    // ctx 是严格注入代理：inject 白名单外的属性直接读会抛「without inject」；
+    // subagents 是可选服务，照 bridge 同款姿势用的时候再 ctx.get；旧版 ctx 没有 get 就退回直接读，再抛错就当没有服务
+    const dshService = (n) => {
+      if (typeof dsh.get === 'function') { try { return dsh.get(n) } catch { /* 继续退回直接读 */ } }
+      try { return dsh[n] } catch { return null }
+    }
+    const subagents = dshService('subagents')
+    if (!subagents || typeof subagents.startActivation !== 'function') {
+      throw Object.assign(new Error('宿主没有 subagents 委派服务（需要较新的 DSH）'), { code: 'SUBAGENT_UNAVAILABLE' })
+    }
+    const parent = await subagentParent()
+    assertActive()
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(new Error(`子智能体超时（${Math.round(timeoutMs / 1000)} 秒）`)), Math.max(5000, Number(timeoutMs) || 600000))
+    let activation = null
+    try {
+      activation = await subagents.startActivation({
+        provider: 'spawn',
+        label: String(title || name || '任务').slice(0, 80),
+        // agentPreset 必须显式指定：不指定时子级继承父级 preset（aurabot-social，零本地工具），
+        // 子级就拿不到 shell/文件工具，跑不了 adb。aurabot-subagent 是插件 patch 里专给子级准备的
+        // 「无 QQ 人格 + 本机命令工具」preset；旧 DSH 装不上它时 mount 会失败，模块侧自动降级兜底。
+        request: { prompt: [{ type: 'text', text: String(prompt) }], parent, agentPreset: 'aurabot-subagent' },
+        signal: ac.signal,
+        delivery: 'caller',
+      })
+      const r = await activation.result
+      if (r && r.error) throw new Error(`子智能体执行失败：${r.error}`)
+      // result 形状不定（字符串 / {output|text} / 消息块数组）：递归收集字符串，取最后一段当最终回答；
+      // 全不是字符串就整包 JSON 化，调用方自己解析，绝不把非字符串透传出去
+      const collect = (v, out = []) => {
+        if (v == null || out.length > 200) return out
+        if (typeof v === 'string') { if (v.trim()) out.push(v); return out }
+        if (Array.isArray(v)) { for (const x of v) collect(x, out); return out }
+        if (typeof v === 'object') {
+          if (v.type === 'text' || typeof v.text === 'string') collect(v.text, out)
+          else for (const k of ['content', 'output', 'summary', 'message', 'result']) if (k in v) collect(v[k], out)
+        }
+        return out
+      }
+      const parts = collect(r)
+      return parts.length ? parts[parts.length - 1] : JSON.stringify(r ?? '')
+    } finally {
+      clearTimeout(timer)
+      // 结果到手（或超时/失败）就释放整个子树；已完成/已失败的 activation dispose 只是清理，不会抛断流程
+      if (activation && typeof activation.dispose === 'function') activation.dispose().catch(() => {})
+    }
+  }
+
   /** 插件卸载：停掉所有计时器 / 等待，撤掉仍存活会话里挂的工具与上下文。 */
   function dispose() {
     if (disposed) return
     disposed = true
+    // 三审 #177：常驻的子智能体父级 agent 一并置空——插件重装/重启后下次 spawn 重新建，
+    // 别攥着旧句柄不放（旧的父会话交给 DSH 自己的会话回收去清）。
+    subagentParentAgent = null
     for (const p of pending.values()) clearTimeout(p.timer)
     pending.clear()
     for (const key of [...typing.keys()]) stopTyping(key)
@@ -2101,6 +2287,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     pushToSession,
     titleFilter,
     runSystemTurn,
+    runSubagentTurn,
+    subagentFor,
     turnSendersAllOwner,
     onNotice,
     turnHasOwner,
@@ -2109,6 +2297,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     joinTopic: (gid) => groupEngaged.set(String(gid), Date.now() + ENGAGE_MS),
     leaveTopic: (gid) => groupEngaged.delete(String(gid)),
     chatOfSession,
+    isOwnedSession,
     canSeeImages: canSeeFor,
     resetSessions,
     lastTextOf: (sessionId) => turnState.get(sessionKey(sessionId))?.lastText || '',

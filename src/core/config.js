@@ -20,6 +20,9 @@ export const DEFAULTS = {
   approvalViaQQ: true, // 主人私聊会话要授权时，在 QQ 回复「确认」直接批准这一次
   profilePerms: { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', biliComment: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner' }, // 改资料类操作（含抖音浏览 / 点赞 / 评论 / 分享）的权限：off 关 / owner 仅主人私聊 / all 所有人。抖音项默认仅主人，总开关默认关
   longTasks: true, // 长任务模式：主人私聊（完整权限）额外挂 dsh-tool-jobs + dsh-tool-schedule，会多一点工具定义、稍慢
+  // 后台子智能体委派（默认关）：模块用 hub.runSubagentTurn 派子智能体时，正常要求「主人开口」的来源；
+  // 定时任务这类没人应答的场合，只有打开这个开关才允许派活。关着 = 一律拒绝（一审 #177 的审批策略）。
+  subagentBackground: false,
   allow: { private: [], groups: [] }, // 主人永远能私聊，不用写进白名单
   // 用什么接 QQ：snowluma = 插件帮你管 SnowLuma（Windows）；onebot = 接你已有的 OneBot v11 机器人（NapCat、LLOneBot、Lagrange、Docker 里的 SnowLuma……），
   // 这时只按下面 snowluma.httpUrl / wsUrl / token 去连，不启动、不注入任何东西
@@ -32,6 +35,9 @@ export const DEFAULTS = {
   // 危险命令确认（可选保护，默认关）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
   // 终端命令前，先发 QQ 私聊问主人，回复「确认」才执行；超时或「取消」就拦下。
   security: { dangerConfirm: false, ssrfMode: 'strict' },
+  // DeepSeek 峰谷省钱模式（默认关，现有行为不变）：打开后只把「不着急的后台模型调用」尽量挪到谷时，
+  // 聊天回复/工具/审批/定时任务本身不变。offPeakHolidays 是中国法定节假日（北京时间日期 'YYYY-MM-DD'）。
+  cost: { offPeak: false, offPeakHolidays: [] },
   update: { unstable: null }, // 订阅不稳定版本（beta、rc）；null = 没选过，按正在用的版本定
   snowluma: {
     dir: 'C:\\Aurabot\\snowluma', // 主人自己下载解压到这里（EULA 不允许自动部署）
@@ -77,13 +83,15 @@ export const DEFAULTS = {
     engine: 'auto',
     cosyvoice: { url: 'http://127.0.0.1:50000', mode: 'sft', spkId: '中文女', instruct: '', sampleRate: 22050 },
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
-    http: { urlTemplate: '' }, // 通用：GET 这个地址（{text} 会替换成要念的话），返回音频
+    // 通用 HTTP 引擎：GET 时地址里带 {text}；POST 时填接口地址，请求头一行一个，请求体里 {text} 自动替换（已做 JSON 转义）
+    http: { urlTemplate: '', method: 'GET', headers: '', body: '', sampleRate: 24000 },
     voice: 'zh-CN-XiaoyiNeural',
     rate: '+0%',
     pitch: '+0Hz',
     autoChance: 0.15, // 短回复自动变语音的概率
     autoMaxChars: 80,
     asr: true, // 听语音
+    emojiSeparate: true, // 语音条里的表情/emoji 不念出来，单独补一条文字发出去
     // 语音条变声：用翻唱里导入的 RVC 音色模型（先 TTS 念，再变声）。留空 = 不变声
     songVoice: '',
     songPitch: 0, // 变调半音：男声模型转女声一般 +12
@@ -188,6 +196,13 @@ export const DEFAULTS = {
     shareBias: 'normal', // stingy | normal | proactive：分享给主人的积极程度
     shareDaily: 3, // 每天最多分享几条（避免刷屏）
     // 谷时逛：只在非峰时跑自动逛，避开工作日 9-12 / 14-18 的高峰，省 token
+    // 分区：manual = 总是用默认分区；auto = 按正文内容自动挑（挑不到回落默认）
+    topicMode: 'manual',
+    // 发帖字数范围：0 = 用风格自带的；填了就覆盖（对所有风格生效）
+    postWordsMin: 0,
+    postWordsMax: 0,
+    // 每天每篇的排期：空数组 = 用全局设置；填几项就按几篇发，每篇用自己的配置
+    dailyPosts: [],
     offPeakOnly: false, // 开关：默认关（行为不变）
     peakStartAM: 9, // 上午峰时开始（含）
     peakEndAM: 12, // 上午峰时结束（不含）
@@ -220,7 +235,7 @@ export const DEFAULTS = {
   chat: { seedHistory: false, seedHistoryCount: 20 }, // seedHistory：新会话第一次说话时先补最近几条历史（默认关）
   memory: {
     enabled: true, recallCount: 6, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
-    dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, instantCommands: true, groupMemory: true, searchRrf: true,
+    dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, compress: true, compressAfterDays: 14, instantCommands: true, groupMemory: true, searchRrf: true,
     profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120,
     gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { 1: 7, 2: 30, 3: 90 },
     extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: { enabled: false, baseUrl: '', model: '', apiKey: '' },
@@ -276,6 +291,28 @@ const bool = (v, d) => (typeof v === 'boolean' ? v : d)
 const qq = (v) => String(v ?? '').replace(/\D/g, '')
 const qqList = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split(/[\s,，;；]+/)).map(qq).filter(Boolean))]
 const hhmm = (v, d) => (/^\d{1,2}:\d{2}$/.test(String(v)) ? String(v) : d)
+// 严格校验 'YYYY-MM-DD'（面板手填/配置文件手改都可能乱），非法日期当没填。
+const dateKey = (v) => {
+  const s = String(v ?? '').trim()
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return ''
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? s : ''
+}
+// 请求头：正常是字符串（一行一个）；手写成对象 / 数组时展开成同样的多行文本，
+// 免得下游按行解析时认不出来，静默把头全丢掉。
+const headerLines = (v) => {
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) return v.map((x) => String(x ?? '')).join('\n')
+  if (isObj(v)) return Object.entries(v).map(([k, x]) => `${k}: ${x ?? ''}`).join('\n')
+  return v == null ? '' : String(v)
+}
+// 请求体：正常是字符串；手写成对象 / 数组时序列化回去（占位符 {text} / {reqid} 照样能替换）
+const bodyText = (v) => {
+  if (typeof v === 'string') return v
+  if (isObj(v) || Array.isArray(v)) return JSON.stringify(v, null, 2)
+  return v == null ? '' : String(v)
+}
 
 export function normalize(raw) {
   const c = deepMerge(DEFAULTS, raw)
@@ -295,6 +332,7 @@ export function normalize(raw) {
   c.setupDone = bool(c.setupDone, false)
   c.ownerLevel = LEVELS.includes(c.ownerLevel) ? c.ownerLevel : 'full'
   c.longTasks = bool(c.longTasks, true)
+  c.subagentBackground = bool(c.subagentBackground, false)
   c.chatModels = normalizeChatModels(c.chatModels)
   c.profilePerms = Object.fromEntries(PROFILE_PERM_KEYS.map((k) => [k, PROFILE_PERM_LEVELS.includes(c.profilePerms?.[k]) ? c.profilePerms[k] : profilePermDefault(k)]))
   // 旧版 douyinDm 是「回别人私信」的权限，含义已不同（现在是主动发私信），老配置一律回到默认「仅主人」
@@ -305,6 +343,11 @@ export function normalize(raw) {
   if (!isObj(c.security)) c.security = {}
   c.security.dangerConfirm = bool(c.security.dangerConfirm, false)
   c.security.ssrfMode = c.security.ssrfMode === 'loose' ? 'loose' : 'strict'
+  // DeepSeek 峰谷省钱模式：默认关；节假日列表去重、只留合法的 'YYYY-MM-DD'（北京时间日期）
+  if (!isObj(c.cost)) c.cost = {}
+  c.cost.offPeak = bool(c.cost.offPeak, false)
+  const rawHolidays = Array.isArray(c.cost.offPeakHolidays) ? c.cost.offPeakHolidays : String(c.cost.offPeakHolidays || '').split(/[\n,，;；\s]+/)
+  c.cost.offPeakHolidays = [...new Set(rawHolidays.map(dateKey).filter(Boolean))].sort().slice(0, 60)
   c.update = { unstable: typeof c.update?.unstable === 'boolean' ? c.update.unstable : null }
   c.files.enabled = bool(c.files.enabled, true)
   c.files.maxMB = num(c.files.maxMB, 50, 1, BIG)
@@ -327,6 +370,16 @@ export function normalize(raw) {
   g.ownerBrief.groups = qqList(g.ownerBrief.groups)
   c.voice.autoChance = num(c.voice.autoChance, 0.15, 0, 1)
   c.voice.autoMaxChars = num(c.voice.autoMaxChars, 80, 1, BIG)
+  c.voice.emojiSeparate = c.voice.emojiSeparate !== false
+  // 通用 HTTP 引擎（接火山 / 阿里 / 讯飞这类云 TTS）：method 只认 GET / POST，其余当 GET；
+  // 地址、请求头、请求体一律转成字符串——手改 config.json 写成对象、数组或数字时，也按原意
+  // 拼得出去，不会变成 "[object Object]" 或者带着填错的空格。
+  if (!isObj(c.voice.http)) c.voice.http = structuredClone(DEFAULTS.voice.http)
+  c.voice.http.urlTemplate = String(c.voice.http.urlTemplate ?? '').trim()
+  c.voice.http.method = String(c.voice.http.method ?? '').trim().toUpperCase() === 'POST' ? 'POST' : 'GET'
+  c.voice.http.headers = headerLines(c.voice.http.headers)
+  c.voice.http.body = bodyText(c.voice.http.body)
+  c.voice.http.sampleRate = num(c.voice.http.sampleRate, 24000, 8000, 48000)
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   c.stickers.faces = c.stickers.faces !== false
   c.stickers.collectMode = ['ask', 'auto', 'owner'].includes(c.stickers.collectMode) ? c.stickers.collectMode : 'auto'
@@ -400,6 +453,27 @@ export function normalize(raw) {
   hb.shareBias = ['stingy', 'normal', 'proactive'].includes(hb.shareBias) ? hb.shareBias : 'normal'
   hb.shareDaily = Math.round(num(hb.shareDaily, 3, 0, BIG))
   hb.cookie = String(hb.cookie || '').trim()
+  hb.topicMode = hb.topicMode === 'auto' ? 'auto' : 'manual'
+  hb.postWordsMin = Math.round(num(hb.postWordsMin, 0, 0, 2000))
+  hb.postWordsMax = Math.round(num(hb.postWordsMax, 0, 0, 3000))
+  if (hb.postWordsMax && hb.postWordsMin && hb.postWordsMax < hb.postWordsMin) [hb.postWordsMin, hb.postWordsMax] = [hb.postWordsMax, hb.postWordsMin]
+  // 每天每篇的排期：最多 5 篇；hashtags 和 hashtagsText 都保留（面板靠 Text 回显，模块靠数组发帖）
+  hb.dailyPosts = Array.isArray(hb.dailyPosts) ? hb.dailyPosts.slice(0, 5).map((p) => {
+    const o = p && typeof p === 'object' ? p : {}
+    const splitH = (v) => String(v ?? '').split(/[\s,，、]+/).map((x) => String(x).trim()).filter(Boolean)
+    const hash = (Array.isArray(o.hashtags) ? o.hashtags : splitH(o.hashtagsText)).map((x) => String(x).trim()).filter(Boolean).slice(0, 4)
+    return {
+      style: ['diary', 'news', 'mix', 'deal'].includes(o.style) ? o.style : '',
+      topic: /^\d{3,7}$/.test(String(o.topic ?? '')) ? String(o.topic) : '',
+      hashtags: hash,
+      hashtagsText: hash.join(','),
+      wordsMin: Math.round(num(o.wordsMin, 0, 0, 2000)),
+      wordsMax: Math.round(num(o.wordsMax, 0, 0, 3000)),
+      hint: String(o.hint || '').trim().slice(0, 120),
+    }
+  }) : []   // ⚠ 不能在这里过滤全空项：排期是按下标取的（module 侧 currentPostPlan 用 postsToday() 索引），
+             //    过滤掉「第 1 篇留空跟全局、第 2 篇单独配」里的空项，会让第 2 篇的配置被当成第 1 篇用。
+             //    空项就代表「这一篇走全局设置」，原样保留位置。
   hb.offPeakOnly = bool(hb.offPeakOnly, false)
   hb.peakStartAM = num(hb.peakStartAM, 9, 0, 23)
   hb.peakEndAM = num(hb.peakEndAM, 12, 0, 24)
@@ -463,6 +537,9 @@ export function normalize(raw) {
   if (!isObj(c.memory.capacity)) c.memory.capacity = {}
   for (const k of ['auto', 'event', 'diary']) c.memory.capacity[k] = Math.round(num(c.memory.capacity[k], DEFAULTS.memory.capacity[k], 0, BIG))
   c.memory.eventExpireDays = num(c.memory.eventExpireDays, 90, -1, BIG)
+  // 记忆压缩：具体的事慢慢淡忘、概括成长期印象（默认开；可以关；多少天以前的细节才参与概括）
+  c.memory.compress = bool(c.memory.compress, true)
+  c.memory.compressAfterDays = Math.round(num(c.memory.compressAfterDays, 14, 1, 365))
   if (!isObj(c.memory.vector)) c.memory.vector = { ...DEFAULTS.memory.vector }
   c.memory.vector.enabled = bool(c.memory.vector.enabled, false)
   for (const k of ['baseUrl', 'model', 'apiKey']) c.memory.vector[k] = String(c.memory.vector[k] || '').trim()

@@ -113,11 +113,11 @@ test('向量命中同样受群聊、人物和失效权限限制，传闻保留�
   const s = setup(t)
   const mem = s.store()
   const mine = mem.add({ text: '主人的小猫', about: OWNER }).id
-  const own = mem.add({ text: '小明有小猫', about: FRIEND }).id
+  const own = mem.add({ text: '小明有小猫', about: FRIEND, chatId: 'group:777' }).id
   const other = mem.add({ text: '别人养了小猫', about: '30000002' }).id
   const general = mem.add({ text: '街上有只小猫' }).id
-  const heard = mem.add({ text: '听说小明捡到小猫', about: FRIEND, status: 'hearsay' }).id
-  const guessed = mem.add({ text: '小明可能捡到小猫', about: FRIEND, status: 'guess' }).id
+  const heard = mem.add({ text: '听说小明捡到小猫', about: FRIEND, status: 'hearsay', chatId: 'group:777' }).id
+  const guessed = mem.add({ text: '小明可能捡到小猫', about: FRIEND, status: 'guess', chatId: 'group:777' }).id
   const stale = mem.add({ text: '小明的小猫走丢', about: FRIEND }).id
   const group = mem.add({ text: '本群有只小猫', scope: 'group', chatId: 'group:777' }).id
   const foreign = mem.add({ text: '隔壁群有小猫', scope: 'group', chatId: 'group:888' }).id
@@ -160,7 +160,7 @@ test('群聊的 recall_memory 工具也不能用向量翻出主人的记忆', as
   }
   const mem = memoryModule.setup(api, { fetchImpl: s.fake })
   mem.add({ text: '主人的小猫', about: OWNER })
-  mem.add({ text: '小明养了小猫', about: FRIEND })
+  mem.add({ text: '小明养了小猫', about: FRIEND, chatId: 'group:777' })
   await mem.tick()
   const chat = { kind: 'group', chatId: 'group:777', groupId: '777', userId: FRIEND }
   const tool = builder({ chat, sessionId: 's' }).find((x) => x.name === 'recall_memory')
@@ -322,8 +322,8 @@ test('自动回忆和 recall_memory 工具都使用向量，失败时保留关�
     every: (ms, fn) => { tick = fn }, tool: (fn) => { builder = fn }, route() {},
   }
   const mem = memoryModule.setup(api, { fetchImpl })
-  mem.add({ text: '小明养了一只橘猫叫年糕', about: FRIEND })
-  mem.add({ text: '阿花在杭州当护士', about: FRIEND })
+  mem.add({ text: '小明养了一只橘猫叫年糕', about: FRIEND, chatId: `private:${FRIEND}` })
+  mem.add({ text: '阿花在杭州当护士', about: FRIEND, chatId: `private:${FRIEND}` })
   await tick()
   const chat = { kind: 'private', chatId: `private:${FRIEND}`, userId: FRIEND }
   const content = [{ type: 'text', text: '他有宠物吗' }]
@@ -350,7 +350,7 @@ test('错误响应只记 debug，接口失败时自动回忆仍能按关键词�
     context() {}, on: (name, fn) => { if (name === 'prompt') prompt = fn }, every() {}, tool() {}, route() {},
   }
   const mem = memoryModule.setup(api, { fetchImpl })
-  mem.add({ text: '阿花在杭州当护士', about: FRIEND })
+  mem.add({ text: '阿花在杭州当护士', about: FRIEND, chatId: `private:${FRIEND}` })
   await mem.tick()
   fail = true
   const chat = { kind: 'private', chatId: `private:${FRIEND}`, userId: FRIEND }

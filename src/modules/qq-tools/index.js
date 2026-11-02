@@ -18,7 +18,7 @@ async function isGroupMember(onebot, groupId, userId) {
  */
 async function canReadGroup({ mode, hub, onebot, chat, level, sessionId }, groupId) {
   if (mode === 'off') return false
-  if (level === 'full' || hub.turnHasOwner?.(sessionId)) return true
+  if (level === 'full' || hub.turnSendersAllOwner?.(sessionId)) return true
   if (chat.kind === 'group' && mode !== 'group') return false
   const senders = hub.turnSenders?.(sessionId) || []
   if (!senders.length) return false
@@ -101,7 +101,7 @@ export default {
           let groupId = chat.kind === 'group' ? chat.groupId : ''
           let elsewhere = false
           if (group) {
-            const isOwner = level === 'full' || Boolean(hub.turnHasOwner?.(sessionId))
+            const isOwner = level === 'full' || Boolean(hub.turnSendersAllOwner?.(sessionId))
             const hit = await resolveGroup(onebot, cfg.allow?.groups || [], group, isOwner)
             if (hit.error) return { ok: false, message: hit.error }
             const scope = { mode: cfg.group?.crossRead || 'private', hub, onebot, chat, level, sessionId }
@@ -192,7 +192,7 @@ export default {
         properties: { name: str('可选：文件名，不填就读最新的') },
         required: [],
         execute: async ({ name }) => {
-          if (level !== 'full' && !hub.turnHasOwner?.(sessionId)) return { ok: false, message: '只有主人让看时才能读文件' }
+          if (level !== 'full' && !hub.turnSendersAllOwner?.(sessionId)) return { ok: false, message: '只有主人让看时才能读文件' }
           const list = hub.recentFiles(chat.chatId)
           if (!list.length) return { ok: false, message: '这个聊天最近没收到文件（重启后记录会清空）' }
           const want = String(name || '').trim()

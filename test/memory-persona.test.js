@@ -349,3 +349,12 @@ test('触发式自动回忆不影响常驻画像和主动查记忆', (t) => {
   assert.match(mem.recallHint(privateChat(A), '上次朋友喜欢喝红茶'), /朋友喜欢喝红茶/)
   assert.equal(mem.recall('朋友喜欢喝红茶', { where: `private:${A}`, about: A, onlyAbout: A, requireAbout: true }).length, 1)
 })
+
+test('永久档的事实不进记忆压缩', async () => {
+  const { compressionClusters } = await import('../src/features/memory.js')
+  const old = Date.now() - 30 * 86400_000
+  const items = [1, 2, 3, 4, 5, 6].map((i) => ({ id: String(i), text: `事 ${i}`, source: 'auto', chatId: 'group:9', about: '5', at: old, tier: 0 }))
+  assert.equal(compressionClusters(items, { afterDays: 14, minItems: 3 }).length, 0)
+  const free = items.map((m) => ({ ...m, tier: 2 }))
+  assert.equal(compressionClusters(free, { afterDays: 14, minItems: 3 }).length, 1)
+})

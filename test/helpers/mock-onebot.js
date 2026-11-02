@@ -49,7 +49,7 @@ export async function startMockOneBot({ selfId = '20000002', token = 'mock-token
   let msgSeq = 1000
   const faces = new Map()
   const qzone = new Map()
-  const state = { failRecord: false, failUploadPath: false, failQzoneImage: false, roles: {}, favorites: [], selfProfile: { nickname: '大肥鱼', long_nick: '爱吃白米饭' } } // favorites：机器人号 QQ 收藏表情的地址 // roles: 群号 → 机器人在群里的身份（默认群主）
+  const state = { failRecord: false, failFace: false, failUploadPath: false, failQzoneImage: false, roles: {}, favorites: [], selfProfile: { nickname: '大肥鱼', long_nick: '爱吃白米饭' } } // favorites：机器人号 QQ 收藏表情的地址 // roles: 群号 → 机器人在群里的身份（默认群主）
 
   function handle(action, params) {
     switch (action) {
@@ -65,6 +65,8 @@ export async function startMockOneBot({ selfId = '20000002', token = 'mock-token
       case 'send_private_msg':
       case 'send_group_msg':
         if (state.failRecord && params.message?.[0]?.type === 'record') throw new Error('record not supported')
+        // 只让带系统表情的那条发失败（测「语音后面补发的表情挂了，不该把整条回复算成没发出去」）
+        if (state.failFace && (params.message || []).some((s) => s.type === 'face')) throw new Error('face not supported')
         return { message_id: ++msgSeq }
       case 'get_group_member_info': return { group_id: params.group_id, user_id: params.user_id, role: state.roles[String(params.group_id)] || 'owner' }
       case 'get_group_info': return { group_id: params.group_id, group_name: '测试群' }

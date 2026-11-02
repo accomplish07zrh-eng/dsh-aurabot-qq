@@ -34,7 +34,7 @@ import { createApprovalRelay } from './security/approval.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
-import { createDangerGuard } from './security/danger.js'
+import { createDangerGuard, safeOwnedSession } from './security/danger.js'
 import { setSsrpMode } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
@@ -47,6 +47,14 @@ const PKG = (() => {
 })()
 const VERSION = PKG.version
 const PREFIX = '/aurabot/api'
+
+/**
+ * 这个 DSH 会话是不是 Aurabot 的 QQ 聊天会话（私聊/群聊各对应一个 DSH 会话）。
+ * 桌宠的干活状态只该跟 DSH 自己发起的活儿走，聊天回合不算（#184：每句聊天都弹完工气泡太吵）。
+ */
+export function isChatSession(hub, session) {
+  try { return Boolean(session?.id && hub?.chatOfSession?.(session.id)) } catch (error) { return false }
+}
 
 export function apply(ctx) {
   const logger = createLogger({ dsh: ctx })
@@ -260,6 +268,8 @@ export function apply(ctx) {
     stickers,
     tts,
     buildTools: (where) => mods.buildTools(where),
+    // 模块声明的能力（module.json capabilities）：子智能体委派这类要本机权限的能力靠它把关（一审 #177）
+    capabilitiesOf: (id) => (typeof mods.capabilitiesOf === 'function' ? mods.capabilitiesOf(id) : []),
     contextProviders: [(args) => mods.contextFor(args)],
     onActivity: (a) => mods.emit('activity', a),
     // 群聊话题和她的记忆有多相关（插话判断用）
@@ -363,6 +373,10 @@ export function apply(ctx) {
     log: logger.child('危险命令'),
     deliver: (chatId, text) => hub.sendText(chatId, text),
     chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    // tools/pre-execute 是进程级的，同一个 DSH 里主人自己开的会话也会走到这里；那些会话不归这个守卫管
+    // 判断不出来（hub.isOwnedSession 缺失 / 抛错）时 safeOwnedSession 返回 true，走原 deny 逻辑；
+    // 只有明确 false（宿主自己的 GUI/CLI 会话）才放行给 DSH 自己的权限系统，别在异常时 fail-open。
+    isOwnedSession: safeOwnedSession(typeof hub?.isOwnedSession === 'function' ? (sessionId) => hub.isOwnedSession(sessionId) : null),
     ownerQQ: () => cfg.ownerQQ,
   })
   core.dangerGuard = dangerGuard
@@ -417,9 +431,24 @@ export function apply(ctx) {
   // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
   // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
   const approvalSeen = new Map()
+  // 授权通知只看 Aurabot · QQ 工作区：既包括 hub 映射的聊天会话，也包括同一工作区里
+  // 主人手动打开 / 调试 / 新建的会话。别的 DSH 项目的会话一律不转到 QQ。
+  function isAurabotWorkspaceSession(session) {
+    if (!session?.id) return false
+    try { if (hub?.chatOfSession?.(session.id)) return true } catch (error) {}
+    try {
+      const reg = ctx.workspaceRegistry || ctx.get?.('workspaceRegistry')
+      const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
+      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
+      return Boolean(ws?.sessionIds?.some((sid) => String(sid) === String(session.id)))
+    } catch (error) {
+      return false
+    }
+  }
   async function notifyApproval(session, event) {
     try {
       if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
+      if (!isAurabotWorkspaceSession(session)) return
       const d = event.data || {}
       const id = String(d.id || '')
       if (!id || approvalSeen.has(id)) return
@@ -451,7 +480,10 @@ export function apply(ctx) {
         log.warn('会话事件处理出错：', error.message)
       }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
-      try { use('pet')?.onSessionEvent?.(session, event) } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
+      // QQ 聊天会话不转：聊天每句都有 turn/start→turn/end，桌宠会每句话弹一次「完工」气泡/动作（#184）
+      try {
+        if (!isChatSession(hub, session)) use('pet')?.onSessionEvent?.(session, event)
+      } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
       // 审批请求顺手通知到主人私聊（只通知，不代答）
       if (event && event.type === 'approval/asked') notifyApproval(session, event)
     })
@@ -660,6 +692,22 @@ export function apply(ctx) {
     if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
     // 松手后落地：布尔透传（模块侧缺省当开，别让老面板把抛掷关没）
     if (typeof b.petReleaseLand === 'boolean') patch.petReleaseLand = b.petReleaseLand
+    // 对话框（pet 1.0.5 起在模块库，模块自己的 settings 同样不渲染成表单；这里仍是唯一写入通道）
+    for (const k of ['petChatEnabled', 'petChatBlurHide']) {
+      if (typeof b[k] === 'boolean') patch[k] = b[k]
+    }
+    // 快捷键 / 关闭关键字 / 天气城市：纯文本，按模块 settings 的口径截断（空串合法 = 关掉该项）
+    for (const [k, max] of [['petChatHotkey', 40], ['petChatCloseKeyword', 20], ['petWeatherCity', 40]]) {
+      if (typeof b[k] === 'string') patch[k] = b[k].trim().slice(0, max)
+    }
+    // 天气接口模板：只收 http/https（留空 = 用模块内置默认 wttr.in）
+    if (typeof b.petWeatherUrl === 'string') {
+      const u = b.petWeatherUrl.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.petWeatherUrl = u
+    }
+    // 历史上限与保留天数：与模块 settings 的 min/max 对齐（10~2000 条；0 天 = 永久保留）
+    if (Number.isFinite(b.petChatMaxEntries)) patch.petChatMaxEntries = Math.min(2000, Math.max(10, Math.round(b.petChatMaxEntries)))
+    if (Number.isFinite(b.petChatRetentionDays)) patch.petChatRetentionDays = Math.min(3650, Math.max(0, Math.round(b.petChatRetentionDays)))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
     // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
     // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源

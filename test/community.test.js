@@ -231,3 +231,20 @@ test('提交教程随插件发布', () => {
   assert.ok(pkg.files.includes('docs/MODULE-TUTORIAL.md'))
   assert.match(readFileSync(new URL('../docs/MODULE-TUTORIAL.md', import.meta.url), 'utf8'), /提交一个模块/)
 })
+
+test('安装：id 必须是白名单（防被篡改索引/调用方越目录写）', async () => {
+  for (const bad of ['../../evil', '..\\evil', 'Bad ID', '', 'a'.repeat(41)]) {
+    const r = await setup([pack('demo-safe', '1.0.0')]).c.install(bad)
+    assert.equal(r.ok, false, bad)
+    assert.match(String(r.message), /id 不对/, bad)
+  }
+})
+
+test('安装：替换内置必须确认，索引 replacesBuiltin 漏填也拦（按真实内置目录判断）', async () => {
+  const p = pack('memory', '9.9.9')
+  const { c } = setup([p])
+  const r = await c.install('memory')
+  assert.equal(r.ok, false)
+  assert.equal(r.needConfirm, true)
+  assert.match(String(r.message), /替换内置/)
+})
