@@ -24,7 +24,11 @@ const DANGER_RULES = [
   { label: '下载后直接执行', re: /\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^\n|]*(?:\||>)[^\n]*(?:iex|Invoke-Expression)\b/i },
   { label: '删除卷影副本/引导配置', re: /\b(?:vssadmin\s+delete\s+shadows|bcdedit|wbadmin\s+delete)\b/i },
   { label: '改注册表关键项', re: /\breg\s+(?:add|delete)\s+(?:HKLM|HKEY_LOCAL_MACHINE)\b/i },
-  { label: '直接写磁盘', re: /\bdd\s+if=|>\s*\/dev\/(?:sd|nvme|disk)/i },
+  // 只拦「往裸块设备写」。原来的 /\bdd\s+if=/ 认的是 dd 的**输入**，跟写盘无关，于是
+  // `dd if=/dev/zero of=/dev/null`（测速）、`dd if=/dev/sda of=/tmp/x.img`（只读备份）都被
+  // 拦了；而真正危险的逆序写法 `dd of=/dev/sda if=...` 反倒因为不匹配 dd\s+if= 漏掉了。
+  { label: '直接写磁盘', re: /\bdd\b[^\n]*?\bof=\s*["']?\/dev\/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|md\d|dm-\d|disk\/|mapper\/)/i },
+  { label: '直接写磁盘', re: />\s*\/dev\/(?:sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|md\d|dm-\d|disk\/|mapper\/)/i },
   { label: '提权/改管理员组', re: /\bnet\s+(?:user\s+\S+\s+\S+\s+\/add|localgroup\s+(?:administrators|admin)\b)/i },
   { label: '强制改系统目录权限', re: /\b(?:takeown|icacls)\s+[^\n]*(?:[a-zA-Z]:\\Windows|\/etc|\/usr|\/bin)\b/i },
   { label: 'chmod 根目录', re: /\bchmod\s+-R\s+777\s+\/(?:\s|$)/i },
@@ -49,11 +53,12 @@ const clip = (text, n = 300) => (text.length > n ? text.slice(0, n) + '…' : te
  * @param {() => object} o.getConfig 读最新配置（每次工具调用都重新判断开关）
  * @param {(chatId:string, text:string) => Promise<any>} o.deliver 发 QQ 消息（主人私聊）
  * @param {(sessionId:string) => string} o.chatOfSession DSH session → QQ chatId
+ * @param {(sessionId:string) => boolean} [o.isOwnedSession] 这个会话是不是 aurabot 自己开的（QQ 聊天映射来的）
  * @param {() => string} o.ownerQQ 主人 QQ 号
  * @param {number} [o.timeoutMs] 等确认的超时（默认 60 秒）
  * @param {object} [o.log]
  */
-export function createDangerGuard ({ getConfig, deliver, chatOfSession, ownerQQ, timeoutMs = 60_000, log } = {}) {
+export function createDangerGuard ({ getConfig, deliver, chatOfSession, isOwnedSession, ownerQQ, timeoutMs = 60_000, log } = {}) {
   const pending = new Map() // chatId → { resolve, timer }
 
   function cleanup (chatId, value) {
@@ -78,10 +83,20 @@ export function createDangerGuard ({ getConfig, deliver, chatOfSession, ownerQQ,
     const danger = isDangerousCommand(command)
     if (!danger) return next()
     const sessionId = exec.agent && exec.agent.session && exec.agent.session.id
+    // 只管 aurabot 自己开的会话。tools/pre-execute 是进程级的，同一个 DSH 进程里主人自己开的
+    // Web GUI / CLI 会话也会走到这里；那些命令不归这个守卫管，不该被 QQ 的安全策略拦下
+    // （何况拦下时拿不到 chatId，连确认消息都发不出去，主人没有任何办法放行）。
+    // 没传 isOwnedSession 的调用方（老用法 / 单测）保持原行为，照旧往下判断。
+    if (typeof isOwnedSession === 'function') {
+      let owned = null
+      // 判断不出来（抛错）就按老逻辑走，仍然 fail-closed
+      try { owned = !!isOwnedSession(sessionId) } catch (error) { owned = null }
+      if (owned === false) return next()
+    }
     const chatId = chatOfSession ? String(chatOfSession(sessionId) || '') : ''
     const owner = String(ownerQQ ? ownerQQ() : '')
     const ownerChat = owner ? `private:${owner}` : ''
-    // 只有主人私聊可能有终端工具；别的会话真调到了就直接拦（不打扰主人）
+    // 是我的会话但认不出聊天（比如 QQ 会话刚建立、映射还没落盘）：不敢放也不敢问，仍然拦下
     if (!chatId || chatId !== ownerChat) {
       log?.warn?.(`危险命令已拦下（非主人私聊 ${chatId || '未知'}）：${clip(command, 120)}`)
       return { kind: 'deny', reason: `这条命令被安全策略拦下了（${danger.label}）：只有主人私聊里、并且经过主人确认才能执行。` }
