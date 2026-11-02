@@ -274,6 +274,7 @@ export function apply(ctx) {
     onActivity: (a) => mods.emit('activity', a),
     // 群聊话题和她的记忆有多相关（插话判断用）
     memoryScore: (text) => use('memory')?.topicScore?.(text) ?? 0,
+    dislikes: (qq) => use('memory')?.dislikes?.(qq) ?? false,
     onMemoryCommand: (msg, text) => use('memory')?.handleCommand?.(msg, text),
     // QQ 里的主人命令（模块加的命令优先）
     onCommand: async (msg) => {

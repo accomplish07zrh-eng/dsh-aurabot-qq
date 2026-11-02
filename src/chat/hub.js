@@ -66,7 +66,7 @@ const sessionKey = (id) => {
 // 模拟测试：这里面发出去的消息只记下来，不真发
 const captureStore = new AsyncLocalStorage()
 const failStore = new AsyncLocalStorage() // deliver 这一次里发失败的原因，好让调用方如实告诉她
-export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
+export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
   const mood = () => (typeof moodEffects === 'function' ? moodEffects() : null) || { sticker: 1, voice: 1, delay: 1, chatty: 1 }
   const mapFile = () => dataDir('sessions.json')
@@ -1411,7 +1411,6 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       }
       groupEntry.direct = Boolean(msg.messageId && msg.messageId !== '0' && msg.userId && (msg.mentioned || quotedBot))
       mode = decision.mode
-      groupEngagedRun.set(msg.groupId, mode === 'engaged' ? (groupEngagedRun.get(msg.groupId) || 0) + 1 : 0)
       log.info(`群 ${msg.groupId}：${decision.reason} → 交给她`)
     }
 
@@ -1668,6 +1667,16 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const p = pending.get(chatId)
     if (!p) return
     clearTimeout(p.timer)
+    // 与禁言一样只收下消息；等合批结束后按实际这一段的全部发言人判断。
+    const speakers = p.chat.kind === 'group' ? (groupBuf.get(p.chat.groupId) || []).filter((x) => !x.fed).slice(-20).map((x) => String(x.uid || '')) : [...p.senders]
+    const chance = Math.max(0, Math.min(1, Number(getConfig().memory?.dislikeSilence ?? 0.85) || 0))
+    const owner = String(getConfig().ownerQQ || '')
+    if (chance > 0 && speakers.length && speakers.every((qq) => qq && qq !== owner && dislikes?.(qq)) && random() < chance) {
+      pending.delete(chatId)
+      onActivity?.({ kind: 'silent', chatId, text: p.chat.kind === 'group' ? (groupBuf.get(p.chat.groupId) || []).filter((x) => !x.fed).slice(-20).map((x) => x.text).join('\n') : p.texts.join('\n'), nickname: p.chat.nickname })
+      log.debug(`${chatId}：不想搭理，安静看着`)
+      return
+    }
     // 「她挑」的提示统一在这里补：私聊、群聊、插话三条路都要带上
     const hint = p.stickerPick ? '\n\n' + stickerHint(p.stickerPick) : ''
     // 私聊：她这一轮还在跑（想 / 调工具），新消息直接 steer 进当前这一轮，像在 DSH 界面里插话一样（#7）
@@ -1695,6 +1704,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     let content
     if (p.chat.kind === 'group') {
       const gid = p.chat.groupId
+      groupEngagedRun.set(gid, p.mode === 'engaged' ? (groupEngagedRun.get(gid) || 0) + 1 : 0)
       if (p.mode === 'interject') {
         const arr = (groupInterjects.get(gid) || []).filter((t) => Date.now() - t < 3600_000)
         arr.push(Date.now())

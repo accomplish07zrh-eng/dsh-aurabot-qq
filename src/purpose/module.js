@@ -398,7 +398,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     if (!config.enabled || !cfg.ownerQQ) return
     if (!isMuted?.(chatIdOf(cfg)) && await tickOne(cfg, config)) return
     for (const qq of cfg.speakUp?.allow || []) {
-      if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq))) continue
+      if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq)) || memoryOf()?.dislikes?.(qq)) continue
       if (await tickOne(cfg, config, String(qq))) return
     }
   }

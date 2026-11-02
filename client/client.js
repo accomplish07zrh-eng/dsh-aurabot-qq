@@ -2733,6 +2733,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
           h(Row, { label: '聊天停多久后整理' }, f.num('memory.shortTermIdleMinutes', { min: 0 }), h('span', { className: 'ab-muted' }, '分钟')),
           h(Row, { label: '刚才的印象最多多少字' }, f.num('memory.shortTermChars', { min: 1 }), h('span', { className: 'ab-muted' }, '字')),
           h('div', { className: 'ab-section-title' }, '人物与群印象'),
+          h(Row, { label: '讨厌的人说话时不接的几率', hint: '消息仍会看到和记住；0% 表示照常回复，主人和一起说话的其他人不受影响' }, f.range('memory.dislikeSilence', 0, 1, 0.05, (v) => Math.round(v * 100) + '%')),
           h(Row, { label: '每项人物印象最多多少字' }, f.num('memory.profileFieldChars', { min: 0 })),
           h(Row, { label: '群里最多带几个人的画像' }, f.num('memory.profilePeople', { min: 0 })),
           h(Row, { label: '人物画像总字数上限' }, f.num('memory.profileChars', { min: 0 })),
@@ -2807,6 +2808,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [list, setList] = useState(null)
       const [error, setError] = useState('')
       const [query, setQuery] = useState('')
+      const [group, setGroup] = useState('')
+      const [tag, setTag] = useState('')
+      const [status, setStatus] = useState('')
       const [selected, setSelected] = useState('')
       const load = async () => {
         const r = await get('/persona/overview')
@@ -2819,16 +2823,21 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       if (list === null) return h(Empty, { icon: '⏳', text: '加载中…' })
       if (!list.length) return h(Card, { title: '还没有人物记忆' }, h(Empty, { icon: '🌱', text: '聊过一段时间后，ta记住的人会慢慢出现在这里。' }))
       const q = query.trim().toLowerCase()
-      const visible = list.filter((p) => !q || [p.qq, p.name, p.alias, p.style, p.persona, p.handle, p.text].some((v) => String(v || '').toLowerCase().includes(q)))
+      const groups = [...new Map(list.flatMap((p) => (p.groups || []).map((g) => [g.id, g.name]))).entries()].sort((a, b) => a[1].localeCompare(b[1]))
+      const tags = [...new Set(list.flatMap((p) => p.tags || []))].sort((a, b) => { const rank = (x) => x === '喜欢' ? 0 : x === '讨厌' ? 1 : 2; return rank(a) - rank(b) || a.localeCompare(b) })
+      const visible = list.filter((p) => (!q || [p.qq, p.name, p.alias, p.style, p.persona, p.handle, p.text, ...(p.tags || [])].some((v) => String(v || '').toLowerCase().includes(q))) && (!group || (p.groups || []).some((g) => g.id === group)) && (!tag || (p.tags || []).includes(tag)) && (!status || (status === 'owner' ? p.isOwner : status === 'active' ? p.lastActive >= Date.now() - 7 * 86400_000 : status === 'relations' ? p.hasRelations : p.hasInsights)))
       return h('div', { className: cx('ab-pm-split', selected && 'open') },
         h('div', { className: 'ab-pm-list' },
-          h('div', { className: 'ab-pm-search' }, h('input', { className: 'ab-input', placeholder: `在 ${list.length} 个人里找`, 'aria-label': '搜索人物', value: query, onChange: (e) => setQuery(e.target.value) })),
+          h('div', { className: 'ab-pm-search', style: { display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 } },
+            h('input', { className: 'ab-input', style: { flex: '1 1 140px', minWidth: 0 }, placeholder: `在 ${list.length} 个人里找`, 'aria-label': '搜索人物', value: query, onChange: (e) => setQuery(e.target.value) }),
+            ...[[group, setGroup, '所有群', groups], [tag, setTag, '所有标签', tags.map((x) => [x, x])], [status, setStatus, '所有状态', [['owner', '主人'], ['active', '最近 7 天活跃'], ['relations', '有人物关系'], ['insights', '有相处经验']]]].map(([value, set, label, options]) => h('select', { key: label, className: 'ab-input', style: { flex: '1 1 100px', minWidth: 0, maxWidth: '100%' }, 'aria-label': label, value, onChange: (e) => set(e.target.value) }, h('option', { value: '' }, label), options.map(([v, text]) => h('option', { key: v, value: v }, text))))),
           h('div', { className: 'ab-pm-rows' },
             visible.length ? visible.map((p) => h('button', { key: p.qq, type: 'button', className: cx('ab-pm-row', p.qq === selected && 'on'), onClick: () => setSelected(p.qq) },
               h(PersonFace, { p }),
               h('span', { className: 'who' },
                 h('span', { className: 'name' }, h('span', null, personName(p)), p.isOwner ? h('span', { className: 'ab-pm-own' }, '主人') : null),
-                h('span', { className: 'line', style: { display: 'block' } }, p.persona || p.style || p.text || `记得 ${p.notes} 件事`))))
+                h('span', { className: 'line', style: { display: 'block' } }, p.persona || p.style || p.text || `记得 ${p.notes} 件事`),
+                (p.tags || []).length ? h('span', { className: 'line', style: { display: 'block' } }, p.tags.join(' · ')) : null)))
               : h(Empty, { text: '没找到这个人' }))),
         selected ? h(PersonaDetail, { key: selected, qq: selected, toast, back: () => setSelected(''), onChanged: load }) : h('div', { className: 'ab-pm-detail' }, h(Empty, { text: '选一个人看看' })))
     }
@@ -2837,20 +2846,23 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [data, setData] = useState(null)
       const [form, setForm] = useState(null)
       const [editing, setEditing] = useState(false)
+      const [tagInput, setTagInput] = useState('')
       const [error, setError] = useState('')
       const load = async (keepForm = false) => {
         const r = await get('/persona/person?qq=' + encodeURIComponent(qq))
         if (!r.ok) { setError(r.message || '人物详情没读出来'); return }
         setError(''); setData(r)
-        if (!keepForm) setForm(Object.fromEntries(PERSON_FIELDS.map(([key]) => [key, r.person[key] || ''])))
+        if (!keepForm) setForm({ ...Object.fromEntries(PERSON_FIELDS.map(([key]) => [key, r.person[key] || ''])), tags: r.person.tags || [] })
       }
       useEffect(() => { load() }, [qq])
       if (error) return h('div', { className: 'ab-pm-detail' }, h('div', { className: 'ab-note err' }, error))
       if (!data || !form) return h('div', { className: 'ab-pm-detail' }, h(Empty, { icon: '⏳', text: '加载中…' }))
       const p = data.person
-      const changed = PERSON_FIELDS.some(([key]) => form[key] !== (p[key] || ''))
+      const tagsChanged = JSON.stringify(form.tags) !== JSON.stringify(p.tags || [])
+      const changed = tagsChanged || PERSON_FIELDS.some(([key]) => form[key] !== (p[key] || ''))
       const save = async () => {
-        const r = await post('/persona/person/save', { qq, ...form })
+        const { tags, ...fields } = form
+        const r = await post('/persona/person/save', { qq, ...fields, ...(tagsChanged ? { tags } : {}) })
         toast(r.message, r.ok ? 'ok' : 'err')
         if (r.ok) { setEditing(false); await load(); onChanged() }
       }
@@ -2875,10 +2887,18 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
               h(Btn, { small: true, kind: 'ghost', onClick: rebuild }, '重写'),
               h(Btn, { small: true, onClick: () => setEditing(!editing) }, editing ? '收起' : '编辑')),
             h('div', { className: 'meta' }, 'QQ ' + qq + ' · ' + (p.lastActive ? memoryDate(p.lastActive) + ' 来过' : '最近没来过')),
-            h('p', { className: cx('quote', !p.text && 'empty') }, p.text || 'ta对这个人还没有整体印象。'))),
+            h('p', { className: cx('quote', !p.text && 'empty') }, p.text || 'ta对这个人还没有整体印象。'),
+            (p.tags || []).length ? h('div', { className: 'ab-pm-trait' }, '标签：' + p.tags.join(' · ')) : null)),
         editing ? h(Card, { title: '编辑印象' },
           h('div', { className: 'ab-pm-form' }, PERSON_FIELDS.map(([key, label]) => h('label', { key, className: key === 'text' ? 'full' : '' }, label,
             h('textarea', { className: 'ab-textarea', rows: key === 'text' ? 3 : 2, value: form[key], onChange: (e) => setForm({ ...form, [key]: e.target.value }) })))),
+          h('div', { className: 'ab-pm-trait', style: { marginTop: 10 } },
+            h('div', { className: 'k' }, '标签（最多 8 个，每个 8 字）'),
+            h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 6 } },
+              form.tags.map((t) => h(Btn, { key: t, small: true, onClick: () => setForm({ ...form, tags: form.tags.filter((x) => x !== t) }) }, t + ' ×')),
+              ...['喜欢', '讨厌'].filter((t) => !(p.isOwner && t === '讨厌')).map((t) => h(Btn, { key: t, small: true, onClick: () => { const rest = form.tags.filter((x) => x !== '喜欢' && x !== '讨厌'); if (!form.tags.includes(t) && rest.length >= 8) return toast('标签已满', 'err'); setForm({ ...form, tags: form.tags.includes(t) ? form.tags.filter((x) => x !== t) : [...rest, t] }) } }, t)),
+              h('input', { className: 'ab-input sm', style: { minWidth: 0, maxWidth: '100%' }, value: tagInput, placeholder: '新标签', maxLength: 16, onChange: (e) => setTagInput(e.target.value) }),
+              h(Btn, { small: true, onClick: () => { const t = tagInput.trim(); if (!t || [...t].length > 8 || form.tags.includes(t) || form.tags.length >= 8 || (p.isOwner && t === '讨厌')) return toast('标签重复、过长或已满', 'err'); setForm({ ...form, tags: [...form.tags.filter((x) => !(['喜欢', '讨厌'].includes(t) && ['喜欢', '讨厌'].includes(x))), t] }); setTagInput('') } }, '添加'))),
           h('div', { className: 'ab-flex', style: { marginTop: 10 } }, h(Btn, { kind: 'primary', disabled: !changed, onClick: save }, '保存'))) :
         h('div', { className: 'ab-pm-traits' }, traits.map(([key, label]) => h('div', { key, className: 'ab-pm-trait' },
           h('div', { className: 'k' }, label), h('div', { className: cx('v', !p[key] && 'empty') }, p[key] || '还不了解')))),
