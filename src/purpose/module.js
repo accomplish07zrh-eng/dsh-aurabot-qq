@@ -193,7 +193,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     try { return memoryOf()?.profiles?.().find((p) => p.qq === friend)?.name || '这位朋友' } catch { return '这位朋友' }
   }
 
-  function promptFor(cfg, config, selected, ctx, state, now = Date.now(), friend = '') {
+  function promptFor(cfg, config, selected, ctx, state, now = Date.now(), friend = '', manual = false) {
     const name = friend ? friendName(friend) : cfg.ownerName || '主人'
     const prompt = buildPurposePrompt({
       now, config, mode: 'auto', // 模型直接输出那句话（Aurabot 没有 QQ 发送工具）
@@ -208,6 +208,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       stats: ctx.materials.stats,
       drives: ctx.drives,
     }) + `\n6) 这一轮不能用任何工具：直接输出你要发的那句话即可（会自动转发给${name}）。不想说就整段只输出 ${SILENCE}。`
+      + (manual ? `\n7) 这一轮是主人在面板上手动点的「立即试一次」：必须真的说一句话，不许输出 ${SILENCE}，也不许只写内部备忘。` : '')
     return friend ? prompt.replaceAll('主人', name) : prompt // 引擎的提示词是写给主人的，朋友不是她的主人
   }
 
@@ -291,7 +292,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       return { outcome: 'skipped-no-candidate' }
     }
 
-    const prompt = promptFor(cfg, config, picked.purpose, { ...ctx, candidates: picked.candidates }, state, now, friend)
+    const manual = reason === '面板' // 主人在面板上手动点的：这轮必须真说一句，不许沉默
+    const prompt = promptFor(cfg, config, picked.purpose, { ...ctx, candidates: picked.candidates }, state, now, friend, manual)
     // 投递即占今日次数（模型回合已经花钱了）；引擎随后按真结局结算
     markPurposeDelivered(state, { now, planned: picked.purpose })
     saveState(state, friend)

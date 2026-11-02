@@ -161,6 +161,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const groupMembers = new Map() // groupId → { at, list }  群成员（真 @ 时按名字找人，缓存 10 分钟）
   const noticesFor = new Map() // chatId → [一句话]  下次交给她时带上的群事件（撤回、禁言、进群……）
   const saidElsewhere = new Map() // chatId → [{ at, text }]  别处安排她在这里发的话，下次这个聊天交给她时补进去
+  // 正在发送「本轮自己的回复」的聊天。模块在这个窗口里插进来的话仍然照常记账。
+  const deliveringChats = new Set()
 
   let disposed = false
   const disposedError = () => Object.assign(new Error('Aurabot 插件已卸载'), { code: 'AURABOT_DISPOSED' })
@@ -228,6 +230,54 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   function noteSaid(chatId, text) {
     logChat(chatId, 'bot', text)
     saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: String(text).slice(0, 300) }].slice(-5))
+  }
+
+  /** 从消息段里抠出可读的一行，用于记账（文字/图片/语音/表情/@）。 */
+  function readableOf(message) {
+    const parts = []
+    for (const seg of Array.isArray(message) ? message : []) {
+      const type = seg && seg.type
+      const data = (seg && seg.data) || {}
+      if (type === 'text') parts.push(String(data.text || ''))
+      else if (type === 'image') parts.push('[图片]')
+      else if (type === 'record') parts.push('[语音]')
+      else if (type === 'face') parts.push('[' + (data.summary || '表情') + ']')
+      else if (type === 'at') parts.push('@' + (data.qq || ''))
+    }
+    return parts.join(' ').trim()
+  }
+
+  /**
+   * 统一记账：所有发出去的东西都从这里过。
+   *   写聊天流水；群里记最近 3 句；
+   *   不是本轮自己发的（模块代发 / 目的引擎），再记一笔「她在别处说过什么」，
+   *   群里的也算她说过话（刷屏刹车、话题参与）。
+   */
+  function noteSent(chatId, text) {
+    const said = String(text || '').trim()
+    if (!said) return
+    try {
+      logChat(chatId, 'bot', said)
+      if (chatId.startsWith('group:')) {
+        const gid = chatId.slice(6)
+        groupBotTexts.set(gid, [...(groupBotTexts.get(gid) || []), said].slice(-3))
+      }
+      // 这一轮如果正是在这个聊天里回话，内容本来就在会话里，不用再补一遍
+      if (!deliveringChats.has(chatId)) {
+        saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: said.slice(0, 300) }].slice(-10))
+        // 模块代发的群消息也算「她在群里说过话」：计入刷屏刹车、并加入话题。
+        // 本轮自己的回复由 deliver() 末尾统一计一次，这里只补模块那条路，避免一句拆三条被算三次。
+        if (chatId.startsWith('group:')) {
+          const gid = chatId.slice(6)
+          const saidAt = (groupSaid.get(gid) || []).filter((t) => Date.now() - t < 3600_000)
+          saidAt.push(Date.now())
+          groupSaid.set(gid, saidAt)
+          groupEngaged.set(gid, Date.now() + ENGAGE_MS)
+        }
+      }
+      lastChatAt = Date.now()
+      if (chatId.startsWith('private:')) lastPrivateAt.set(chatId.slice(8), Date.now())
+    } catch (error) {}
   }
 
   /** QQ 通知：不让她马上回话，记进流水，下一轮带给她。只管白名单里的聊天。 */
@@ -556,7 +606,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
-  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false } = {}) {
+  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false, logText = '' } = {}) {
     if (disposed) return null
     const cfg = getConfig()
     const tgt = targetOf(chatId)
@@ -596,6 +646,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         if (sentIds.size > 500) sentIds.delete(sentIds.values().next().value)
       }
       bump('sent')
+      noteSent(chatId, logText || readableOf(message))
       return r
     } catch (error) {
       bump('errors')
@@ -638,7 +689,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     // QQ 客户端不支持「引用 / @ + 语音」同一条消息：语音条一律单独成条（issue #103）。
     if (replyId || userId) log.debug(`语音条不能带引用/@（QQ 限制），单独发：${chatId}`)
     try {
-      const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], `[语音·${engine}] ${text.slice(0, 40)}`, { throwOnError: true, timeoutMs: FILE_TIMEOUT_MS })
+      const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], `[语音·${engine}] ${text.slice(0, 40)}`, { throwOnError: true, timeoutMs: FILE_TIMEOUT_MS, logText: text })
       if (r || getConfig().dryRun || !getConfig().enabled) {
         bump('voice')
         // 表情不念出来，但要补上：语音条发完再单独发一条文字里的表情（用户反馈：希望表情和语音分开发）
@@ -931,6 +982,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const firstSendable = items.findIndex((item) => item.kind === 'text' || item.kind === 'voice' || item.kind === 'image' || (item.kind === 'sticker' && cfg.stickers.enabled && Boolean(item.value && typeof item.value === 'object' ? item.value : stickers.match(item.value))))
     const missedAt = [] // 写了 @ 却没对上群里人的名字
     const failures = []
+    // 这一轮自己的回复：先登记，发送过程中才不会被当成「她在别处说过」再记一遍
+    if (!opts.simulate) deliveringChats.add(chatId)
     await failStore.run(failures, async () => {
       for (let i = 0; i < items.length; i++) {
         if (disposed) return
@@ -956,7 +1009,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (disposed) return
     if (opts.simulate) return items
     // 一条都没发出去：不记流水，她没说出口的话不能算说过
-    if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) return { missedAt, failed: failures.length, errors: failures }
+    if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) {
+      deliveringChats.delete(chatId)
+      return { missedAt, failed: failures.length, errors: failures }
+    }
+    deliveringChats.delete(chatId)
     if (inGroup) {
       const gid = chatId.slice(6)
       const said = (groupSaid.get(gid) || []).filter((t) => Date.now() - t < 3600_000)
@@ -965,9 +1022,6 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       groupEngaged.set(gid, Date.now() + ENGAGE_MS) // 在群里说了话 = 加入了话题
     }
     const said = items.map((i) => (i.kind === 'text' || i.kind === 'voice' ? i.value : `[${i.kind}]`)).join(' ')
-    logChat(chatId, 'bot', said)
-    // 不是这个聊天自己那一轮发的（主人在私聊里让她去群里说、扩展模块代发）：记下来，下次这个聊天交给她时告诉她自己说过什么
-    if (!opts.own) saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: said.slice(0, 300) }].slice(-5))
     lastChatAt = Date.now()
     if (chatId.startsWith('private:')) lastPrivateAt.set(chatId.slice(8), Date.now())
     if (chatId === `private:${cfg.ownerQQ}`) lastBotToOwner = { at: Date.now(), text: items.filter((i) => i.kind === 'text' || i.kind === 'voice').map((i) => i.value).join('\n') }
