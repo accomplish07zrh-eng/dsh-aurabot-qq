@@ -333,6 +333,14 @@ export function pruneCache(dir, keep) {
 /** 分出来的人声轨平均音量低于这个就当没有人声。正常人声在 -15 ~ -30 dB，纯音乐分出来是 -80 以下。 */
 export const VOCAL_MIN_DB = -50
 
+/** 混音的 ffmpeg 参数。没有 inst 就是清唱，只留她的人声。 */
+export function mixArgs({ vocals, inst, vol, iv, out }) {
+  const head = ['-y', '-hide_banner', '-loglevel', 'error', '-i', vocals]
+  const tail = ['-ac', '2', '-ar', '44100', '-b:a', '192k', out]
+  if (!inst) return [...head, '-af', `volume=${vol},alimiter=limit=0.95`, ...tail]
+  return [...head, '-i', inst, '-filter_complex', `[0:a]volume=${vol}[v];[1:a]volume=${iv}[i];[v][i]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95`, ...tail]
+}
+
 const INSTRUMENTAL = /纯音乐|伴奏|钢琴|吉他|八音盒|音乐盒|古筝|琵琶|二胡|笛子|葫芦丝|小提琴|大提琴|口琴|萨克斯|instrumental|off ?vocal|karaoke|\binst\b|\bbgm\b|music box|piano/i
 
 /** 搜索结果排序：标题像纯音乐（钢琴版、伴奏……）的放到最后，除非点歌时本来就这么说。其余保持网易云的顺序。 */
@@ -750,8 +758,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
     const full = join(dir, 'cover.mp3')
     const vol = Math.max(0.2, Math.min(2, Number(c.vocalVolume) || 1))
     const iv = Math.max(0.1, Math.min(2, Number(c.instVolume) || 0.8))
-    await run(P().ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-i', vocals, '-i', inst, '-filter_complex',
-      `[0:a]volume=${vol}[v];[1:a]volume=${iv}[i];[v][i]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95`, '-ac', '2', '-ar', '44100', '-b:a', '192k', full], { log })
+    await run(P().ffmpeg, mixArgs({ vocals, inst, vol, iv, out: full }), { log })
     return full
   }
 
@@ -785,7 +792,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
     const song = job.file || (await download(job, dir))
     // 同一首歌、同一个音色、音高和截取方式做过的，直接复用
     // v2：0.6.2 起才检查有没有人声，之前缓存的可能是只有伴奏的成品，一律不用
-    const key = createHash('md5').update(['v2', job.songKey || song, local?.active('song') ? 'local:' + (voice?.id || '') : voice.id, pitch, c.maxVoiceSec, c.clipStart].join('|')).digest('hex').slice(0, 16)
+    const key = createHash('md5').update(['v2', job.songKey || song, local?.active('song') ? 'local:' + (voice?.id || '') : voice.id, pitch, c.maxVoiceSec, c.clipStart, ...(job.acapella ? ['acapella'] : [])].join('|')).digest('hex').slice(0, 16)
     const cached = join(work(), 'cache', key + '.mp3')
     if (existsSync(cached)) {
       log.info(`翻唱：「${job.title}」做过了，直接用缓存`)
@@ -810,7 +817,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
     current.stage = '换成她的声音'
     const converted = await convert(vocals, dir, voice, pitch)
     current.stage = '混音'
-    const mixed = await mix(converted, inst, dir)
+    const mixed = await mix(converted, job.acapella ? null : inst, dir)
     const out = part.cut ? await fade(mixed, dir, part.length) : mixed
     mkdirSync(join(work(), 'cache'), { recursive: true })
     copyFileSync(out, cached)
@@ -826,7 +833,7 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
     try {
       const r = await process1(job)
       current.stage = '发送'
-      await sendVoiceFile(job.chatId, r.file, `[翻唱] ${job.title || job.query}`)
+      await sendVoiceFile(job.chatId, r.file, `[${job.acapella ? '清唱' : '翻唱'}] ${job.title || job.query}`)
       history.unshift({ at: Date.now(), title: job.title || job.query, voice: r.voice, pitch: r.pitch, ok: true, message: `用时 ${Math.round((Date.now() - current.startedAt) / 1000)} 秒` })
       log.info(`翻唱完成：「${job.title || job.query}」`)
       onSung?.(job.title || job.query, job.chatId)
@@ -844,14 +851,14 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
   }
 
   /** 点一首：马上返回，做好了自己发到聊天里。 */
-  function request({ song, songId, file, pitch, voice, chatId }) {
+  function request({ song, songId, file, pitch, voice, chatId, acapella }) {
     const c = cfg()
     if (!c.enabled) return { ok: false, message: '翻唱还没打开（面板「翻唱」标签里开）' }
     const st = status()
     if (!st.ready) return { ok: false, message: '翻唱环境还没装好：' + st.message }
     if (!song && !songId && !file) return { ok: false, message: '要说唱哪首歌' }
     if (queue.length >= 5) return { ok: false, message: '排队的歌太多了，等会儿再点' }
-    queue.push({ query: song || basename(file || ''), songId, file, pitch, voice, chatId })
+    queue.push({ query: song || basename(file || ''), songId, file, pitch, voice, chatId, acapella: Boolean(acapella) })
     const ahead = queue.length - 1 + (current ? 1 : 0)
     pump()
     return { ok: true, message: `开始准备「${song || basename(file || '')}」，大概要两三分钟${ahead ? `（前面还有 ${ahead} 首）` : ''}，做好了会直接发语音` }
