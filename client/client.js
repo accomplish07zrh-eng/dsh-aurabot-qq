@@ -1013,6 +1013,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const sl = st.snowluma
       const [procs, setProcs] = useState(null)
       const [moveTo, setMoveTo] = useState('')
+      // 远端桌宠直连：对外地址的本地编辑态（null = 跟着服务端当前值显示）
+      const [pubBase, setPubBase] = useState(null)
       const conn = st.onebot.state === 'connected'
       const loadProcs = async () => { const r = await get('/snowluma/processes'); setProcs(r.list || []); if (!r.ok) toast(r.message) }
       const act = (p) => async () => { const r = await post(p); toast(r.message || (r.ok ? '好了' : '没成功')); reload() }
@@ -1082,6 +1084,30 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           !conn && st.onebot.problem ? h('div', { className: 'ab-note warn', style: { marginTop: 10 } }, st.onebot.problem) : null,
           h('div', { className: 'ab-flex', style: { marginTop: 10 } }, h(Btn, { small: true, onClick: async () => { const r = await post('/onebot/reconnect'); toast(r.message, r.ok ? 'ok' : 'err'); reload() } }, '重新连接')),
         ),
+        // 远端桌宠直连（2026-11-02）：插件跑在服务器（无桌面）时，桌宠在你自己电脑上运行、直连这里。
+        (() => {
+          const savedPubBase = ((st.config && st.config.ext && st.config.ext.pet) || {}).publicBaseUrl || ''
+          const curPubBase = pubBase == null ? savedPubBase : pubBase
+          return h(Card, { title: '远端桌宠直连（可选）', desc: '插件跑在服务器（无桌面）上时，桌宠可以在你自己的电脑上运行、直连这里的插件。填插件对外的完整地址（含 https://，通常是反代域名），点「验证并保存」——插件会请求该地址下自己的一个只读接口，回 200 才算通。保存后「桌宠」页会出现「下载客户端包」，服务器上的 Electron 安装/启动按钮自动隐藏。留空并保存 = 回到同机模式。⚠ 跨机必须用 https：明文 http 的跨机访问会被直接阻断（安全只靠桌宠令牌一道闸）。' },
+            h(Row, { label: '插件对外地址', hint: savedPubBase ? '当前已配置：' + savedPubBase + '。清空并保存 = 关闭远端直连' : '留空 = 同机模式（桌宠和插件在同一台电脑，不用动这里）' },
+              h('div', { className: 'ab-flex' },
+                h('input', { className: 'ab-input', style: { width: 'min(320px, 100%)' }, placeholder: 'https://bot.example.com', value: curPubBase, onChange: (e) => setPubBase(e.target.value) }),
+                h(Btn, { small: true, disabled: !String(curPubBase).trim(), onClick: async () => {
+                  const r = await post('/panel/pet/public-base', { publicBaseUrl: String(curPubBase).trim() })
+                  toast(r.message || (r.ok ? '已保存' : '没成功'), r.ok ? 'ok' : 'err')
+                  if (r.ok) { setPubBase(null); reload() }
+                } }, '验证并保存'),
+                h(Btn, { small: true, kind: 'ghost', disabled: !String(curPubBase).trim(), title: '服务器自己打不通自己的公网地址（hairpin NAT）时用：不验证直接保存', onClick: async () => {
+                  const r = await post('/panel/pet/public-base', { publicBaseUrl: String(curPubBase).trim(), force: true })
+                  toast(r.message || (r.ok ? '已保存' : '没成功'), r.ok ? 'ok' : 'err')
+                  if (r.ok) { setPubBase(null); reload() }
+                } }, '跳过验证保存'),
+                savedPubBase ? h(Btn, { small: true, kind: 'ghost', onClick: async () => {
+                  const r = await post('/panel/pet/public-base', { publicBaseUrl: '' })
+                  toast(r.message || (r.ok ? '已清空' : '没成功'), r.ok ? 'ok' : 'err')
+                  if (r.ok) { setPubBase(null); reload() }
+                } }, '关闭远端直连') : null)))
+        })(),
         external ? null : h(Card, { title: '高级', desc: '一般不用动：地址和令牌会自动从 SnowLuma 的配置里读。' },
           h(Row, { label: '机器人 QQ 号' }, f.text('botQQ')),
           h(Row, { label: '控制台端口' }, f.num('snowluma.webuiPort', { min: 1, max: 65535 })),
@@ -2435,11 +2461,38 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
           h(Btn, { small: true, disabled: busy === 'dl', onClick: async () => { setBusy('dl'); try { const r = await post('/panel/pet/download'); if (!r.ok) toast(r.message || '没成功', 'err'); else toast(clientBad ? '客户端已重新生成，重启 Electron 后生效' : '客户端已放到数据目录，按桌宠模块说明启动即可', 'ok') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } }, busy === 'dl' ? '生成中…' : clientBad ? '重新生成客户端' : '下载 / 生成客户端'),
           h('span', { className: 'ab-muted ab-small' }, '放到数据目录 modules-data/pet/app，随插件自动发现')),
         h('div', { className: 'ab-flex', style: { marginTop: 6 } },
-          h(Btn, { small: true, disabled: busy === 'ei', onClick: () => act('ei', '/panel/pet/electron-install', 'Electron 安装完成') }, busy === 'ei' ? '安装中…' : electronInstalled ? '重装 Electron' : '安装 Electron'),
-          h(Btn, { small: true, disabled: busy === 'la', onClick: () => act('la', '/panel/pet/launch', '已启动') }, busy === 'la' ? '启动中…' : '启动桌宠'),
-          h(Btn, { small: true, disabled: busy === 'st', onClick: () => act('st', '/panel/pet/stop', '已停止') }, busy === 'st' ? '停止中…' : '停止桌宠'),
+          // 远端直连模式（pet.remoteClient = 配了 publicBaseUrl）：服务器无桌面，Electron 三键换成「下载客户端包」
+          pet?.remoteClient ? h('span', null,
+            h(Btn, { small: true, disabled: busy === 'pkg', onClick: () => { window.open(API + '/panel/pet/client-package', '_blank') } }, busy === 'pkg' ? '打包中…' : '下载客户端包'),
+            h('span', { className: 'ab-muted ab-small', style: { marginLeft: 8 } }, '服务器模式：解压到你自己的电脑，装好 Electron 后在解压目录运行 npx electron main.js（host.json 已内嵌远端地址与令牌，别外传这个包）'))
+          : h('span', null,
+            h(Btn, { small: true, disabled: busy === 'ei', onClick: () => act('ei', '/panel/pet/electron-install', 'Electron 安装完成') }, busy === 'ei' ? '安装中…' : electronInstalled ? '重装 Electron' : '安装 Electron'),
+            h(Btn, { small: true, disabled: busy === 'la', onClick: () => act('la', '/panel/pet/launch', '已启动') }, busy === 'la' ? '启动中…' : '启动桌宠'),
+            h(Btn, { small: true, disabled: busy === 'st', onClick: () => act('st', '/panel/pet/stop', '已停止') }, busy === 'st' ? '停止中…' : '停止桌宠')),
           h('span', { className: 'ab-muted ab-small' },
-            'Electron ' + (electronInstalled ? '已装' : '未装') + '｜运行 ' + (online ? '在跑' : '没在跑') + (pet?.pid ? '（pid ' + pet.pid + '）' : '') + (portReady ? '' : '｜端口未就绪（等宿主注入）'))),
+            pet?.remoteClient ? '' : 'Electron ' + (electronInstalled ? '已装' : '未装') + '｜运行 ' + (online ? '在跑' : '没在跑') + (pet?.pid ? '（pid ' + pet.pid + '）' : '') + (portReady ? '' : '｜端口未就绪（等宿主注入）'))),
+        // 远端直连的安全状态与应急动作（2026-11-02）：明文阻断提示 + 令牌轮换
+        pet?.remoteClient ? h('div', { style: { marginTop: 8 } },
+          pet?.publicBaseInsecure
+            ? h('div', { className: 'ab-small', style: { color: '#d9534f', marginBottom: 6 } },
+              pet?.allowInsecureRemote
+                ? '⚠ 对外地址是明文 http，且已开启「允许明文跨机」：令牌与气泡内容在公网上是明文，强烈建议改用 https'
+                : '⛔ 对外地址是明文 http，跨机访问已被阻断：请在反向代理上启用 https（仅内网自测才开「允许明文 http 跨机」）')
+            : null,
+          pet?.tokenExpired
+            ? h('div', { className: 'ab-small', style: { color: '#d9534f', marginBottom: 6 } }, '⛔ 桌宠令牌已过期：点下面「轮换令牌」，然后重新下载客户端包')
+            : null,
+          h('div', { className: 'ab-flex' },
+            h(Btn, { small: true, kind: 'ghost', disabled: busy === 'rt', onClick: async () => {
+              if (!confirm('轮换后旧令牌立即失效，所有桌宠客户端都要重新下载客户端包才能连上。确定轮换？')) return
+              setBusy('rt')
+              try { const r = await post('/panel/pet/rotate-token'); toast(r.message || (r.ok ? '已轮换' : '没成功'), r.ok ? 'ok' : 'err'); load() } catch (e) { toast(e.message) } finally { setBusy('') }
+            } }, busy === 'rt' ? '轮换中…' : '轮换令牌'),
+            h('span', { className: 'ab-muted ab-small', style: { marginLeft: 8 } },
+              '令牌泄露时用它应急：旧令牌立即失效，需重新下载客户端包' +
+              (pet?.tokenIssuedAt ? '｜签发于 ' + new Date(pet.tokenIssuedAt).toLocaleString() : '') +
+              (pet?.tokenTtlDays ? '（有效期 ' + pet.tokenTtlDays + ' 天）' : '（永不过期）'))))
+          : null,
         h(Row, { label: 'Electron 镜像', hint: '装 Electron 从哪下（末尾带 /）。默认 npmmirror，国内一般快；连不上可换 https://github.com/electron/electron/releases/download/。留空 = 用内置默认。npm 装失败会自动改用 zip 直装' },
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', style: { width: 'min(300px, 100%)' }, value: emUrl == null ? (pet?.electronMirror || '') : emUrl, placeholder: 'https://npmmirror.com/mirrors/electron/', onChange: (e) => setEmUrl(e.target.value) }),

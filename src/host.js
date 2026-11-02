@@ -343,7 +343,52 @@ export function apply(ctx) {
       send(res, 200, { ok: false, message: redact(String(error && error.message ? error.message : error)) })
     }
   }
-  const route = (path, handler) => ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: PREFIX + path, handler: (req, res) => answer(res, () => handler(req, res)) }), `aurabot: 路由 ${path}`)
+  // ---------- 面板级访问闸（安全基线，2026-11-02） ----------
+  // 背景：DSH 的 webServer 对插件路由**没有服务器级鉴权**，而 /aurabot/api/panel/* 是给本机
+  // 面板用的管理接口（能改配置、能下客户端包）。同机部署时它只绑回环，本来打不到；
+  // 但一旦用户把插件端口经反代发布到公网，整组面板接口就裸奔了。
+  // 因此：**面板接口默认只允许回环访问**。要做远端管理必须显式开 panelRemoteAccess（并在
+  // 反代层再加一道认证——README 写明这是硬要求）。
+  // 注意：/ext/<模块>/* 与 /asset/* 是桌宠客户端从用户电脑直连用的，不受此闸限制
+  //（它们各自有 x-pet-token 校验）。
+  const isLoopbackAddr = (ip) => {
+    const s = String(ip || '')
+    return s === '::1' || s === '127.0.0.1' || s === '::ffff:127.0.0.1' || /^127\./.test(s) || s.startsWith('::ffff:127.')
+  }
+  /** 请求是否来自本机回环。
+   *  【关键】反代场景下 socket 一定是 127.0.0.1（反代自己连进来的），所以**不能先看 socket**——
+   *  必须先看 X-Forwarded-For 的**最后一跳**：那是反代追加的真实直连来源，客户端自报的前几跳可伪造。
+   *  只有完全没有 X-Forwarded-For 时，才用 socket 地址判断。 */
+  const requestIsLocal = (req) => {
+    const sock = String(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '')
+    const xff = String(req?.headers?.['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean)
+    if (xff.length) return isLoopbackAddr(xff[xff.length - 1]) // 有反代头：只认最后一跳
+    // 没有 socket 信息 = 进程内直调（测试 / 内部转发），按本机处理。
+    // 真实 HTTP 请求一定有 remoteAddress，所以这里不会削弱对外拦截。
+    if (!sock) return true
+    return isLoopbackAddr(sock)
+  }
+  const panelNeedsLocal = () => getConfig().ext?.panelRemoteAccess !== true
+  /** 面板闸：命中 /panel/* 且不允许远端时拒绝。 */
+  const panelBlocked = (req, res) => {
+    let path = ''
+    try { path = new URL(req.url, 'http://x').pathname } catch { return false }
+    if (!path.startsWith(PREFIX + '/panel/')) return false
+    if (!panelNeedsLocal()) return false
+    if (requestIsLocal(req)) return false
+    log.warn(`面板接口拒绝远端访问：${path}（来源不是回环；如需远端管理请开 ext.panelRemoteAccess 并在反代加认证）`)
+    send(res, 403, { ok: false, message: '面板接口只允许本机访问。远端管理需在配置里显式开启 ext.panelRemoteAccess，并务必在反向代理层再加一道认证' })
+    return true
+  }
+  /** 面板闸：面板写/读接口统一过它（见上方 panelBlocked 说明）。 */
+  const route = (path, handler) => ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREFIX + path,
+    handler: (req, res) => answer(res, () => {
+      if (panelBlocked(req, res)) return undefined
+      return handler(req, res)
+    }),
+  }), `aurabot: 路由 ${path}`)
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX, // DSH 按「路径 = 前缀 或 以 前缀/ 开头」匹配，前缀本身不带结尾的 /
@@ -406,6 +451,16 @@ export function apply(ctx) {
       try { port = Number(new URL(String(process.env.DSH_WEB_URL || '')).port) } catch { port = 0 }
     }
     return Number.isInteger(port) && port > 0 && port < 65536 ? port : 0
+  }
+  // ---------- 桌宠远端直连（publicBaseUrl，2026-11-02）----------
+  // 单一真相：ext.pet.publicBaseUrl（pet 模块 api.settings() 读同一键；面板写入通道见 /panel/pet/config 与
+  // /panel/pet/public-base）。合法 http(s) URL 才生效；配置后 pet 的 host.json 写远端地址、guard 放行远端
+  // Host/Origin、面板把 Electron 三键换成「下载客户端包」。未配置时 pet 一切行为与旧版一致（同机零退化）。
+  function publicBaseUrlOf() {
+    const raw = String(getConfig().ext?.pet?.publicBaseUrl || '').trim().replace(/\/+$/, '')
+    if (!/^https?:\/\//i.test(raw)) return ''
+    try { const u = new URL(raw); if (!u.hostname) return '' } catch { return '' }
+    return raw
   }
   function injectPetPort() {
     const port = webPortOf()
@@ -723,6 +778,15 @@ export function apply(ctx) {
       const u = b.electronMirror.trim().slice(0, 500)
       if (!u || /^https?:\/\//i.test(u)) patch.electronMirror = u
     }
+    // 对外公网地址（远端直连）：只收 http/https 或空（空 = 关掉远端模式，回到同机）
+    if (typeof b.publicBaseUrl === 'string') {
+      const u = b.publicBaseUrl.trim().replace(/\/+$/, '').slice(0, 300)
+      if (!u || /^https?:\/\//i.test(u)) patch.publicBaseUrl = u
+    }
+    // 安全项（2026-11-02）：明文 http 跨机开关 + 令牌有效期。同样因为内置模块的 settings 不渲染表单，
+    // 这里是唯一写入通道。
+    if (typeof b.allowInsecureRemote === 'boolean') patch.allowInsecureRemote = b.allowInsecureRemote
+    if (Number.isFinite(b.tokenTtlDays)) patch.tokenTtlDays = Math.min(3650, Math.max(0, Math.floor(b.tokenTtlDays)))
     // 行为大脑的模块级设置（AI 自己改不了，只有主人能改）。pet 是**内置模块**，
     // 它的 settings schema 不会渲染成表单（面板只给「用户自己复制出来的模块」生成），
     // 所以这里是这些开关唯一的写入通道——不补，关窗物理闸就永远打不开。
@@ -777,12 +841,17 @@ export function apply(ctx) {
     return { ok: true, result: redactTokens(await pet.setFocus(enabled)) }
   })
   // Electron 三键：安装（npmmirror 镜像）→ 启动（清 ELECTRON_RUN_AS_NODE 分离进程）→ 停止（杀 pid）
+  // 远端直连模式（配了 publicBaseUrl）下安装/启动不再执行——服务器无桌面，spawn 无头 Electron 的坑从入口上消失，
+  // 面板据 remoteClient:true 把这两键换成「下载客户端包」（/panel/pet/client-package）。
+  const remotePetHint = () => ({ ok: false, available: false, remoteClient: true, message: '已配置对外地址（远端直连模式）：服务器上不再安装/启动 Electron。请在「桌宠」页点「下载客户端包」，在你自己的电脑上解压运行' })
   route('/panel/pet/electron-install', async () => {
+    if (publicBaseUrlOf()) return remotePetHint()
     const pet = use('pet')
     if (typeof pet?.electronInstall !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，装不了 Electron' }
     return { ok: true, result: redactTokens(await pet.electronInstall()) }
   })
   route('/panel/pet/launch', async () => {
+    if (publicBaseUrlOf()) return remotePetHint()
     const pet = use('pet')
     if (typeof pet?.launch !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，启动不了桌宠' }
     return { ok: true, result: redactTokens(await Promise.resolve(pet.launch())) }
@@ -792,6 +861,59 @@ export function apply(ctx) {
     if (typeof pet?.stop !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，停不了桌宠' }
     return { ok: true, result: redactTokens(await Promise.resolve(pet.stop())) }
   })
+  // 轮换令牌（安全）：旧的立即失效，客户端必须重新下载包。跨机部署时这是唯一的应急手段
+  // （令牌一旦泄露，只有换掉它才收得回口子）。
+  route('/panel/pet/rotate-token', async () => {
+    const pet = use('pet')
+    if (typeof pet?.rotateToken !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪 / 版本太旧（需要 1.0.9+），换不了令牌' }
+    const r = pet.rotateToken()
+    log.info(`面板轮换桌宠令牌｜${r.ok ? '成功' : '失败：' + r.message}`)
+    return { ok: Boolean(r && r.ok), message: r?.message || '', issuedAt: r?.issuedAt || null }
+  })
+  // 对外公网地址：保存 + 验证。验证 = 服务端向 <publicBaseUrl>/aurabot/api/state（现有只读接口）发一次请求，
+  // 回 200 即通；hairpin NAT 等打不通自己的公网地址时可带 force:true 跳过验证直接保存（客户端能不能连上以实测为准）。
+  route('/panel/pet/public-base', async (req) => {
+    const b = await readBody(req)
+    const raw = String(b.publicBaseUrl ?? '').trim().replace(/\/+$/, '').slice(0, 300)
+    if (!raw) {
+      setConfig(mergeFromPanel(cfg, { ext: { pet: { publicBaseUrl: '' } } }))
+      log.info('面板已清空桌宠对外地址：回到同机模式')
+      return { ok: true, publicBaseUrl: '', message: '已清空：回到同机模式（host.json 恢复回环地址）' }
+    }
+    if (!/^https?:\/\//i.test(raw)) return { ok: false, message: '要填 http(s):// 开头的完整地址，如 https://bot.example.com' }
+    let detail = ''
+    let ok = false
+    try {
+      const r = await fetch(raw + '/aurabot/api/state', { signal: AbortSignal.timeout(8000) })
+      ok = r.ok
+      detail = `HTTP ${r.status}`
+    } catch (error) { detail = error.message }
+    if (!ok && b.force !== true) {
+      return { ok: false, publicBaseUrl: raw, verified: false, message: `验证没过（${detail}）：确认反代已把 ${raw} 指到本插件。地址确实打不通自己的公网（如 hairpin NAT）可再点一次「跳过验证保存」` }
+    }
+    setConfig(mergeFromPanel(cfg, { ext: { pet: { publicBaseUrl: raw } } }))
+    log.info(`面板已保存桌宠对外地址｜${raw}｜验证${ok ? '通过' : '跳过'}（${detail}）`)
+    return { ok: true, publicBaseUrl: raw, verified: ok, message: ok ? `验证通过（${detail}）：远端直连已开启，host.json 会写这个地址` : `已保存（验证被跳过：${detail}）` }
+  })
+  // 客户端包（zip）：app/ 目录 + 内嵌 host.json。面板远端模式的「下载客户端包」用；浏览器直接下载二进制，
+  // 所以不能走 JSON 包装的 route()，这里单独注册精确路径并手动设 content-type/content-disposition。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREFIX + '/panel/pet/client-package',
+    handler: (req, res) => answer(res, async () => {
+      // 【安全】这一条不走 route()，必须自己过面板闸：包内嵌 host.json（含 bearer 令牌），
+      // 公网上谁都能无鉴权下到就等于把桌宠令牌送出去。
+      if (panelBlocked(req, res)) return undefined
+      const pet = use('pet')
+      if (typeof pet?.clientPackage !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，打不了客户端包' }
+      const r = await Promise.resolve(pet.clientPackage())
+      if (!r.ok) return { ok: false, message: r.message }
+      res.setHeader?.('content-type', 'application/zip')
+      res.setHeader?.('content-disposition', `attachment; filename="${r.filename}"`)
+      send(res, 200, r.buffer, 'application/zip') // answer 只在返回非 undefined 时才发 JSON，这里已手动发过
+      return undefined
+    }),
+  }), 'aurabot: 桌宠客户端包下载')
   // ---------- 行为动作（设计稿 §8 测试通道）：面板「试一下」+ 每动作 AI 开关 + 图标隔离区 ----------
   // 全部代理到 pet 模块已暴露的函数（behaviorEmit / behaviorStatus / iconQuarantine / iconRestore）；
   // 模块没就绪或旧版本缺接口时降级 available:false，面板显示兜底文案不炸。
