@@ -773,12 +773,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 
     /** 「关于」页：三张通栏大卡（这是谁 / 加入我们 / 核心开发者），贡献者与许可默认折叠。
      *  只读展示，没有设置项。「核心开发者」写死三个人；「贡献者」里的头像墙走 contrib.rocks 自动更新，
-     *  文字名单取自 GitHub contributors 与版本说明（含没有 commit 的反馈者）。 */
+     *  文字名单取自 GitHub contributors 与版本说明（含没有 commit 的反馈者）。
+     *  仓库已从个人账号迁到 aureth-labs 组织：主仓 + 模块仓（模块市场/桌宠素材都在模块仓）。 */
     function About({ st }) {
       const repo = 'https://github.com/aureth-labs/dsh-aurabot-qq'
+      const mods = 'https://github.com/aureth-labs/dsh-aurabot-qq-mods'
       const gh = (name) => h('a', { key: 'gh-' + name, href: 'https://github.com/' + name, target: '_blank', rel: 'noreferrer' }, '@' + name)
       // GitHub contributors API（按提交数排序）+ 版本说明里记录的 issue 报告 / 反馈者（没有 commit，单列）
-      const coders = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao', 'GitNekopedia', 'Chsw-CC', 'chsw']
+      const coders = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao', 'GitNekopedia', 'Chsw-CC', 'chsw', 'Emotionana', 'Nightc-c', 'Fallen-plum-blossom']
       const reporters = ['cxin21', 'zhuyi314', '38213063', 'HuaGyuu', 'CYyare', 'yunxirumo', 'XiongYachao']
       const kv = (rows) => h('div', { className: 'ab-kv' }, rows.flatMap(([k, v]) => [h('span', { key: k }, k), h('span', { key: k + '-v' }, v)]))
       const copyGroup = (e) => { try { navigator.clipboard.writeText('1130575035'); e.target.textContent = '已复制'; setTimeout(() => { e.target.textContent = '复制' }, 1500) } catch (error) {} }
@@ -794,11 +796,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'inner' }, children))
       return h('div', { className: 'ab-grid' },
         h(Card, { className: 'ab-about-lead', title: 'Aurabot · 住在 QQ 里的 AI 伙伴「大肥鱼」🐟', desc: 'v' + st.version + ' · 面板 API v' + (st.apiVersion || '?') },
-          h('p', null, '一个 DeepSeek Harness 插件，经 SnowLuma（OneBot v11 网关）接入 QQ。聊天、语音、表情包、日记、B 站这些本事都来自内置模块，更多模块在「模块市场」，也可以自己写。'),
+          h('p', null, '一个 DeepSeek Harness 插件，由 aureth-labs 组织维护，经 SnowLuma（OneBot v11 网关）接入 QQ。聊天、语音、表情包、日记这些是插件自带的本事；桌宠、抖音、小黑盒、群管这些本事在「模块市场」一键安装，模块本体都在模块仓库里，也可以自己写。'),
           h('div', { className: 'ab-flex', style: { marginTop: 14 } },
-            h('a', { key: 'repo', className: 'ab-btn sm', href: repo, target: '_blank', rel: 'noreferrer' }, 'GitHub 仓库'),
+            h('a', { key: 'repo', className: 'ab-btn sm', href: repo, target: '_blank', rel: 'noreferrer' }, 'GitHub 主仓库'),
+            h('a', { key: 'mods', className: 'ab-btn sm', href: mods, target: '_blank', rel: 'noreferrer' }, '模块仓库'),
             h('a', { key: 'doc', className: 'ab-btn sm', href: repo + '/blob/main/docs/USER-MANUAL.md', target: '_blank', rel: 'noreferrer' }, '用户手册'),
           ),
+          h('p', { className: 'ab-muted ab-small', style: { marginTop: 10, marginBottom: 0 } }, '项目分两个仓库：主仓 dsh-aurabot-qq 放插件本体；模块仓 dsh-aurabot-qq-mods 放模块市场的社区模块和桌宠素材包。'),
         ),
         h(Card, { className: 'ab-about-lead', title: '加入我们', desc: '交流、报 bug、提代码都在这儿。' },
           h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 12 } },
@@ -806,12 +810,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               h('button', { key: 'cp', type: 'button', className: 'ab-btn sm', onClick: copyGroup }, '复制')),
             h('a', { key: 'issue', className: 'ab-btn sm', href: repo + '/issues', target: '_blank', rel: 'noreferrer' }, '报 bug / 提需求'),
             h('a', { key: 'pr', className: 'ab-btn sm', href: repo + '/pulls', target: '_blank', rel: 'noreferrer' }, '提代码（PR）'),
+            h('a', { key: 'modpr', className: 'ab-btn sm', href: mods + '/pulls', target: '_blank', rel: 'noreferrer' }, '提交模块（模块仓库 PR）'),
           ),
           h('p', { className: 'ab-muted ab-small', style: { marginTop: 12 } }, '提 issue / PR 前先翻一下有没有重复；群里问问题时尽量带上「日志」页的报错和版本号。'),
         ),
         h(Card, { className: 'ab-about-lead', title: '核心开发者', desc: '从第一行代码到现在，主要靠这三位在写。' },
           h('div', { className: 'ab-devs' }, devs.map(dev)),
-          h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '仓库由 @accomplish07zrh-eng 创建；点名字进 GitHub 主页，其余帮忙的见下面「贡献者」。'),
+          h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '仓库现由 aureth-labs 组织维护，由 @accomplish07zrh-eng 创建；点名字进 GitHub 主页，其余帮忙的见下面「贡献者」。'),
         ),
         fold('贡献者（' + (coders.length + reporters.length) + ' 人）', false,
           h('div', null,
@@ -835,7 +840,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               ['参考插件', h('span', { key: 'yuu' }, gh('Yuuyuko-uu'), ' 的 dsh-qq-bridge / speak-up / mood / memory（MIT，只借鉴踩坑经验）')],
               ['其他署名', h('span', { key: 'tp' }, 'qq-bridge / QSH、surfcore purpose-engine 等，见 THIRD-PARTY-NOTICES.md')],
             ]),
-            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '素材包体积大（50MB+），不进本仓库：放独立素材仓 dsh-aurabot-qq-mods 的 pet-pack/，插件缺包时会按设置里的地址自动下载落位。'),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 12, marginBottom: 0 } }, '素材包体积大（50MB+），不进本仓库：放独立模块仓 ', h('a', { href: mods, target: '_blank', rel: 'noreferrer' }, 'aureth-labs/dsh-aurabot-qq-mods'), ' 的 pet-pack/，插件缺包时会按设置里的地址自动下载落位。'),
           )),
       )
     }
