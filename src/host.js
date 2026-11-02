@@ -419,9 +419,24 @@ export function apply(ctx) {
   // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
   // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
   const approvalSeen = new Map()
+  // 授权通知只看 Aurabot · QQ 工作区：既包括 hub 映射的聊天会话，也包括同一工作区里
+  // 主人手动打开 / 调试 / 新建的会话。别的 DSH 项目的会话一律不转到 QQ。
+  function isAurabotWorkspaceSession(session) {
+    if (!session?.id) return false
+    try { if (hub?.chatOfSession?.(session.id)) return true } catch (error) {}
+    try {
+      const reg = ctx.workspaceRegistry || ctx.get?.('workspaceRegistry')
+      const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
+      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
+      return Boolean(ws?.sessionIds?.some((sid) => String(sid) === String(session.id)))
+    } catch (error) {
+      return false
+    }
+  }
   async function notifyApproval(session, event) {
     try {
       if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
+      if (!isAurabotWorkspaceSession(session)) return
       const d = event.data || {}
       const id = String(d.id || '')
       if (!id || approvalSeen.has(id)) return
