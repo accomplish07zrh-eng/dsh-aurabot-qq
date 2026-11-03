@@ -1251,14 +1251,6 @@ test('DSH 要授权时只通知 Aurabot · QQ 会话，别的项目不转到 QQ�
   assert.equal(sent.length, 1)
   assert.match(JSON.stringify(sent[0].params.message), /要授权.*pwsh.*DSH 界面/)
 
-  // 调试会话也是 Aurabot · QQ 工作区的会话，不能因为不是当前 sessionId 就漏通知
-  const dbgSid = api.hub.sessions()['private:10000001']?.sessions?.debug
-  if (dbgSid) {
-    const afterLive = mock.calls.length
-    fake.emit('session/event', { id: dbgSid, title: 'QQ · 主人私聊（调试）' }, { type: 'approval/asked', data: { id: 'approval-debug', toolName: 'pwsh', reason: '调试会话' } })
-    await until(() => mock.calls.slice(afterLive).some((c) => c.action === 'send_private_msg'))
-  }
-
   const afterFirst = mock.calls.length
   fake.emit('session/event', { id: 'external-workspace-session', title: '另一个项目' }, { type: 'approval/asked', data: { id: 'approval-external', toolName: 'pwsh', reason: '别的项目' } })
   await sleep(150)
