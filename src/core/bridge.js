@@ -12,7 +12,10 @@ import { defineTool } from '../tools/tools.js'
 
 const RING = 300
 
-export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, version, apiVersion, overview }) {
+export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, version, apiVersion, overview, instance = 'aurabot', prefix = '/aurabot/api' }) {
+  const isDefault = instance === 'aurabot'
+  const serviceName = isDefault ? 'aurabot' : instance
+  const ns = isDefault ? 'aurabot' : 'aurabot' + '_' + instance.replace(/-/g, '_')
   const events = [] // 最近发生的事（收到的消息、她发出去的话、模块发的事件），别的程序轮询用
   let seq = 0
   let disposed = false
@@ -89,7 +92,7 @@ export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, versio
     hub,
   }
   try {
-    if (typeof ctx.provide === 'function') ctx.provide('aurabot', service)
+    if (typeof ctx.provide === 'function') ctx.provide(serviceName, service)
   } catch (error) {
     log.debug('没能登记 aurabot 服务：', error.message)
   }
@@ -99,20 +102,20 @@ export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, versio
   function builtinTools() {
     return [
       defineTool({
-        name: 'aurabot_qq_send',
+        name: `${ns}_qq_send`,
         description: '让 QQ 上的「大肥鱼」（Aurabot 插件里的 AI 伙伴）替你发一条 QQ 消息。target 写 private:QQ号 或 group:群号，不填就发给主人。text 是要发的话，可以用 ||| 分多条、<voice>…</voice> 发语音。',
         properties: { target: str('private:QQ号 / group:群号，可不填（发给主人）'), text: str('要发的话') },
         required: ['text'],
         execute: async (args) => ops.send(args),
       }),
       defineTool({
-        name: 'aurabot_status',
+        name: `${ns}_status`,
         description: '看看 QQ 上的「大肥鱼」现在的状态：在不在线、心情、开着哪些模块。',
         execute: async () => ops.info(),
       }),
       defineTool({
-        name: 'aurabot_call',
-        description: '调用大肥鱼某个模块导出的函数（高级）。比如 module=memory, method=recall, args=["香菜"] 查她的记忆；module=memory, method=add, args=[{"text":"…"}] 让她记住一件事。模块和函数列表用 aurabot_status 看，说明在她的数据目录 modules/API.md。',
+        name: `${ns}_call`,
+        description: `调用大肥鱼某个模块导出的函数（高级）。比如 module=memory, method=recall, args=["香菜"] 查她的记忆；module=memory, method=add, args=[{"text":"…"}] 让她记住一件事。模块和函数列表用 ${ns}_status 看，说明在她的数据目录 modules/API.md。`,
         properties: { module: str('模块 id'), method: str('函数名'), args: { type: 'array', items: {}, description: '参数列表' } },
         required: ['module', 'method'],
         execute: async (args) => ops.call(args),
@@ -188,7 +191,7 @@ export function createBridge({ ctx, getConfig, setConfig, hub, mods, log, versio
   return {
     ops, service, refresh, dispose, ensureToken, resetToken, authorized,
     deniedTools: () => toolNames.slice(),
-    examples: (base) => examples(base, getConfig().bridge.token),
+    examples: (base) => examples(base, getConfig().bridge.token, prefix, serviceName),
   }
 }
 
@@ -197,13 +200,13 @@ function safeJson(v) {
 }
 
 /** 面板上给的示例（复制就能用）。 */
-function examples(base, token) {
+function examples(base, token, prefix = '/aurabot/api', serviceName = 'aurabot') {
   const t = token || '<密钥>'
   return {
-    curl: `curl -X POST ${base}/aurabot/api/open/send -H "Authorization: Bearer ${t}" -H "content-type: application/json" -d "{\\"text\\":\\"下班啦\\"}"`,
-    powershell: `Invoke-RestMethod -Method Post -Uri ${base}/aurabot/api/open/send -Headers @{Authorization='Bearer ${t}'} -ContentType 'application/json' -Body '{"text":"下班啦"}'`,
-    python: `import requests\nrequests.post("${base}/aurabot/api/open/send", headers={"Authorization": "Bearer ${t}"}, json={"text": "下班啦"})`,
+    curl: `curl -X POST ${base}${prefix}/open/send -H "Authorization: Bearer ${t}" -H "content-type: application/json" -d "{\\"text\\":\\"下班啦\\"}"`,
+    powershell: `Invoke-RestMethod -Method Post -Uri ${base}${prefix}/open/send -Headers @{Authorization='Bearer ${t}'} -ContentType 'application/json' -Body '{"text":"下班啦"}'`,
+    python: `import requests\nrequests.post("${base}${prefix}/open/send", headers={"Authorization": "Bearer ${t}"}, json={"text": "下班啦"})`,
     // 不写进 inject：写了就变成「没装 Aurabot 这个插件就不启动」；用的时候再 ctx.get
-    plugin: `// 别的 DSH 插件里\nexport function apply(ctx) {\n  // 用的时候再拿（Aurabot 没装 / 没启动时是 undefined）\n  ctx.get('aurabot')?.send({ text: '构建完成啦' })\n}`,
+    plugin: `// 别的 DSH 插件里\nexport function apply(ctx) {\n  // 用的时候再拿（Aurabot 没装 / 没启动时是 undefined）\n  ctx.get('${serviceName}')?.send({ text: '构建完成啦' })\n}`,
   }
 }

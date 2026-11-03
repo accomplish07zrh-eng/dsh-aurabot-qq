@@ -1,4 +1,4 @@
-// 模块内核：插件的功能都是模块，内置的在 src/modules/，自己写的放数据目录 modules/（升级不会动）。
+﻿// 模块内核：插件的功能都是模块，内置的在 src/modules/，自己写的放数据目录 modules/（升级不会动）。
 //
 // - 每个模块能单独开关；自己写的模块和内置的同名，就替换掉内置的
 // - 模块之间用 api.use('模块id') 拿对方导出的东西，用的时候再拿（对方被关了、换了也不会拿到旧的）
@@ -11,7 +11,7 @@
 import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, dirname, relative, resolve, sep } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { dataDir } from './store.js'
+import { dataDir, baseDataDir, currentAccount, withAccount } from './store.js'
 import { registerSecretField } from './config.js'
 import { defineTool } from '../tools/tools.js'
 
@@ -30,7 +30,15 @@ const TYPES = 'aurabot.d.ts'
 // 从内置搬到社区库的模块：接口路径不变，面板页照常能用
 const STABLE_ROUTES = new Set(['pet', 'douyin', 'heybox', 'group-admin'])
 
-export const userDir = () => dataDir('modules')
+export const userDir = () => {
+  const own = dataDir('modules')
+  if (currentAccount() === 'default') return own
+  try {
+    const has = readdirSync(own, { withFileTypes: true }).some((d) => d.isDirectory() && !d.name.startsWith('_') && !d.name.startsWith('.'))
+    if (has) return own
+  } catch (error) {}
+  return baseDataDir('modules')
+}
 
 /** 内部源码全部按「相对 src 的路径」开放出来：lib('features/memory.js') → 那个文件导出的全部东西。 */
 const libCache = new Map()
@@ -111,7 +119,8 @@ export function checkDef(def, id) {
 }
 
 /** 把一份源码里指向插件内部的相对 import 改成走 lib()，这样复制出去也能跑。 */
-export function rewriteImports(code, fromKey, keep = new Set()) {
+export function rewriteImports(code, fromKey, keep = new Set(), globalKey = 'aurabot') {
+  const g = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(globalKey) ? `globalThis.${globalKey}` : `globalThis[${JSON.stringify(globalKey)}]`
   const base = fromKey.split('/').slice(0, -1)
   const target = (spec) => {
     if (!/^\.\.?\//.test(spec)) return null
@@ -145,9 +154,9 @@ export function rewriteImports(code, fromKey, keep = new Set()) {
   // 插件里带的数据文件（new URL('./x.py', import.meta.url)）：指回插件目录
   out = out.replace(/new URL\(\s*['"](\.\.?\/[^'"]*)['"]\s*,\s*import\.meta\.url\s*\)/g, (m, spec) => {
     const key = target(spec)
-    return key ? `new URL('${key}', globalThis.aurabot.src)` : m
+    return key ? `new URL('${key}', ${g}.src)` : m
   })
-  if (out !== code) out = "const __lib = globalThis.aurabot.lib // 插件内部源码（复制出来后靠它找到插件里的文件）\n" + out
+  if (out !== code) out = `const __lib = ${g}.lib // 插件内部源码（复制出来后靠它找到插件里的文件）\n` + out
   return out
 }
 
@@ -197,8 +206,9 @@ export function scopeCoreForModule(core, id) {
   })
 }
 
-export function createModules({ ctx, core, getConfig, setConfig, logger, version, builtins }) {
+export function createModules({ ctx, core, getConfig, setConfig, logger, version, builtins, instance = 'aurabot', prefix: apiPrefix = '/aurabot/api', run = (fn) => fn(), accountId: ownerAccount = '' }) {
   const log = logger.child('modules')
+  const globalKey = instance === 'aurabot' ? 'aurabot' : 'aurabot_' + instance.replace(/^aurabot-?/, '').replace(/-/g, '_')
   const builtinDefs = new Map(builtins.map((d) => [d.id, d]))
   const live = new Map() // id → 运行中的模块（见 start）
   const errors = new Map() // id → { message, at }  启动失败 / 加载失败
@@ -217,6 +227,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
 
   // ---------- 给模块的 api ----------
   function makeApi(id, source, rec) {
+    const accountId = ownerAccount || currentAccount()
     const mlog = logger.child(id)
     const active = () => !disposed && !rec.stopped && live.get(id) === rec
     const writable = (label, fn) => (...args) => {
@@ -269,7 +280,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         setConfig({ ...cfg, ext: { ...cfg.ext, [id]: { ...(cfg.ext?.[id] || {}), ...patch } } })
         return api.settings()
       }),
-      dataDir: (...parts) => { const d = dataDir('modules-data', id); mkdirSync(d, { recursive: true }); return join(d, ...parts) },
+      dataDir: (...parts) => withAccount(accountId, () => { const d = dataDir('modules-data', id); mkdirSync(d, { recursive: true }); return join(d, ...parts) }),
       // ---- 别的模块和插件内部 ----
       use: (other) => exportsOf(other),
       lazy: (other) => lazyProxy(() => exportsOf(other)),
@@ -301,19 +312,19 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       every: (ms, fn, label = '定时任务') => {
         const t = setInterval(() => {
           if (!active()) return
-          Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, label, error))
+          Promise.resolve().then(() => run(() => { if (active()) return fn() })).catch((error) => note(id, label, error))
         }, Math.max(1000, Number(ms) || 60_000))
         t.unref?.()
         return track(() => clearInterval(t))
       },
       later: (ms, fn) => {
-        const t = setTimeout(() => { Promise.resolve().then(() => { if (active()) return fn() }).catch((error) => note(id, '延时任务', error)) }, Math.max(0, Number(ms) || 0))
+        const t = setTimeout(() => { Promise.resolve().then(() => run(() => { if (active()) return fn() })).catch((error) => note(id, '延时任务', error)) }, Math.max(0, Number(ms) || 0))
         t.unref?.()
         return track(() => clearTimeout(t))
       },
       route: (path, handler) => {
         if (!active()) return () => {}
-        const full = '/aurabot/api' + prefix + (String(path).startsWith('/') ? path : '/' + path)
+        const full = apiPrefix + prefix + (String(path).startsWith('/') ? path : '/' + path)
         const cur = routes.get(full)
         if (cur && cur.id !== id && live.has(cur.id)) throw new Error(`接口 ${full} 已经被模块「${cur.id}」占了`)
         const route = { id, handler: guard(`接口 ${path}`, handler) }
@@ -456,7 +467,8 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     }
     // 旧快照删掉（加载过的代码已经在内存里，删文件不影响）
     try { for (const n of readdirSync(root)) if (join(root, n) !== snap) rmSync(join(root, n), { recursive: true, force: true }) } catch (error) {}
-    const mod = await import(pathToFileURL(join(snap, relative(u.dir, u.file))).href)
+    const modUrl = pathToFileURL(join(snap, relative(u.dir, u.file))).href + '?account=' + encodeURIComponent(instance)
+    const mod = await import(modUrl)
     return { def: mod.default, stamp }
   }
 
@@ -514,7 +526,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     return (async () => {
       await loadLib()
       if (disposed) return
-      globalThis.aurabot = { lib, src: pathToFileURL(SRC).href, version, apiVersion: API_VERSION, modules: publicHandle }
+      globalThis[globalKey] = { lib, src: pathToFileURL(SRC).href, version, apiVersion: API_VERSION, modules: publicHandle }
       installDocs()
       await sync()
       if (disposed) return
@@ -592,7 +604,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     for (const id of [...live.keys()].reverse()) stop(id, { quiet: true })
     routes.clear()
     listeners.clear()
-    if (globalThis.aurabot?.modules === publicHandle) delete globalThis.aurabot
+    if (globalThis[globalKey]?.modules === publicHandle) delete globalThis[globalKey]
   }
 
   // ---------- 事件 ----------
@@ -735,7 +747,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         errors: rec ? rec.errors : [],
         tools: rec ? toolNames(rec) : [],
         commands: rec ? rec.commands.map((c) => c.name) : [],
-        routes: [...routes].filter(([, r]) => r.id === id).map(([p]) => p.replace('/aurabot/api', '')),
+        routes: [...routes].filter(([, r]) => r.id === id).map(([p]) => p.replace(apiPrefix, '')),
         settings: rec?.source === 'user' || (!rec && u) ? (def.settings || []) : [],
         defaults: def.defaults || {},
         panel: Boolean(rec?.source === 'user' && def.panel),
@@ -791,7 +803,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     mkdirSync(dir, { recursive: true })
     for (const [key, name] of own) {
       // 指向插件其他文件的改成走 lib()；一起复制过来的文件之间互相引用的，改成同目录
-      let code = rewriteImports(readFileSync(join(SRC, ...key.split('/')), 'utf8'), key, new Set(own.keys()))
+      let code = rewriteImports(readFileSync(join(SRC, ...key.split('/')), 'utf8'), key, new Set(own.keys()), globalKey)
       for (const [k2, n2] of own) {
         const relFrom = relative(dirname(join(SRC, ...key.split('/'))), join(SRC, ...k2.split('/'))).split(sep).join('/')
         const spec = relFrom.startsWith('.') ? relFrom : './' + relFrom
@@ -863,3 +875,11 @@ function deepMerge(base, over) {
   for (const [k, v] of Object.entries(over)) out[k] = isObj(v) && isObj(out[k]) ? deepMerge(out[k], v) : v
   return out
 }
+
+
+
+
+
+
+
+

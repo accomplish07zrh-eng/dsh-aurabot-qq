@@ -12,7 +12,9 @@ window.__ModuleLoader__.load({
     const h = React.createElement
     const inject = ['slots']
     const PANEL_ID = 'aurabot'
-    const API = '/aurabot/api'
+    const CONTROL_API = '/aurabot-accounts/api'
+    let API = (() => { try { const saved = localStorage.getItem('aurabot.apiPrefix'); return saved && saved !== CONTROL_API && !saved.startsWith('/aurabot-accounts') ? saved : '/aurabot/api' } catch (e) { return '/aurabot/api' } })()
+    const setApiPrefix = (prefix) => { API = prefix; try { localStorage.setItem('aurabot.apiPrefix', prefix) } catch (e) {} }
 
     // ---------------- 小工具 ----------------
     const get = (p) => fetch(API + p, { cache: 'no-store' }).then((r) => r.json()).catch((e) => ({ ok: false, message: '连不上插件：' + e.message }))
@@ -454,6 +456,38 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-range{display:flex;align-items:center;gap:10px;min-width:240px}
 .ab-range input[type=range]{flex:1;accent-color:var(--ab-sea)}
 .ab-range .val{min-width:48px;text-align:right;font-variant-numeric:tabular-nums;color:var(--ab-deep);font-weight:600}
+.ab-account-bar{display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:nowrap;min-width:0;padding:6px 8px;border:1px solid #d8e4f3;border-radius:13px;background:linear-gradient(180deg,#f9fcff,#eef3fa);box-shadow:0 1px 2px rgba(20,50,90,.05)}
+.ab-acct-tabs{display:flex;align-items:flex-end;gap:0;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none;padding:1px 0 0}
+.ab-acct-tabs::-webkit-scrollbar{display:none}
+.ab-acct-tab{display:flex;align-items:center;gap:6px;flex:0 1 210px;min-width:92px;height:36px;padding:0 20px;border:0;border-radius:10px 10px 0 0;background:linear-gradient(180deg,#e7eef8,#dce6f3);color:#52647c;cursor:pointer;overflow:hidden;font:inherit;font-size:13px;transition:background .12s,color .12s,box-shadow .12s;outline:none;box-shadow:inset 1px 0 0 rgba(255,255,255,.55),inset -1px 0 0 rgba(70,100,140,.08);-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 36' preserveAspectRatio='none'%3E%3Cpath fill='%23fff' d='M10 0 H190 C195 0 198 3 198 7 L200 33 C200 35 199 36 198 36 H2 C1 36 0 35 0 33 L2 7 C2 3 5 0 10 0 Z'/%3E%3C/svg%3E") center/100% 100% no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 36' preserveAspectRatio='none'%3E%3Cpath fill='%23fff' d='M10 0 H190 C195 0 198 3 198 7 L200 33 C200 35 199 36 198 36 H2 C1 36 0 35 0 33 L2 7 C2 3 5 0 10 0 Z'/%3E%3C/svg%3E") center/100% 100% no-repeat}
+.ab-acct-tab:hover{background:linear-gradient(180deg,#f0f5fc,#e4edf8);color:#2a405e}
+.ab-acct-tab.on{background:linear-gradient(180deg,#fff,#f7faff);color:#17365f;font-weight:600;box-shadow:inset 0 -3px 0 #3d7fd6,inset 1px 0 0 #fff,inset -1px 0 0 #e4ebf5}
+.ab-acct-tab[draggable=true]{cursor:grab}
+.ab-acct-tab.dragging{opacity:.42;cursor:grabbing}
+.ab-acct-tab.drag-over{box-shadow:inset 3px 0 0 #3d7fd6,inset 0 -3px 0 #3d7fd6}
+.ab-acct-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.ab-acct-dots{display:inline-flex;align-items:center;gap:4px;flex:none;padding-left:2px}
+.ab-acct-dot{display:inline-block;font-size:10px;line-height:1;color:#a7b5c8;flex:none;transform:translateY(-.5px)}
+.ab-acct-dot.switch.on{color:#3d7fd6}
+.ab-acct-dot.online.on{color:#22c55e}
+.ab-acct-add{width:30px;min-width:30px;height:30px;padding:0;font-size:18px;line-height:1;border-radius:8px}
+.ab-account-modal-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.ab-account-modal-icon{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;background:var(--ab-foam-2);color:var(--ab-deep);font-size:20px;font-weight:500}
+.ab-account-modal h3{margin:0 0 2px;font-size:17px}
+body[data-ds-dark-theme] .ab-account-bar{background:linear-gradient(180deg,#273447,#1e2837);border-color:#3b4a60;box-shadow:none}
+body[data-ds-dark-theme] .ab-acct-tab{background:linear-gradient(180deg,#33445b,#28374c);color:#b8c8dc}
+body[data-ds-dark-theme] .ab-acct-tab:hover{background:linear-gradient(180deg,#3d5069,#31435b);color:#eef5ff}
+body[data-ds-dark-theme] .ab-acct-tab.on{background:linear-gradient(180deg,#476582,#354e6c);color:#f4f8ff;box-shadow:inset 0 -3px 0 #6aa6ef,inset 1px 0 0 rgba(255,255,255,.08)}
+body[data-ds-dark-theme] .ab-acct-dot{color:#7f8ea3}
+body[data-ds-dark-theme] .ab-acct-dot.switch.on{color:#79b4ff}
+body[data-ds-dark-theme] .ab-acct-dot.online.on{color:#39d98a}
+@media (max-width:640px){.ab-account-bar{flex-wrap:wrap}.ab-acct-tabs{order:2;flex-basis:100%}}
+.ab-account-mask{position:fixed;inset:0;background:rgba(8,20,40,.38);display:flex;align-items:center;justify-content:center;z-index:80;padding:18px}
+.ab-account-modal{width:min(520px,100%);max-height:86vh;overflow:auto;background:var(--ab-card);border:1px solid var(--ab-line);border-radius:16px;padding:18px 20px;box-shadow:var(--ab-shadow)}
+.ab-account-modal h3{margin:0 0 8px;font-size:17px}
+.ab-account-mods{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px 10px;margin:10px 0;max-height:42vh;overflow:auto}
+.ab-account-mod{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:8px;background:var(--ab-card-2);border:1px solid var(--ab-line);font-size:13px}
+.ab-account-mod input{accent-color:var(--ab-sea)}
 /* ---------- 美化 ---------- */
 .ab-root{--ab-shadow:0 1px 2px rgba(15,40,80,.04),0 4px 16px rgba(15,40,80,.05);--ab-radius:16px}
 body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25)}
@@ -4936,7 +4970,121 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             } }, '完成，让大肥鱼上线')))
     }
 
-    // ---------------- 面板主体 ----------------
+    // 顶部账号栏：浏览器标签式切换 + 加号新建。新建直接复制默认账号的初始配置。
+    function AccountModal({ name, setName, err, create, close }) {
+      return h('div', { className: 'ab-account-mask', onClick: close },
+        h('div', { className: 'ab-account-modal', onClick: (e) => e.stopPropagation() },
+          h('div', { className: 'ab-account-modal-head' },
+            h('span', { className: 'ab-account-modal-icon' }, '＋'),
+            h('div', null,
+              h('h3', null, '新建机器人'),
+              h('div', { className: 'ab-muted ab-small' }, '复制默认账号的初始设置'))),
+          h('div', { className: 'ab-note' }, '人格用大肥鱼做示范；模块、模型、权限按默认账号复制。QQ 和 SnowLuma 需要单独登录。'),
+          h('input', { className: 'ab-input wide', placeholder: '账号名，比如 小七', value: name, onChange: (e) => setName(e.target.value) }),
+          err ? h('div', { className: 'ab-note err' }, err) : null,
+          h('div', { className: 'ab-flex', style: { justifyContent: 'flex-end', marginTop: 16 } },
+            h('button', { type: 'button', className: 'ab-btn ghost', onClick: close }, '取消'),
+            h('button', { type: 'button', className: 'ab-btn primary', onClick: create }, '创建并切换'))))
+    }
+
+    function AccountBar({ onSwitch, status }) {
+      const [list, setList] = useState([])
+      const [open, setOpen] = useState(false)
+      const [name, setName] = useState('')
+      const [err, setErr] = useState('')
+      const [dragId, setDragId] = useState('')
+      const [overId, setOverId] = useState('')
+      const ORDER_KEY = 'aurabot.accountOrder'
+      const applyOrder = (arr) => {
+        try {
+          const saved = JSON.parse(localStorage.getItem(ORDER_KEY) || '[]')
+          if (!Array.isArray(saved) || !saved.length) return arr
+          const pos = new Map(saved.map((id, i) => [id, i]))
+          return [...arr].sort((a, b) => (pos.get(a.id) ?? 9999) - (pos.get(b.id) ?? 9999))
+        } catch (e) { return arr }
+      }
+      const persistOrder = (arr) => { try { localStorage.setItem(ORDER_KEY, JSON.stringify(arr.map((a) => a.id))) } catch (e) {} }
+      const moveTab = (fromId, toId) => {
+        if (!fromId || !toId || fromId === toId) return
+        setList((cur) => {
+          const from = cur.findIndex((a) => a.id === fromId)
+          const to = cur.findIndex((a) => a.id === toId)
+          if (from < 0 || to < 0) return cur
+          const next = [...cur]
+          const [item] = next.splice(from, 1)
+          next.splice(to, 0, item)
+          persistOrder(next)
+          return next
+        })
+      }
+      const load = useCallback(() => {
+        fetch(CONTROL_API + '/accounts', { cache: 'no-store' }).then((r) => r.json()).then((r) => {
+          if (r && r.ok) setList(applyOrder(r.list || []))
+        }).catch(() => {})
+      }, [])
+      useEffect(() => { load() }, [load])
+      const switchTo = (prefix) => {
+        if (!prefix || prefix === API) return
+        onSwitch(prefix)
+      }
+      const create = async () => {
+        setErr('')
+        try {
+          const r = await fetch(CONTROL_API + '/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name.trim() || '新账号' }) }).then((x) => x.json())
+          if (!r || r.ok === false) { setErr((r && r.message) || '新建失败'); return }
+          setOpen(false); setName(''); load()
+          onSwitch(r.account.prefix)
+        } catch (e) { setErr('连不上插件：' + e.message) }
+      }
+      const modal = open ? h(AccountModal, { name, setName, err, create, close: () => setOpen(false) }) : null
+      const tabs = list.map((a) => {
+        const active = a.prefix === API
+        const title = `${a.name || a.id} · QQ ${a.botQQ || '未填'} · ${a.enabled ? '总开关开' : '总开关关'} · ${a.online ? '在线' : '离线'} · 拖动排序`
+        const dragging = dragId === a.id
+        const over = overId === a.id && dragId && dragId !== a.id
+        return h('button', {
+          key: a.id,
+          type: 'button',
+          draggable: true,
+          className: 'ab-acct-tab' + (active ? ' on' : '') + (dragging ? ' dragging' : '') + (over ? ' drag-over' : ''),
+          title,
+          onClick: () => switchTo(a.prefix),
+          onDragStart: (e) => {
+            setDragId(a.id)
+            try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', a.id) } catch (error) {}
+          },
+          onDragOver: (e) => {
+            e.preventDefault()
+            try { e.dataTransfer.dropEffect = 'move' } catch (error) {}
+            if (overId !== a.id) setOverId(a.id)
+          },
+          onDragLeave: () => { if (overId === a.id) setOverId('') },
+          onDrop: (e) => {
+            e.preventDefault()
+            let from = dragId
+            try { from = e.dataTransfer.getData('text/plain') || dragId } catch (error) {}
+            moveTab(from, a.id)
+            setDragId('')
+            setOverId('')
+          },
+          onDragEnd: () => { setDragId(''); setOverId('') },
+        },
+          h('span', { className: 'ab-acct-name' }, a.name || a.id),
+          h('span', { className: 'ab-acct-dots' },
+            h('span', { className: 'ab-acct-dot switch' + (a.enabled ? ' on' : ''), title: a.enabled ? '总开关开' : '总开关关' }, '●'),
+            h('span', { className: 'ab-acct-dot online' + (a.online ? ' on' : ''), title: a.online ? '在线' : '离线' }, '●')))
+      })
+      return h('div', { className: 'ab-account-bar' },
+        h('span', { className: 'ab-muted ab-small' }, '账号'),
+        h('div', { className: 'ab-acct-tabs' }, list.length ? tabs : h('span', { className: 'ab-acct-tab on' },
+          h('span', { className: 'ab-acct-name' }, '默认账号'),
+          h('span', { className: 'ab-acct-dots' },
+            h('span', { className: 'ab-acct-dot switch' + (status && status.enabled ? ' on' : ''), title: status && status.enabled ? '总开关开' : '总开关关' }, '●'),
+            h('span', { className: 'ab-acct-dot online' + (status && status.online ? ' on' : ''), title: status && status.online ? '在线' : '离线' }, '●')))),
+        h('button', { type: 'button', className: 'ab-btn ghost ab-acct-add', title: '新建账号', onClick: () => { setErr(''); setOpen(true) } }, '＋'),
+        modal)
+    }
+
     function AurabotPage() {
       useStyle()
       const [st, setSt] = useState(null)
@@ -4976,6 +5124,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         setSt(r)
         if (!dirtyRef.current) setDraft(clone(r.config))
       }, [])
+      const switchAccount = useCallback((prefix) => {
+        if (!prefix || prefix === API) return
+        setApiPrefix(prefix)
+        dirtyRef.current = false
+        setSt(null)
+        setDraft(null)
+        setWizardOpen(false)
+        reload()
+      }, [reload])
       useEffect(() => { reload(); const t = setInterval(reload, 5000); return () => clearInterval(t) }, [reload])
       const go = (id) => { setTab(id); try { localStorage.setItem('aurabot.tab', id) } catch (e) {} }
       // 标签多、一屏放不下：滚轮横着滚，选中的标签自动滚进视野
@@ -5052,6 +5209,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       return h('div', { className: 'ab-root' },
         h('div', { className: 'ab-wrap' },
+          h(AccountBar, { key: 'account-bar', onSwitch: switchAccount, status: { enabled: cfg.enabled, online: conn } }),
           h('div', { className: 'ab-hero' },
             h('button', { type: 'button', className: 'ab-avatar-btn', title: '点击换头像', onClick: () => pickAvatar(toast, reload) }, h('img', { className: 'ab-avatar', src: avatarSrc(st), alt: '头像' }), h('span', { className: 'ab-avatar-tip' }, '换头像')),
             h('div', { className: 'ab-hero-main' },
@@ -5100,3 +5258,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     return module.exports
   },
 })
+
+
+
+
+
+
+
+
+
+
+
+
+

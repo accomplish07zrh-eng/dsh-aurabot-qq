@@ -32,10 +32,11 @@ export function levelFor(cfg, chat) {
   return 'social'
 }
 
-/** 档位 → agent preset id。 */
-export function presetFor(level, cfg) {
-  if (level !== 'full') return 'aurabot-social'
-  return cfg && cfg.longTasks ? 'aurabot-private-long' : 'aurabot-private'
+/** 档位 → agent preset id。默认实例保持原名，其他实例加实例前缀。 */
+export function presetFor(level, cfg, instance = 'aurabot') {
+  const prefix = instance === 'aurabot' ? 'aurabot-' : `${instance}-`
+  if (level !== 'full') return `${prefix}social`
+  return cfg && cfg.longTasks ? `${prefix}private-long` : `${prefix}private`
 }
 
 /** 只有主人能做的事（群管、点歌、写文件……）。 */

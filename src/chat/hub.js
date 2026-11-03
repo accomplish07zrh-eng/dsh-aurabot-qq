@@ -1,4 +1,4 @@
-// 消息中枢：QQ 会话 ↔ DSH 会话。
+﻿// 消息中枢：QQ 会话 ↔ DSH 会话。
 //   收：OneBot 事件 → 白名单 / 群聊策略 → 拼好文案（带发言人、群上下文、图片、语音转写）→ 喂进对应 DSH 会话
 //   发：DSH 会话一轮结束 → 取最终正文 → 拆条 / 语音 / 表情 → 发回原来的 QQ 会话
 // 每个 QQ 会话一个 DSH 会话，统一放在「Aurabot · QQ」工作区，主人可以在 DSH 侧栏点开看、插手。
@@ -34,14 +34,26 @@ import { noticeText } from './notices.js'
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
-// 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
+// 没填就按当前人格自动命名：Aurabot/<人格 id>，每个账号一个独立工作区。
 const LEGACY_WORKSPACE = 'C:\\Aurabot\\qq-chats'
 const MAX_IMAGE_BYTES = 1024 * 1024 * 1024 // 图片大小不设实际限制，只防把内存撑爆
 const MODEL_IMAGE_BYTES = 8 * 1024 * 1024 // 超过这个大小先缩小再给模型
 const MAX_MESSAGE_IMAGES = 8 // 一条消息最多给她看几张，合并转发里的图算在内
-export const WORKSPACE_DIR = process.env.AURABOT_WORKSPACE || (existsSync(LEGACY_WORKSPACE) ? LEGACY_WORKSPACE : join(homedir(), 'Aurabot', 'qq-chats'))
-/** 现在用的工作区目录：面板里填了就用填的，否则默认。 */
-export const workspaceDirOf = (cfg) => String(cfg?.workspaceDir || '').trim() || WORKSPACE_DIR
+const WORKSPACE_ENV = String(process.env.AURABOT_WORKSPACE || '').trim()
+const WORKSPACE_ROOT = join(homedir(), 'Aurabot')
+const personaSlug = (cfg, instance = 'aurabot') => {
+  const raw = String(cfg?.persona?.current || instance || 'aurabot').trim() || 'aurabot'
+  return raw.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'aurabot'
+}
+export const WORKSPACE_DIR = WORKSPACE_ENV || (existsSync(LEGACY_WORKSPACE) ? LEGACY_WORKSPACE : join(WORKSPACE_ROOT, 'dafeiyu'))
+export const workspaceTitleOf = (cfg) => `Aurabot · ${personaSlug(cfg)}`
+/** 现在用的工作区目录：面板里填了就用填的，否则按人格自动命名（旧安装也迁到新名字）。 */
+export const workspaceDirOf = (cfg, instance = 'aurabot') => {
+  const explicit = String(cfg?.workspaceDir || '').trim()
+  if (explicit) return explicit
+  if (WORKSPACE_ENV) return instance === 'aurabot' ? WORKSPACE_ENV : `${WORKSPACE_ENV}-${personaSlug(cfg, instance)}`
+  return join(WORKSPACE_ROOT, personaSlug(cfg, instance))
+}
 export const WORKSPACE_TITLE = 'Aurabot · QQ'
 const SOURCE_KIND = 'aurabot'
 
@@ -78,7 +90,7 @@ export function assistantReplyText (message) {
   return message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
 }
 
-export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
+export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf, instance = 'aurabot', run = (fn) => fn() }) {
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
   const mood = () => (typeof moodEffects === 'function' ? moodEffects() : null) || { sticker: 1, voice: 1, delay: 1, chatty: 1 }
   const mapFile = () => dataDir('sessions.json')
@@ -343,14 +355,18 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   async function ensureWorkspace() {
     const reg = dsh.workspaceRegistry || dsh.get('workspaceRegistry')
     if (!reg) throw new Error('宿主没有 workspaceRegistry')
-    const dir = workspaceDirOf(getConfig())
+    const cfg = getConfig()
+    const dir = workspaceDirOf(cfg, instance)
+    const title = workspaceTitleOf(cfg)
     mkdirSync(dir, { recursive: true })
     grantOwner(dir, log) // 不等它：模型回话要好几秒，够它先做完，这里多等一拍会让并发建会话的判断错位
     const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
     let ws = reg.list().find((w) => norm(w.path) === norm(dir))
     if (!ws) {
-      ws = await reg.create(dir, WORKSPACE_TITLE)
-      log.info('建好了工作区「' + WORKSPACE_TITLE + '」：' + dir)
+      ws = await reg.create(dir, title)
+      log.info('建好了工作区「' + title + '」：' + dir)
+    } else if (ws.title !== title && typeof reg.rename === 'function') {
+      try { await reg.rename(ws.id, title) } catch (error) { log.debug('工作区改名失败：', error.message) }
     }
     return ws
   }
@@ -371,7 +387,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   async function createSession(chat, level) {
     const ws = await ensureWorkspace()
     assertActive()
-    const preset = presetFor(level, getConfig())
+    const preset = presetFor(level, getConfig(), instance)
     const r = await controller().create({ workspaceId: ws.id, agentPreset: preset })
     assertActive()
     const sid = String(r.sessionId)
@@ -402,7 +418,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   async function agentFor(chat) {
     const cfg = getConfig()
     const level = chat.kind === 'system' ? (chat.noTools ? 'chat' : 'social') : levelFor(cfg, chat)
-    const preset = presetFor(level, cfg)
+    const preset = presetFor(level, cfg, instance)
     const entry = map().chats[chat.chatId]
     let sid = entry && entry.preset === preset && entry.level === level ? entry.sessionId : ''
     let agent = null
@@ -558,7 +574,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
           const dkey = sid + '|' + tool.name
           const stale = toolDisposers.get(dkey)
           if (stale) { try { stale() } catch (error) {} toolDisposers.delete(dkey) }
-          const off = agent.ctx.tools.register(reg)
+          const registered = run && typeof reg?.execute === 'function' ? { ...reg, execute: (...args) => run(() => reg.execute(...args)) } : reg
+          const off = agent.ctx.tools.register(registered)
           toolDisposers.set(dkey, off)
           offs.push(() => { toolDisposers.delete(dkey); try { off() } catch (error) {} })
         } catch (error) {
@@ -570,7 +587,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       offs.push(agent.ctx.systemPrompt.context({
         name: 'aurabot-context',
         order: 905,
-        text: () => {
+        text: () => run(() => {
           const parts = []
           for (const p of contextProviders || []) {
             try {
@@ -584,7 +601,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
           sources.context = text
           outputSources.set(chat.chatId, sources)
           return text
-        },
+        }),
       }))
     } catch (error) {
       log.debug('挂上下文失败：', error.message)
@@ -760,7 +777,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const FILE_BASE64_MAX = 30 * 1024 * 1024
   const isExternalFile = (s) => /^(https?:\/\/|base64:\/\/)/i.test(s)
   const fileLabel = (name, src) => String(name || '').trim() || basename(src.split(/[?#]/)[0]) || '文件'
-  const fileRootsOf = (cfg) => [workspaceDirOf(cfg), ...(Array.isArray(cfg?.files?.dirs) ? cfg.files.dirs : [])]
+  const fileRootsOf = (cfg) => [workspaceDirOf(cfg, instance), ...(Array.isArray(cfg?.files?.dirs) ? cfg.files.dirs : [])]
     .filter(Boolean)
     .map((d) => { try { return resolve(String(d)) } catch (error) { return '' } })
     .filter(Boolean)
@@ -2209,7 +2226,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     // 专用工作区里其他零散的会话（比如手动点「新会话」留下的空白会话）也一起归档
     try {
       const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
-      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
+      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig(), instance)))
       for (const sid of ws?.sessionIds || []) {
         if ((reg.archivedSessionIds || []).includes(sid)) continue
         Promise.resolve(reg.archiveSession(sid)).catch(() => {})
@@ -2309,7 +2326,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         // agentPreset 必须显式指定：不指定时子级继承父级 preset（aurabot-social，零本地工具），
         // 子级就拿不到 shell/文件工具，跑不了 adb。aurabot-subagent 是插件 patch 里专给子级准备的
         // 「无 QQ 人格 + 本机命令工具」preset；旧 DSH 装不上它时 mount 会失败，模块侧自动降级兜底。
-        request: { prompt: [{ type: 'text', text: String(prompt) }], parent, agentPreset: 'aurabot-subagent' },
+        request: { prompt: [{ type: 'text', text: String(prompt) }], parent, agentPreset: instance === 'aurabot' ? 'aurabot-subagent' : `${instance}-subagent` },
         signal: ac.signal,
         delivery: 'caller',
       })
@@ -2446,3 +2463,5 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     groupNames,
   }
 }
+
+

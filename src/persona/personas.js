@@ -10,12 +10,21 @@ import { FACE_EXAMPLES } from '../chat/faces.js'
 
 const BUNDLED = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'personas')
 const dir = () => dataDir('personas')
+const deletedFile = () => join(dir(), '.deleted.json')
+const deletedSet = () => {
+  try {
+    const raw = JSON.parse(readFileSync(deletedFile(), 'utf8'))
+    return new Set(Array.isArray(raw) ? raw.map((x) => safeId(x)).filter(Boolean) : [])
+  } catch (error) { return new Set() }
+}
+const saveDeleted = (set) => { try { writeFileSync(deletedFile(), JSON.stringify([...set], null, 2), 'utf8') } catch (error) {} }
 
 export function seedPersonas() {
   try {
     mkdirSync(dir(), { recursive: true })
+    const gone = deletedSet()
     for (const n of readdirSync(BUNDLED)) {
-      if (n.endsWith('.md') && !existsSync(join(dir(), n))) copyFileSync(join(BUNDLED, n), join(dir(), n))
+      if (n.endsWith('.md') && !gone.has(n.slice(0, -3)) && !existsSync(join(dir(), n))) copyFileSync(join(BUNDLED, n), join(dir(), n))
     }
   } catch (error) {
     // 数据目录可能是只读的（例如 DSH 的 ACL 沙盒）：继续用插件自带人格，不能因此让整个插件挂载失败。
@@ -45,9 +54,11 @@ export function listPersonas() {
   const out = []
   let names = []
   try { names = readdirSync(dir()) } catch (error) { return out }
+  const gone = deletedSet()
   for (const n of names) {
     if (!n.endsWith('.md')) continue
     const id = n.slice(0, -3)
+    if (gone.has(id)) continue
     try {
       const p = parsePersona(id, readFileSync(join(dir(), n), 'utf8'))
       out.push({ id, name: p.name, tags: p.tags, chars: p.body.length })
@@ -58,6 +69,7 @@ export function listPersonas() {
 
 export function readPersona(id) {
   seedPersonas()
+  if (deletedSet().has(safeId(id))) return null
   const f = join(dir(), `${safeId(id)}.md`)
   if (!existsSync(f)) return null
   return { ...parsePersona(safeId(id), readFileSync(f, 'utf8')), raw: readFileSync(f, 'utf8') }
@@ -67,6 +79,8 @@ export function savePersona(id, { name, tags, body }) {
   const sid = safeId(id)
   if (!sid) throw new Error('人格 id 只能用英文字母、数字、- 和 _')
   if (!String(body || '').trim()) throw new Error('人格内容不能是空的')
+  const gone = deletedSet()
+  if (gone.has(sid)) { gone.delete(sid); saveDeleted(gone) }
   mkdirSync(dir(), { recursive: true })
   const head = `---\nname: ${String(name || sid).replace(/\n/g, ' ')}\ntags: [${(tags || []).join(', ')}]\n---\n\n`
   writeFileSync(join(dir(), `${sid}.md`), head + String(body).trim() + '\n', 'utf8')
@@ -74,7 +88,11 @@ export function savePersona(id, { name, tags, body }) {
 }
 
 export function deletePersona(id) {
-  const f = join(dir(), `${safeId(id)}.md`)
+  const sid = safeId(id)
+  const gone = deletedSet()
+  gone.add(sid)
+  saveDeleted(gone)
+  const f = join(dir(), `${sid}.md`)
   if (existsSync(f)) unlinkSync(f)
 }
 
@@ -142,3 +160,4 @@ export function rulesText(kind, cfg, { off = new Set(), extra = [] } = {}) {
   }
   return common.join('\n')
 }
+
