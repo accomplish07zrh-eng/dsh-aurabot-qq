@@ -19,7 +19,7 @@ import {
   normalizePurposeConfig, createPurposeState, normalizePurposeState,
   ensurePurposeDay, ensurePurposeSchedule, planNextFire, evaluatePurposeTick,
   markPurposeDelivered, markPurposeSkip, applyPurposeOutcome,
-  collectMaterials, analyzePersona, deriveDrives, formGoalHypotheses,
+  collectMaterials, analyzePersona, deriveDrives, formGoalHypotheses, applyPersonaOverrides,
   minePurposeSeeds, selectPurpose, buildPurposePrompt, parsePurposeMemo,
   summarizePurposeState, recordOwnerReplyHours,
 } from './engine.js'
@@ -187,6 +187,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       drives: state.drives, drivesAt: state.drivesAt,
       materials: materials.items, now, lastMasterAt, personaBias: persona.bias,
       needFeedback: state.needFeedback, halfLifeHours: config.driveHalfLifeHours,
+      connectFloor: persona?.overrides?.connectFloor,
     })
     const { goals, observations, needFeedback } = formGoalHypotheses({
       // 跟进的排程和次数只属于事实，不再生成另一份目标或观察账本。
@@ -451,12 +452,14 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     return true
   }
 
-  /** 主人和白名单的朋友各算各的，一次最多找一个人，不一口气群发。 */
+  /** 主人和白名单的朋友各算各的，一次最多找一个人，不一口气群发。
+   *  人格卡的性格覆写（胆量/话多/黏人地板）只作用于主人这条线；朋友的排程沿用基础配置。 */
   async function tick() {
     const cfg = getConfig()
     const config = purposeConfig(cfg)
     if (!config.enabled || !cfg.ownerQQ) return
-    if (!isMuted?.(chatIdOf(cfg)) && !memoryOf()?.dislikes?.(cfg.ownerQQ) && await tickOne(cfg, config)) return
+    const ownerConfig = applyPersonaOverrides(config, personaOf(cfg))
+    if (!isMuted?.(chatIdOf(cfg)) && !memoryOf()?.dislikes?.(cfg.ownerQQ) && await tickOne(cfg, ownerConfig)) return
     for (const qq of cfg.speakUp?.allow || []) {
       if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq)) || memoryOf()?.dislikes?.(qq)) continue
       if (await tickOne(cfg, config, String(qq))) return
@@ -466,7 +469,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   /** 手动触发（面板「现在就让她来找我」）：跳过排程类闸门，不跳过总开关/禁言。 */
   async function fire(reason = '手动') {
     const cfg = getConfig()
-    const config = purposeConfig(cfg)
+    const config = applyPersonaOverrides(purposeConfig(cfg), personaOf(cfg))
     if (!config.enabled) return { outcome: 'disabled' }
     if (isMuted?.(chatIdOf(cfg))) return { outcome: 'muted' }
     if (memoryOf()?.dislikes?.(cfg.ownerQQ)) return { outcome: 'disliked' }

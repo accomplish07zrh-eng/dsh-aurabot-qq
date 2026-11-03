@@ -63,6 +63,13 @@
 - **心情判定兼容**：投递走 `hub.runSystemTurn` + `hub.deliver(text, { own:true, userText:'【系统提醒，…】' })`，
   userText 带前缀所以 mood.judge 的 `origin='speak-up'` 判定照常生效。
 - top2 驱动（≥0.35）经 `api.rule` 写进每轮上下文：「你最近心里比较想要：玩、陪」。
+- **情绪画像**：每个情绪标签带 `valence`（-1~1）与 `arousal`（0~1）二维数值
+  （`emotionProfile()`），候选与面板摘要都会带；提示词的强弱措辞（强烈地/明显/隐约）跟 arousal 走，
+  桌宠端表情/语气强度可以直接吃这两个数。
+- **人格覆写**（`analyzePersona` 的 `overrides` + `applyPersonaOverrides`）：人格卡里写了
+  「胆小/谨慎」→ riskScale ×1.25，「大胆/爱折腾」→ ×0.8；「话痨/话多」→ dailyMax +1
+  （「高冷/少打扰」→ -1；dailyMax=0 不限时不动）；「黏人/怕孤独」→ connect 驱动地板 +0.1。
+  同 key 冲突按词出现位置先者生效；只作用于主人这条线，朋友排程用基础配置。
 
 ## 5. 配置
 
@@ -72,7 +79,8 @@
 选择层与驱动调参（本轮新增，均有安全钳制）：`pendingShareProbability`（惦记优先概率，默认 0.5）、
 `lonelyEmotionWeight / enviousEmotionWeight`（情绪排序加成，默认 1.2 / 1.1）、
 `needRepeatPenalty / needRepeatPenalty2`（连续同需要降权，默认 0.72 / 0.65）、
-`driveHalfLifeHours`（驱动衰减半衰期，默认 8）。
+`driveHalfLifeHours`（驱动衰减半衰期，默认 8）、`riskScale`（风险全表乘数，默认 1，钳 0.3~2；
+目标风险 = 内置风险表 × riskScale，人格卡可再覆写）。
 提示词超长时先按素材权重从尾部逐行丢弃（主人私聊永远最后丢），整段丢完才退回首尾盲切；
 备忘解析有兜底：忘写【】但写了「目的：…」裸标签行、或回执为 JSON（中/英文键）都能解析。
 **沿用主动搭话的设置**（保持作息单一真相）：`config.speakUp.awakeFrom/awakeTo`（派生引擎安静时段；全天=关闭安静）、
