@@ -239,11 +239,13 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       followUpRecords: followUp ? [followUp] : [],
     })
     await scoreMaterials(config, materials.items, now)
-    const persona = personaOf(cfg)
+    // 人格卡只作用于主人这条线：朋友的排程不吃主人人格卡里的黏人/话痨等覆写，
+    // 否则对朋友的主动搭话频率与方向会被主人的人格先验带偏（review 意见）。
+    const persona = friend ? null : personaOf(cfg)
     const lastMasterAt = lastPrivateAt(cfg, friend)
     const { drives } = deriveDrives({
       drives: state.drives, drivesAt: state.drivesAt,
-      materials: materials.items, now, lastMasterAt, personaBias: persona.bias,
+      materials: materials.items, now, lastMasterAt, personaBias: persona?.bias,
       needFeedback: state.needFeedback, halfLifeHours: config.driveHalfLifeHours,
       connectFloor: persona?.overrides?.connectFloor,
     })

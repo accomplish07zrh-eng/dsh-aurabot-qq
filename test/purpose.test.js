@@ -418,6 +418,42 @@ test('白名单：朋友单独排程，提示词里没有主人的记忆和群�
   assert.deepEqual(hub.delivered, [{ chatId: `private:${FRIEND}`, text: '游泳学得怎么样啦', opts: { userText: '【系统提醒，不是主人说的话】（她主动找你）' } }])
 })
 
+test('白名单：朋友不吃主人人格卡（persona 为空，不生成「我是…」人格目标）', async () => {
+  const FRIEND = '20000011'
+  const now = Date.now()
+  const rows = [
+    { t: now - 7200000, chatId: `private:${FRIEND}`, who: '阿强', uid: FRIEND, text: '我最近在健身，每天跑步五公里' },
+    { t: now - 7100000, chatId: `private:${FRIEND}`, who: 'bot', text: '坚持得不错，下次跟我说说' },
+  ]
+  const hub = { ...makeHub({ reply: '健身进展怎么样啦' }), chatLogDays: () => ['d'], chatLogOf: () => rows, lastPrivateAt: () => now - 7200000 }
+  const memories = [{ id: 'f1', text: '阿强最近在健身跑步', about: FRIEND, importance: 0.7, at: now }]
+  const cfg = {
+    enabled: true, ownerQQ: OWNER, ownerName: '主人',
+    speakUp: { allow: [FRIEND], awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false },
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0 } },
+  }
+  const p = createPurpose({
+    getConfig: () => cfg, hub, log: { info() {}, warn() {}, debug() {} },
+    isMuted: (id) => id === `private:${OWNER}`,
+    // 主人线有完整人格卡：爱玩、黏人；朋友线必须完全不受它影响
+    mood: () => null, personaText: () => '她是一条活泼爱玩又黏人的鱼，总想找主人说话',
+    memory: () => ({ list: () => memories, profiles: () => [{ qq: FRIEND, name: '阿强' }] }),
+  })
+  await p.tick()
+  const file = join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends', `${FRIEND}.json`)
+  const s = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...s, nextFireAt: Date.now() - 1 }))
+  await p.tick()
+  assert.equal(hub.turns.length, 1, '朋友线照常跑一轮')
+  const { prompt } = hub.turns[0]
+  assert.match(prompt, /健身/, '提示词来自朋友自己的素材')
+  // 人格覆写/人格目标都来自 analyzePersona(personaText)；朋友分支 persona=null，提示词里不应出现主人人格卡的底色句
+  assert.doesNotMatch(prompt, /活泼爱玩|黏人/, '主人人格卡的底色不应出现在朋友提示词里')
+  const s2 = JSON.parse(readFileSync(file, 'utf8'))
+  assert.ok(!(s2.goals || []).some((g) => g.source === 'persona'),
+    '朋友目标里不应有 persona 来源的目标（人格卡不作用于朋友线）')
+})
+
 test('白名单：没聊过的朋友不找，人设再完整也不凭空开口', async () => {
   const FRIEND = '20000010'
   const hub = { ...makeHub(), lastPrivateAt: () => 0 }
@@ -579,6 +615,67 @@ test('need 反馈学习：正反馈多的维度抬驱动地板，少的加速回
   const sparse = { learn: { positive: 2, negative: 0, neutral: 0 } }
   const { drives: d2 } = engine.deriveDrives({ drives: engine.DEFAULT_DRIVES, now: Date.now(), needFeedback: sparse })
   assert.ok(Math.abs(d2.learn - engine.DEFAULT_DRIVES.learn) < 1e-9, '样本 <5 不偏置')
+})
+
+test('needFeedback 接线：runOnce 把 formGoalHypotheses 的反馈结算真正并进长期账本', async () => {
+  // 场景：上一轮主动搭话过（目标 attempts=1 且 lastActionAt 已落），
+  // 主人随后正面回复 → 本轮 runOnce 应把这条反馈记进 state.needFeedback.play.positive。
+  // 主人回复放在 35 分钟前：躲开「主人刚说话」闸门（默认空闲阈值 30 分钟）。
+  const now = Date.now()
+  const actedAt = now - 3600_000
+  const replyAt = now - 35 * MIN
+  const hub = {
+    lastOwnerChatAt: replyAt,
+    lastBotToOwner: { at: 0, text: '' },
+    chatLogDays: () => ['d1'],
+    chatLogOf: (day) => day === 'd1'
+      ? [{ chatId: `private:${OWNER}`, who: '主人', uid: OWNER, text: '好啊，一起玩吧', t: replyAt }]
+      : [],
+    delivered: [],
+    turns: [],
+    async runSystemTurn(name, title, prompt) { this.turns.push({ name, title, prompt }); return '主人，今天想到一件事想跟你说' },
+    async deliver(chatId, text) { this.delivered.push({ chatId, text }); return { missedAt: [] } },
+  }
+  const { p } = makePurpose(hub)
+  await p.tick() // 首次只排程
+  const s = JSON.parse(readFileSync(stateFile(), 'utf8'))
+  s.goals = [{
+    id: 'g1', owner: 'self', domain: 'play', object: { type: 'game', name: '养鱼游戏' },
+    intent: '想拉主人一起玩', confidence: 0.5, value: 0.5, urgency: 0.3, risk: 0.1,
+    action: 'invite', status: 'active', evidence: [], createdAt: actedAt, lastSeenAt: actedAt,
+    expiresAt: now + 86400_000, attempts: 1, lastActionAt: actedAt, lastFeedbackAt: 0, sightings: 1, source: 'self',
+  }]
+  writeFileSync(stateFile(), JSON.stringify(s))
+  dueNow()
+  await p.tick()
+  const s2 = JSON.parse(readFileSync(stateFile(), 'utf8'))
+  assert.ok(s2.needFeedback && s2.needFeedback.play && s2.needFeedback.play.positive >= 1,
+    `主人的正面回复应记进需要反馈账本（实际 ${JSON.stringify(s2.needFeedback)}）`)
+})
+
+test('感受解析：多字需要词不被拆开（关心/分享/自我/创作/体验）', () => {
+  // 修复前：字符类把「关心」拆成 关+心，全落空 → drives 为空
+  const f1 = engine.parseFeelings('关心+0.2 分享+0.1', { need: '' })
+  assert.deepEqual(f1.drives, { care: 0.2, share: 0.1 }, `完整词应整体结算（实际 ${JSON.stringify(f1?.drives)}）`)
+  const f2 = engine.parseFeelings('自我+0.15 创作-0.05', { need: '' })
+  assert.deepEqual(f2.drives, { identity: 0.15, create: -0.05 })
+  const f3 = engine.parseFeelings('体验+0.1', { need: '' })
+  assert.deepEqual(f3.drives, { consume: 0.1 })
+  // 混排：多字词与单字词（玩/喜）互不干扰
+  const f4 = engine.parseFeelings('玩+0.1 关心+0.2 喜-0.05', { need: '' })
+  assert.deepEqual(f4.drives, { play: 0.1, care: 0.2 })
+  assert.equal(f4.moodDelta, -0.5)
+})
+
+test('首次排程：ensurePurposeSchedule 吃已有的回复时段直方图', () => {
+  const state = engine.createPurposeState()
+  // 21 点密集回复，现在 19 点发车 → 初始排程应被轻推向 21 点（默认最大偏移 3 小时内）
+  state.replyHours[21] = 8
+  const base = new Date(); base.setHours(19, 0, 0, 0)
+  engine.ensurePurposeSchedule(state, { now: base.getTime(), config: engine.normalizePurposeConfig({ initialDelayMinutes: 2 }) })
+  const shifted = new Date(state.nextFireAt)
+  assert.ok(shifted.getHours() === 21 && state.nextFireAt - base.getTime() >= 120 * MIN,
+    `首次排程应被直方图轻推（实际 ${shifted.getHours()} 点 / ${new Date(state.nextFireAt).toISOString()}）`)
 })
 
 // ── 人格覆写 / 风险表配置化 / 情绪画像 ───────────────────────────────────────
