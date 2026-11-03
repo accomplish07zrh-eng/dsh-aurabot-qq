@@ -20,6 +20,17 @@ test('安全防护页接上了页签、组件、搜索和 SSRF 模式配置', ()
   assert.ok(host.includes('setSsrpMode('), 'host 没把 ssrfMode 注入 net.js')
 })
 
+test('危险命令确认放在安全防护页，不能藏在聊天页', () => {
+  const groupStart = client.indexOf('function Group(')
+  const securityStart = client.indexOf('function Security(')
+  const logsStart = client.indexOf('function Logs(')
+  assert.ok(groupStart >= 0 && securityStart > groupStart && logsStart > securityStart, '页面组件边界找不到')
+  const group = client.slice(groupStart, securityStart)
+  const security = client.slice(securityStart, logsStart)
+  assert.ok(security.includes('security.dangerConfirm'), '安全防护页缺危险命令确认')
+  assert.ok(!group.includes('security.dangerConfirm'), '聊天页不该再出现危险命令确认')
+})
+
 test('安全防护页：远端管理与可信反代有 UI，且配置走 security 段（首审 P1-3）', () => {
   // 首审指出 ext.panelRemoteAccess 不可用：config.js 会把 ext 下非对象值删掉，写进去就被删。
   // 所以这两个开关必须落在 security 段，并且面板要真的能改。
