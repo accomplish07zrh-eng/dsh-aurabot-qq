@@ -297,6 +297,19 @@ export const DEFAULTS = {
     keepWork: false, // 留着中间文件（调试用）
     pypiMirror: 'auto', // 安装时用的下载源：auto = 先测一下，官方源慢就用国内镜像；cn = 一直用国内镜像；off = 只用官方源
   },
+  // 云备份：每天到点自动打包并把最新备份推到 Gitee 私有仓库（走本机 git）
+  backup: {
+    remote: {
+      enabled: false, // 到点自动「打包 + 推送」；关了就只剩面板手动推
+      owner: '', // Gitee 用户名
+      repo: '', // 仓库名（没有的话推送时按 autoCreate 自动建私有的）
+      token: '', // 私人令牌（要 projects + repo 权限），存配置时按密钥处理
+      branch: 'master', // 推到哪个分支
+      time: '03:30', // 每天几点自动备份并推送
+      keep: 7, // 远端保留最近几份
+      autoCreate: true, // 远端没有这个仓库时自动建一个私有的
+    },
+  },
   tabs: {}, // 面板记住的小偏好
   // 模块：内置的和数据目录 modules/ 里自己写的。{ 模块id: { enabled, useBuiltin } }，没写的算开着
   // useBuiltin：自己写了同名模块，但想先用回内置的
@@ -697,6 +710,18 @@ export function normalize(raw) {
   c.song.pypiMirror = { '': 'auto', tuna: 'cn' }[c.song.pypiMirror] ?? c.song.pypiMirror
   if (!['auto', 'cn', 'off'].includes(c.song.pypiMirror)) c.song.pypiMirror = 'auto'
   c.song.root = String(c.song.root || '').trim()
+  // 云备份：owner/repo 去空格，令牌按密钥处理（SECRETS 里有登记）
+  c.backup = c.backup || {}
+  if (!isObj(c.backup.remote)) c.backup.remote = { ...DEFAULTS.backup.remote }
+  const br = c.backup.remote
+  br.enabled = bool(br.enabled, false)
+  br.owner = String(br.owner || '').trim().replace(/^https?:\/\//i, '').replace(/^gitee\.com\//i, '').split(/[/?]/)[0].replace(/\.git$/, '').slice(0, 100)
+  br.repo = String(br.repo || '').trim().replace(/\.git$/, '').slice(0, 100)
+  br.token = String(br.token || '').trim()
+  br.branch = String(br.branch || '').trim().replace(/^refs\/heads\//, '').slice(0, 100) || 'master'
+  br.time = hhmm(br.time, '03:30')
+  br.keep = Math.round(num(br.keep, 7, 1, 365))
+  br.autoCreate = bool(br.autoCreate, true)
   if (!isObj(c.modules)) c.modules = {}
   for (const [id, m] of Object.entries(c.modules)) {
     if (!isObj(m)) { delete c.modules[id]; continue }
@@ -714,7 +739,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['voice', 'volcano', 'apiKey']]
+const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['voice', 'volcano', 'apiKey'], ['backup', 'remote', 'token']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }
