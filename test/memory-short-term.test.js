@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { readMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { normalize } from '../src/core/config.js'
@@ -35,7 +36,7 @@ function setup(t) {
     else process.env.AURABOT_DATA_DIR = previous
     rmSync(dir, { recursive: true, force: true })
   })
-  return { cfg, hub, memory, calls, answer: (value) => { answer = value }, hook: (value) => { hook = value }, state: () => JSON.parse(readFileSync(join(dir, 'memories.json'), 'utf8')) }
+  return { cfg, hub, memory, calls, answer: (value) => { answer = value }, hook: (value) => { hook = value }, state: () => readMemoryState(dir) }
 }
 
 const note = (memory, via, text, at, qq = QQ) => memory.noteVia({ via, qq, who: 'user', text, at })

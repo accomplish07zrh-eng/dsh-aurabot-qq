@@ -1,7 +1,8 @@
 // 人物画像、聊天隔离与分层压缩的回归测试。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { readMemoryState, writeMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { normalize } from '../src/core/config.js'
@@ -41,9 +42,8 @@ function setup(t, answer = () => '[]', memory = {}, fetchImpl) {
     yield { type: 'finish', reason: { kind: 'completed' } }
   } } }
   const make = () => createMemoryStore({ dsh, getConfig: () => cfg, hub, log, fetchImpl })
-  const path = join(dir, 'memories.json')
-  const state = () => JSON.parse(readFileSync(path, 'utf8'))
-  const put = (s) => writeFileSync(path, JSON.stringify(s))
+  const state = () => readMemoryState(dir)
+  const put = (s) => writeMemoryState(dir, s)
   t.after(() => {
     if (previous === undefined) delete process.env.AURABOT_DATA_DIR
     else process.env.AURABOT_DATA_DIR = previous

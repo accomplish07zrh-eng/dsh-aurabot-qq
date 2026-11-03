@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { readMemoryState, writeMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { normalize } from '../src/core/config.js'
@@ -34,8 +35,8 @@ function setup(t, answer = () => '[]', patch = {}) {
     yield { type: 'finish', reason: { kind: 'completed' } }
   } } }
   const make = () => createMemoryStore({ dsh, getConfig: () => cfg, hub, log })
-  const state = () => JSON.parse(readFileSync(join(dir, 'memories.json'), 'utf8'))
-  const putState = (s) => writeFileSync(join(dir, 'memories.json'), JSON.stringify(s))
+  const state = () => readMemoryState(dir)
+  const putState = (s) => writeMemoryState(dir, s)
   t.after(() => {
     if (old === undefined) delete process.env.AURABOT_DATA_DIR
     else process.env.AURABOT_DATA_DIR = old

@@ -1,7 +1,8 @@
 // H01：主人和普通群友落在同一轮时，危险工具必须按「请求发起人」判定，不能因为主人在场就借权。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { readMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -54,10 +55,7 @@ await new Promise((r) => setTimeout(r, 400))
 after(() => fake.dispose())
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const library = () => JSON.parse(readFileSync(LIB, 'utf8')).items
-const memories = () => {
-  const file = join(dataDir, 'memories.json')
-  return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')).items || []) : []
-}
+const memories = () => readMemoryState(dataDir).items || []
 
 const groupMsg = (from, text) => ({
   post_type: 'message', message_type: 'group', sub_type: 'normal',

@@ -1,7 +1,8 @@
 // 回归：某天提炼预算用完后，每日整理不能每分钟重试刷屏（runs 要标记成今天跑过）。
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync } from 'node:fs'
+import { readMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -41,7 +42,7 @@ test('提炼预算用完：当天标记跑过，下一分钟不再重复整理�
   const first = logs.filter((l) => l.includes('整理临时记忆')).length
   assert.equal(first, 1, '第一次整理应该跑一次')
   assert.ok(logs.some((l) => l.includes('提炼预算')), '应该说明今天预算用完')
-  const state = JSON.parse(readFileSync(join(dir, 'memories.json'), 'utf8'))
+  const state = readMemoryState(dir)
   const runs = Object.values(state.runs || {})
   assert.ok(runs.includes(dayKey()), '今天的整理时间点要标记成跑过')
 

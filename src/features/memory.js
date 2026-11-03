@@ -17,6 +17,7 @@ import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel, lastEmptyInfo } from '../core/llm.js'
 import { clipText } from '../core/text.js'
 import { createVectorIndex } from './memory-vector.js'
+import { createMemoryStorage } from './memory-store.js'
 import { shouldDeferBackground } from '../core/offpeak.js'
 
 const NO_ARRAY = '提炼记忆时模型没有返回 JSON 数组'
@@ -465,12 +466,12 @@ export function checkAbstractText (text, sourceTexts = []) {
 
 export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
   const vector = createVectorIndex({ getConfig, log, fetchImpl })
-  const file = () => dataDir('memories.json')
+  const storage = createMemoryStorage({ log })
   let transaction = null // 一批记忆和流水进度一起落盘，避免中断后重复提炼
-  const load = () => transaction ? structuredClone(transaction) : readJson(file(), () => ({ items: [] }))
+  const load = () => transaction ? structuredClone(transaction) : storage.load()
   const save = (s) => {
     if (transaction) transaction = s
-    else writeJson(file(), s)
+    else storage.save(s)
     cache = null
   }
   let forgetVersion = 0
@@ -662,7 +663,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       m.hits = (m.hits || 0) + 1
       m.lastHit = Date.now()
     }
-    writeJson(file(), s) // 只改命中计数，不动索引
+    storage.save(s) // 只改命中计数，不动索引
   }
 
   function recall(query, { about, limit, where = '', context = '', onlyAbout, requireAbout, shown = true, groupChatId = '', includeGroup = false, excludeAbout = '', vectorHits } = {}) {
@@ -1566,7 +1567,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
         if (r.ok && r.id) n++
       }
       checkpoint()
-      writeJson(file(), transaction)
+      storage.save(transaction)
     } finally { transaction = null; cache = null }
     return n
   }
