@@ -322,7 +322,10 @@ export function cleanOutboundSegments(message, options) {
 
 /** 解析一轮回复；在拆气泡/语音前清洗，避免协议里的竖线被误作气泡分隔符。 */
 export function parseReply(text, options) {
-  const raw = cleanOutboundText(text, options).trim()
+  // 模型偶尔把换行写成 HTML `<br>`：当真正的换行处理；代码示例里的字面量保留。
+  const cleaned = cleanOutboundText(text, options)
+  const code = codeRanges(cleaned)
+  const raw = cleaned.replace(/<br\s*\/?>/gi, (tag, offset) => insideCode(code, offset, offset + tag.length) ? tag : '\n').trim()
   if (isSilence(raw)) return { silent: true, items: [] }
   const items = []
   let replyTo = '' // 等着挂到下一条气泡上的「引用回复」编号
