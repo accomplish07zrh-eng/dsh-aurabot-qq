@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { readMemoryState, writeMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Script } from 'node:vm'
@@ -20,7 +21,6 @@ function setup(t, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aurabot-time-related-seen-'))
   const previous = process.env.AURABOT_DATA_DIR
   process.env.AURABOT_DATA_DIR = dir
-  const file = join(dir, 'memories.json')
   const cfg = normalize({ ownerQQ: OWNER, ownerName: '主人', model: { provider: 'p', model: 'm' }, memory: { compress: false, mergeGroups: false, keepChatlogDays: -1, ...options.memory } })
   const rows = options.rows || []
   const calls = []
@@ -40,8 +40,8 @@ function setup(t, options = {}) {
   }
   const make = () => createMemoryStore({ dsh, getConfig: () => cfg, hub, log })
   const mem = make()
-  const state = () => JSON.parse(readFileSync(file, 'utf8'))
-  const seed = (items, extra = {}) => writeFileSync(file, JSON.stringify({ items, ...extra }))
+  const state = () => readMemoryState(dir)
+  const seed = (items, extra = {}) => writeMemoryState(dir, { items, ...extra })
   t.after(() => {
     if (previous === undefined) delete process.env.AURABOT_DATA_DIR
     else process.env.AURABOT_DATA_DIR = previous
