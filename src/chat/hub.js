@@ -1005,7 +1005,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         // 她自己引用了 @ 她的人就照常 @；自动回复只有一个人说话时才有（#160）
         const userId = selected && (selected.direct || opts.autoReply?.uid === selected.uid) ? selected.uid : undefined
         if (it.replyTo && !replyId) log.debug(`${chatId}：引用的编号 ${it.replyTo} 对不上，正常发`)
-        const failedBefore = failures.length
+        // 这条真发出去没有，看 outputScope 的 sent 计数有没有涨（sendSegments 只在真发/捕获时计数；
+        // dry-run 与总开关关闭都不涨 → sentTexts 为空，她没说出口的话不能算说过）。#211 review 二轮。
+        const sentBefore = outputScope.getStore().sent
         if (it.kind === 'text') await sendText(chatId, it.value, replyId, missedAt, userId)
         else if (it.kind === 'voice') {
           if (cfg.voice.enabled) await sendVoice(chatId, it.value, replyId, userId)
@@ -1016,8 +1018,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
           if (localImageBlocked(chatId, it.value)) log.warn(`${chatId}：回复里的本机图片不在允许的目录里，没发`)
           else await sendImage(chatId, it.value, replyId, userId)
         }
-        // 这条发完失败清单没变 = 真发出去了（含语音合成失败改发文字成功的情形）；空文字直接 return null 也会漏进来
-        if ((it.kind === 'text' || it.kind === 'voice') && failures.length === failedBefore && String(it.value || '').trim()) sentTexts.push(it.value)
+        if ((it.kind === 'text' || it.kind === 'voice') && outputScope.getStore().sent > sentBefore && String(it.value || '').trim()) sentTexts.push(it.value)
         if (i < items.length - 1 && !opts.simulate) await pause(bubbleDelay(items[i + 1].kind === 'text' ? items[i + 1].value : '') * mood().delay)
       }
     })
