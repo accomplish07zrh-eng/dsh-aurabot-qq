@@ -36,7 +36,7 @@ import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingM
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard, safeOwnedSession } from './security/danger.js'
-import { setSsrpMode } from './core/net.js'
+import { setSsrpMode, assertPublicUrl, fetchGuarded } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
 export const name = 'aurabot'
@@ -343,13 +343,161 @@ export function apply(ctx) {
       send(res, 200, { ok: false, message: redact(String(error && error.message ? error.message : error)) })
     }
   }
-  const route = (path, handler) => ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: PREFIX + path, handler: (req, res) => answer(res, () => handler(req, res)) }), `aurabot: 路由 ${path}`)
+  // ---------- 面板级访问闸（安全基线，2026-11-02） ----------
+  // 背景：DSH 的 webServer 对插件路由**没有服务器级鉴权**，而面板接口是给本机面板用的管理接口
+  //（能改配置、能装模块、能取联动密钥、能下客户端包）。同机部署时它只绑回环，本来打不到；
+  // 但一旦用户把插件端口经反代发布到公网，整组管理接口就裸奔了。
+  // 因此：**所有管理面默认只允许回环访问**。要做远端管理必须显式开 panelRemoteAccess（并在
+  // 反代层再加一道认证——README 写明这是硬要求）。
+  // 【首审 P1-1】闸的覆盖范围不能只有 /panel/*：/state（能读到全部配置与密钥）、/save（能改配置）、
+  // /logs、/modules*（能装代码）、/bridge/token（直接返回联动密钥）、/snowluma/*（能改机器人密码）
+  // 这些**都是管理面**，必须一起纳入。只有客户端直连用的 /ext/<模块>/* 与 /asset/* 不受此闸限制
+  //（它们各自有 token 校验）。
+  const isLoopbackAddr = (ip) => {
+    const s = String(ip || '')
+    return s === '::1' || s === '127.0.0.1' || s === '::ffff:127.0.0.1' || /^127\./.test(s) || s.startsWith('::ffff:127.')
+  }
+  const normAddr = (ip) => String(ip || '').trim().replace(/^::ffff:/i, '').replace(/^\[|\]$/g, '')
+  /** 可信反代地址列表（security.trustedProxy，逗号分隔；留空 = 从不相信任何转发头）。 */
+  const trustedProxies = () => String(getConfig().security?.trustedProxy || '').split(',').map(normAddr).filter(Boolean)
+  /** 请求是否来自本机回环。
+   *  【首审 P1-2 修法】**socket 地址才是唯一可信来源**，X-Forwarded-For 是客户端自己能写的头。
+   *  旧实现「有 XFF 就只认最后一跳、不看 socket」→ 直连暴露时客户端自带
+   *  `X-Forwarded-For: 127.0.0.1` 就能 200 绕过（含 client-package 令牌下载）。
+   *  新口径：
+   *    ① socket 非回环 → 一律按 socket 判，转发头完全不看；
+   *    ② socket 是回环且来源命中 trustedProxy → 才采信 XFF 的**最后一跳**（反代追加的真实来源）；
+   *    ③ 其余（本机直连 / 进程内直调）→ 算本机。 */
+  const requestIsLocal = (req) => {
+    const sock = normAddr(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '')
+    // 没有 socket 信息 = 进程内直调（测试 / 内部转发），按本机处理。
+    // 真实 HTTP 请求一定有 remoteAddress，所以这里不会削弱对外拦截。
+    if (!sock) return true
+    if (!isLoopbackAddr(sock)) return false // ① 直连：只信 socket
+    const list = trustedProxies()
+    if (list.length && list.includes(sock)) { // ② 可信反代：看最后一跳
+      const hops = String(req?.headers?.['x-forwarded-for'] || '').split(',').map((x) => normAddr(x)).filter(Boolean)
+      if (hops.length) return isLoopbackAddr(hops[hops.length - 1])
+      // 【复审 2·P1-1】反代场景却没带 XFF：反代没配好（没追加转发头）。按回环放行等于
+      // 「反代后的所有用户都被当成本机」——这是 fail-open。兜成 fail-closed：拒绝。
+      return false
+    }
+    return isLoopbackAddr(sock) // ③ 本机直连
+  }
+  const panelNeedsLocal = () => getConfig().security?.panelRemoteAccess !== true
+  /** 管理面白名单：这些前缀之外的一律不算管理接口（客户端直连用的模块接口与素材不拦）。 */
+  const ADMIN_EXEMPT_PREFIXES = [PREFIX + '/ext/', PREFIX + '/asset/', PREFIX + '/open/']
+  /** 面板闸：命中管理面且不允许远端时拒绝。
+   *  【首审 P1-1】从「只拦 /panel/*」扩到「拦整个 PREFIX 下除客户端接口外的所有路由」——
+   *  默认拒绝比逐条列举安全：将来新增管理路由忘了登记也不会裸奔。
+   *  【复审 P1-2】/open/* 是给外部程序（curl / 脚本）用的开放接口，有自己的
+   *  `Authorization: Bearer 密钥` 鉴权（bridge.authorized），跨机带正确密钥必须放行——
+   *  它不是浏览器面板的一部分，不该被本机闸拦。 */
+  const panelBlocked = (req, res) => {
+    let path = ''
+    try { path = new URL(req.url, 'http://x').pathname } catch { return false }
+    if (!path.startsWith(PREFIX + '/') && path !== PREFIX) return false
+    if (ADMIN_EXEMPT_PREFIXES.some((p) => path.startsWith(p))) return false
+    if (!panelNeedsLocal()) return false
+    if (requestIsLocal(req)) return false
+    log.warn(`管理接口拒绝远端访问：${path}（来源不是回环；如需远端管理请开 security.panelRemoteAccess 并在反代加认证）`)
+    send(res, 403, { ok: false, message: '管理接口只允许本机访问。远端管理需在配置里显式开启 security.panelRemoteAccess，并务必在反向代理层再加一道认证' })
+    return true
+  }
+  /** 面板对外主机名（security.publicHostname，反代部署时填面板对外域名；空 = 只有回环算同源）。 */
+  const panelPublicHost = () => String(getConfig().security?.publicHostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  /** Origin 主机名是否算「同源」：回环 / localhost / 已配置的面板对外域名。 */
+  const originAllowed = (hostname) => {
+    const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    if (!h) return false
+    if (h === 'localhost' || h.endsWith('.localhost') || isLoopbackAddr(h)) return true
+    const ph = panelPublicHost()
+    return Boolean(ph) && h === ph
+  }
+  /**
+   * 【复审 2·P1-1】管理面 Host 允许名单（防 DNS rebinding）。
+   * 攻击：恶意页面把 evil.example 的 DNS rebind 到 127.0.0.1，然后 `fetch('http://evil.example:port/state')`
+   * ——socket 是本机回环（本机闸放行）、方法是 GET（不过 CSRF）→ 管理面被「同源可读」：
+   * /state、/logs、/bridge/token（返回 bearer）、client-package（含令牌）全部外泄。
+   * 修法：管理面请求的 Host 头必须在白名单内（回环 / localhost / publicHostname）。
+   * Host 头虽是请求方可控的，但浏览器同源策略保证「页面 JS 发出的请求 Host = 页面所在的源」——
+   * rebinding 页面发出的 Host 就是 evil.example 本身，进不了白名单；同源面板请求 Host 必然是
+   * 127.0.0.1 / localhost / publicHostname 之一。非浏览器客户端（curl/脚本）不受浏览器防护，
+   * 但它们也不是 rebinding 载体，且有各自的鉴权层。
+   */
+  const hostAllowedForAdmin = (hostRaw) => {
+    // 复审 3·小建议：先剥端口再剥方括号。IPv6 回环 Host 是 `[::1]:5099`——
+    // 若先剥 `[` 再剥 `]`，结尾已是数字，`]` 剥不掉，端口剥完剩 `::1]`，会被 403。
+    const h = String(hostRaw || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    if (!h) return false
+    if (h === 'localhost' || h.endsWith('.localhost')) return true
+    if (isLoopbackAddr(h)) return true
+    const ph = panelPublicHost()
+    return Boolean(ph) && h === ph
+  }
+  /** Host 校验 + 失败响应。只用于管理面（模块路由的 Host 另有 Host 闸策略）。 */
+  const adminHostBlocked = (req, res) => {
+    const hostHeader = String(req.headers?.host || '')
+    if (hostAllowedForAdmin(hostHeader)) return false
+    log.warn(`管理接口拒绝异常 Host：${hostHeader}（疑似 DNS rebinding；白名单：回环/localhost/security.publicHostname）`)
+    send(res, 403, { ok: false, message: '管理接口拒绝该 Host（只接受本机回环、localhost 或已配置的面板对外域名）' })
+    return true
+  }
+  /** 【复审 P1-1】CSRF 闸：所有改状态的方法都要过同源校验。
+   *  背景（复审实测）：恶意网页可以从攻击者页面 `fetch('http://127.0.0.1:<port>/save', {method:'POST'})`——
+   *  请求 socket 是本机回环（面板闸放行）、方法 POST、跨站。没有 CSRF 校验的话
+   *  `/save`、`/panel/pet/public-base`、rotate、client-package 全都能被恶意页面打穿，无需暴露端口。
+   *  口径：
+   *    ① 只管写方法（GET/HEAD/OPTIONS 不管——它们不该有副作用）；
+   *    ② 浏览器一定带 `Sec-Fetch-Site`：值不在 {same-origin, same-site, none} → 跨站，拒；
+   *    ③ 浏览器跨站 fetch 也一定带 `Origin`：主机名不在同源白名单 → 拒；
+   *    ④ 两者都没有 = 非浏览器客户端（curl / 脚本）——不是 CSRF 载体，放行，
+   *       它们的防线是各自的鉴权（管理面 = 本机闸，/open/* = Bearer 密钥）。 */
+  const csrfBlocked = (req, res) => {
+    const method = String(req.method || 'GET').toUpperCase()
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false
+    const site = String(req.headers?.['sec-fetch-site'] || '').trim().toLowerCase()
+    if (site && !['same-origin', 'same-site', 'none'].includes(site)) {
+      log.warn(`CSRF 拒绝（Sec-Fetch-Site=${site}）：${req.method} ${req.url}`)
+      send(res, 403, { ok: false, message: '跨站请求被拒绝（Sec-Fetch-Site 不符）' })
+      return true
+    }
+    const origin = String(req.headers?.origin || '').trim()
+    if (origin) {
+      let host = ''
+      try { host = new URL(origin).hostname } catch {}
+      if (!originAllowed(host)) {
+        log.warn(`CSRF 拒绝（Origin=${origin}）：${req.method} ${req.url}`)
+        send(res, 403, { ok: false, message: '跨站请求被拒绝（Origin 不在同源白名单）' })
+        return true
+      }
+    }
+    return false
+  }
+  /** 面板闸：面板写/读接口统一过它（见上方 panelBlocked 说明）。
+   *  opts.skipHostCheck：给 /open/* 这类「非浏览器、自带密钥鉴权」的接口用——
+   *  它们没有浏览器同源概念，跨机调用是正常用法，Host 允许名单不该拦。 */
+  const route = (path, handler, opts = {}) => ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREFIX + path,
+    handler: (req, res) => answer(res, () => {
+      if (panelBlocked(req, res)) return undefined
+      if (!opts.skipHostCheck && adminHostBlocked(req, res)) return undefined // DNS rebinding 防护（含 GET）
+      if (csrfBlocked(req, res)) return undefined
+      return handler(req, res)
+    }),
+  }), `aurabot: 路由 ${path}`)
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX, // DSH 按「路径 = 前缀 或 以 前缀/ 开头」匹配，前缀本身不带结尾的 /
     handler: (req, res) => answer(res, () => {
       let path = ''
       try { path = new URL(req.url, 'http://x').pathname } catch (error) {}
+      // 【复审 2·P1-2】模块 prefix 路由也过 CSRF：实测本机 socket + 恶意 Origin 能跨站打
+      // POST /aurabot/api/heybox/run、/ext/phone/run 等无 token 的模块路由（真实触发逛/ADB）。
+      // 模块路由有自己的 Host 闸与鉴权，但同样缺跨站防护；桌宠 native 客户端不带 Origin，
+      // 不受影响；桌面面板的 fetch 是同源，也不受影响。
+      if (csrfBlocked(req, res)) return undefined
       return mods.handle(path, req, res)
     }),
   }), 'aurabot: 模块接口')
@@ -406,6 +554,16 @@ export function apply(ctx) {
       try { port = Number(new URL(String(process.env.DSH_WEB_URL || '')).port) } catch { port = 0 }
     }
     return Number.isInteger(port) && port > 0 && port < 65536 ? port : 0
+  }
+  // ---------- 桌宠远端直连（publicBaseUrl，2026-11-02）----------
+  // 单一真相：ext.pet.publicBaseUrl（pet 模块 api.settings() 读同一键；面板写入通道见 /panel/pet/config 与
+  // /panel/pet/public-base）。合法 http(s) URL 才生效；配置后 pet 的 host.json 写远端地址、guard 放行远端
+  // Host/Origin、面板把 Electron 三键换成「下载客户端包」。未配置时 pet 一切行为与旧版一致（同机零退化）。
+  function publicBaseUrlOf() {
+    const raw = String(getConfig().ext?.pet?.publicBaseUrl || '').trim().replace(/\/+$/, '')
+    if (!/^https?:\/\//i.test(raw)) return ''
+    try { const u = new URL(raw); if (!u.hostname) return '' } catch { return '' }
+    return raw
   }
   function injectPetPort() {
     const port = webPortOf()
@@ -723,6 +881,15 @@ export function apply(ctx) {
       const u = b.electronMirror.trim().slice(0, 500)
       if (!u || /^https?:\/\//i.test(u)) patch.electronMirror = u
     }
+    // 对外公网地址（远端直连）：只收 http/https 或空（空 = 关掉远端模式，回到同机）
+    if (typeof b.publicBaseUrl === 'string') {
+      const u = b.publicBaseUrl.trim().replace(/\/+$/, '').slice(0, 300)
+      if (!u || /^https?:\/\//i.test(u)) patch.publicBaseUrl = u
+    }
+    // 安全项（2026-11-02）：明文 http 跨机开关 + 令牌有效期。同样因为内置模块的 settings 不渲染表单，
+    // 这里是唯一写入通道。
+    if (typeof b.allowInsecureRemote === 'boolean') patch.allowInsecureRemote = b.allowInsecureRemote
+    if (Number.isFinite(b.tokenTtlDays)) patch.tokenTtlDays = Math.min(3650, Math.max(0, Math.floor(b.tokenTtlDays)))
     // 行为大脑的模块级设置（AI 自己改不了，只有主人能改）。pet 是**内置模块**，
     // 它的 settings schema 不会渲染成表单（面板只给「用户自己复制出来的模块」生成），
     // 所以这里是这些开关唯一的写入通道——不补，关窗物理闸就永远打不开。
@@ -777,12 +944,32 @@ export function apply(ctx) {
     return { ok: true, result: redactTokens(await pet.setFocus(enabled)) }
   })
   // Electron 三键：安装（npmmirror 镜像）→ 启动（清 ELECTRON_RUN_AS_NODE 分离进程）→ 停止（杀 pid）
+  // 远端直连模式（配了 publicBaseUrl）下安装/启动不再执行——服务器无桌面，spawn 无头 Electron 的坑从入口上消失，
+  // 面板据 remoteClient:true 把这两键换成「下载客户端包」（/panel/pet/client-package）。
+  // 【首审 P2】还要看模块具备不具备 clientPackage 能力：装上的是旧版 pet（1.0.8 及以前）时，
+  // 面板如果照旧提示「点下载客户端包」，用户点下去只会拿到 404/降级文案。这种情况下要说清楚是版本问题。
+  const remotePetHint = () => {
+    const pet = use('pet')
+    const canPackage = typeof pet?.clientPackage === 'function'
+    if (!canPackage) {
+      return {
+        ok: false, available: false, remoteClient: true, needModuleUpgrade: true,
+        message: '已配置对外地址（远端直连模式），但当前桌宠模块太旧、不具备「打包客户端」能力（需要 pet 1.0.10+）：请先在模块市场把桌宠更新到最新版',
+      }
+    }
+    return {
+      ok: false, available: false, remoteClient: true,
+      message: '已配置对外地址（远端直连模式）：服务器上不再安装/启动 Electron。请在「桌宠」页点「下载客户端包」，在你自己的电脑上解压运行',
+    }
+  }
   route('/panel/pet/electron-install', async () => {
+    if (publicBaseUrlOf()) return remotePetHint()
     const pet = use('pet')
     if (typeof pet?.electronInstall !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，装不了 Electron' }
     return { ok: true, result: redactTokens(await pet.electronInstall()) }
   })
   route('/panel/pet/launch', async () => {
+    if (publicBaseUrlOf()) return remotePetHint()
     const pet = use('pet')
     if (typeof pet?.launch !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，启动不了桌宠' }
     return { ok: true, result: redactTokens(await Promise.resolve(pet.launch())) }
@@ -792,6 +979,118 @@ export function apply(ctx) {
     if (typeof pet?.stop !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，停不了桌宠' }
     return { ok: true, result: redactTokens(await Promise.resolve(pet.stop())) }
   })
+  // 轮换令牌（安全）：旧的立即失效，客户端必须重新下载包。跨机部署时这是唯一的应急手段
+  // （令牌一旦泄露，只有换掉它才收得回口子）。
+  route('/panel/pet/rotate-token', async () => {
+    const pet = use('pet')
+    if (typeof pet?.rotateToken !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪 / 版本太旧（需要 1.0.10+），换不了令牌' }
+    const r = pet.rotateToken()
+    log.info(`面板轮换桌宠令牌｜${r.ok ? '成功' : '失败：' + r.message}`)
+    return { ok: Boolean(r && r.ok), message: r?.message || '', issuedAt: r?.issuedAt || null }
+  })
+  // 对外公网地址：保存 + 验证。验证 = 服务端向 <publicBaseUrl>/aurabot/api/state 发一次请求，
+  // 回 200 且响应带本插件标识才算通；hairpin NAT 打不通自己的公网地址时可显式确认跳过验证。
+  // 【首审 P1-5 + 复审 P1-4】SSRF 收口，全部复用 core/net.js 的判定（不再手写正则）：
+  //   ① `assertPublicUrl`：域名要 **DNS 解析后**逐个 IP 校验——`https://[::ffff:127.0.0.1]`、
+  //      解析到内网的公网域名都拦得住（旧手写正则只看字符串，这两条都漏）；
+  //   ② 跨机必须 https（明文只放行本机回环，自测用）；
+   //   ③ 验证请求走 `fetchGuarded`：手动跟重定向，**每一跳都重新做 SSRF 校验**——302 到内网照样拦；
+  //   ④ 响应必须带本插件标识（ok + version/apiVersion），不能只看 200；
+  //   ⑤ `force` 不再跳过安全校验：它只表示「跳过连通性验证」，要内网/本机地址必须再加
+  //      `confirm: true` 显式二次确认，并写审计日志。这满足「内网自测」的合法场景
+  //      （局域网部署 + allowInsecureRemote），但不再是无声的 SSRF 旁路。
+  route('/panel/pet/public-base', async (req) => {
+    const b = await readBody(req)
+    const raw = String(b.publicBaseUrl ?? '').trim().replace(/\/+$/, '').slice(0, 300)
+    if (!raw) {
+      setConfig(mergeFromPanel(cfg, { ext: { pet: { publicBaseUrl: '' } } }))
+      log.info('面板已清空桌宠对外地址：回到同机模式')
+      return { ok: true, publicBaseUrl: '', message: '已清空：回到同机模式（host.json 恢复回环地址）' }
+    }
+    if (!/^https?:\/\//i.test(raw)) return { ok: false, message: '要填 http(s):// 开头的完整地址，如 https://bot.example.com' }
+    // ① 安全校验（DNS 解析后逐 IP 判私网/本机）——force 也不跳过这一步的**判定**，
+    //    只是把「判定为内网」从拒绝变成「confirm 后审计放行」（局域网自测的合法场景）。
+    let privateHit = ''
+    try {
+      await assertPublicUrl(raw)
+    } catch (error) {
+      if (b.force !== true || b.confirm !== true) {
+        return {
+          ok: false, publicBaseUrl: raw, verified: false,
+          message: `这个地址不允许作为对外地址（${error.message}）。它指向本机/内网，只适合局域网自测：确实要保存，请带 force + confirm 显式确认（面板会弹二次确认）`,
+        }
+      }
+      privateHit = error.message
+    }
+    // ② 明文检查：**公网**地址必须 https（令牌与聊天内容走明文等于送人，这条没有确认通道）；
+    //    内网明文已在上面走 force+confirm 审计通道放行。
+    if (!privateHit) {
+      const u = new URL(raw)
+      if (u.protocol === 'http:' && !isLoopbackAddr(u.hostname)) {
+        return { ok: false, publicBaseUrl: raw, message: '跨机对外地址必须用 https：令牌与聊天内容走明文等于送人。局域网自测请直接填内网地址并走 force + confirm' }
+      }
+    }
+    let detail = ''
+    let ok = false
+    if (!privateHit) {
+      // ③ 验证请求：手动跟重定向，每一跳都重新做 SSRF 校验；④ 响应要带本插件标识
+      try {
+        const r = await fetchGuarded(raw + '/aurabot/api/state', { timeoutMs: 8000 })
+        if (!r.ok) {
+          detail = `HTTP ${r.status}`
+        } else {
+          let body = null
+          try { body = await r.json() } catch { body = null }
+          if (body && body.ok === true && (body.version || body.apiVersion)) {
+            ok = true
+            detail = 'HTTP 200 + 插件标识匹配'
+          } else {
+            detail = 'HTTP 200 但响应不像本插件（缺少 version/apiVersion 标识）'
+          }
+        }
+      } catch (error) {
+        detail = error?.name === 'AbortError' ? '请求超时' : String(error?.message || error)
+      }
+      if (!ok && b.force !== true) {
+        return { ok: false, publicBaseUrl: raw, verified: false, message: `验证没过（${detail}）：确认反代已把 ${raw} 指到本插件。地址确实打不通自己的公网（如 hairpin NAT）可再点一次「跳过验证保存」` }
+      }
+    }
+    setConfig(mergeFromPanel(cfg, { ext: { pet: { publicBaseUrl: raw } } }))
+    if (privateHit) {
+      // 审计：内网/本机地址被显式确认保存了，必须留痕（谁在什么时候放行了什么地址）
+      log.warn(`【审计】桌宠对外地址保存了内网/本机地址｜${raw}｜原因：${privateHit}｜force+confirm 显式确认`)
+      return { ok: true, publicBaseUrl: raw, verified: false, confirmedPrivate: true, message: `已保存（内网地址，未经连通性验证：${privateHit}）。仅限自测，公网部署请换 https 公网域名` }
+    }
+    log.info(`面板已保存桌宠对外地址｜${raw}｜验证${ok ? '通过' : '跳过'}（${detail}）`)
+    return { ok: true, publicBaseUrl: raw, verified: ok, message: ok ? `验证通过（${detail}）：远端直连已开启，host.json 会写这个地址` : `已保存（验证被跳过：${detail}）` }
+  })
+  // 客户端包（zip）：app/ 目录 + 内嵌 host.json。面板远端模式的「下载客户端包」用；浏览器直接下载二进制，
+  // 所以不能走 JSON 包装的 route()，这里单独注册精确路径并手动设 content-type/content-disposition。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREFIX + '/panel/pet/client-package',
+    handler: (req, res) => answer(res, async () => {
+      // 【安全】这一条不走 route()，必须自己过面板闸：包内嵌 host.json（含 bearer 令牌），
+      // 公网上谁都能无鉴权下到就等于把桌宠令牌送出去。CSRF 闸也要过（一致性；GET 本身不受影响）。
+      // 复审 3·P1-1：还必须过 Host 校验——此前手动注册路由漏了 adminHostBlocked，
+      // 实测 socket 回环 + `Host: evil.example` 的 GET 能拿到含令牌的 zip（DNS rebinding 载体）。
+      if (panelBlocked(req, res)) return undefined
+      if (adminHostBlocked(req, res)) return undefined
+      if (csrfBlocked(req, res)) return undefined
+      const pet = use('pet')
+      if (typeof pet?.clientPackage !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，打不了客户端包' }
+      const r = await Promise.resolve(pet.clientPackage())
+      if (!r.ok) return { ok: false, message: r.message }
+      // 【安全 P2】内含 bearer 令牌：任何缓存层都不许留；文件名要清洗（模块来自磁盘，不完全可信）
+      const safeName = String(r.filename || 'aurabot-pet-client.zip').replace(/[^\w.-]/g, '_')
+      res.setHeader?.('content-type', 'application/zip')
+      res.setHeader?.('content-disposition', `attachment; filename="${safeName}"`)
+      res.setHeader?.('cache-control', 'no-store, no-cache, must-revalidate, private')
+      res.setHeader?.('pragma', 'no-cache')
+      send(res, 200, r.buffer, 'application/zip') // answer 只在返回非 undefined 时才发 JSON，这里已手动发过
+      return undefined
+    }),
+  }), 'aurabot: 桌宠客户端包下载')
   // ---------- 行为动作（设计稿 §8 测试通道）：面板「试一下」+ 每动作 AI 开关 + 图标隔离区 ----------
   // 全部代理到 pet 模块已暴露的函数（behaviorEmit / behaviorStatus / iconQuarantine / iconRestore）；
   // 模块没就绪或旧版本缺接口时降级 available:false，面板显示兜底文案不炸。
@@ -1205,11 +1504,12 @@ export function apply(ctx) {
   route('/bridge/token', async () => ({ ok: true, token: cfg.bridge.http ? bridge.ensureToken() : '' }))
   route('/bridge/token/reset', async () => ({ ok: true, token: bridge.resetToken(), message: '换了新密钥，旧的立刻失效' }))
   route('/bridge/examples', async (req) => ({ ok: true, ...bridge.examples(String(query(req).base || 'http://127.0.0.1:端口')) }))
-  // 开放接口：都要带密钥
+  // 开放接口：都要带密钥。/open/* 给外部程序（curl/脚本）用，跨机 + 自定义 Host 是正常用法，
+  // 且有自己的 Bearer 鉴权——跳过管理面的 Host 允许名单（复审 2·P1-2 的豁免原则同理）。
   const open = (path, fn) => route('/open' + path, async (req) => {
     if (!bridge.authorized(req)) return { ok: false, code: 401, message: cfg.bridge.http ? '密钥不对（请求头 Authorization: Bearer 密钥）' : '开放接口没打开（面板「扩展」→ 联动）' }
     return fn(req)
-  })
+  }, { skipHostCheck: true })
   open('/info', async () => bridge.ops.info())
   open('/send', async (req) => bridge.ops.send(await readBody(req)))
   open('/think', async (req) => bridge.ops.think(await readBody(req)))
