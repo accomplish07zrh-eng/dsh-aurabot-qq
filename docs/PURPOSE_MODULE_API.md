@@ -41,10 +41,12 @@
 
 - 路径：`api.dataDir('purpose', 'purpose-state.json')` → `~/.dsh/plugins-data/aurabot/purpose/purpose-state.json`
 - 结构照 surfcore 引擎（`createPurposeState`）：`version, day, countToday, lastRunAt, lastAttemptAt, lastSentAt, lastOutcome('sent'|'silent'|'failed'|'delivery-failed'|'interrupted'|'pending'), lastPurpose, lastText, nextFireAt, attempts, drives{9维0~1}, drivesAt, lastEmotion(+Text), lastGoalId, lastMaterialCount, lastCandidateCount, goals[], observations[], pending[], history[], lastSkip`
-- 行为学习字段：`replyHours[24]`（主人私聊时刻直方图，`replyHoursSeen` 记已计素材 id 防重复）——
-  排程在间隔基础上向主人更常回话的小时轻推（最多 3h，样本 <5 不偏置）；
+- 行为学习字段：`replyHours[24]`（主人私聊时刻直方图）与 `replyWeekday[7]`（星期分桶，
+  两者共用 `replyHoursSeen` 记已计素材 id 防重复）——排程在间隔基础上向主人更常回话的小时轻推
+  （最多 3h，样本 <5 不偏置）、向更常回话的日子轻推（≤7 天，样本 <7 不偏置）；
   `needFeedback{need:{positive,negative,neutral}}`（主人回执按需要维度记账）——
   ≥5 样本后正反馈率 ≥60% 抬该维驱动地板 +0.08，≤30% 向默认值加速回落。
+  朋友线各有各的状态文件，直方图/反馈账本天然分账，互不污染。
 - goals 条目：`id, owner('self'|'owner'|'member'|'media'), domain(9 need), object{type,name}, intent, evidence[≤4], confidence, value, urgency, risk, action, nextStep, status('hypothesis'|'active'|'confirmed'|'rejected'|'done'|'expired'), emotion, createdAt, lastSeenAt, expiresAt, attempts, sightings, source`
 - 另有 `purpose/nudge.json`（追问去重标记，非引擎字段，勿展示）。
 - 从旧版升级：`speakup.json` 只读迁移当日 count，之后不再读写（可保留不删）。
@@ -83,6 +85,12 @@
 目标风险 = 内置风险表 × riskScale，人格卡可再覆写）。
 提示词超长时先按素材权重从尾部逐行丢弃（主人私聊永远最后丢），整段丢完才退回首尾盲切；
 备忘解析有兜底：忘写【】但写了「目的：…」裸标签行、或回执为 JSON（中/英文键）都能解析。
+**素材打分模型**（`ext.purpose.scoringModel`，面板「目的引擎」卡下拉选，结构与「按聊天选模型」同款
+`{provider, model, reasoningEffort?}`）：配了就走一次 `purpose-score` 后台回合
+（`hub.runSystemTurn` 新增 `model` 参数，只影响该会话），批量给素材定 need 与情绪，
+回写 `needAffinity` 与 `cues`（情绪画像）；不配/出错/解析不出 = 关键词法，零额外成本。
+preview 变为 async（打分是 I/O）；`/panel/purpose/status` 附 `models` 下拉选项，
+`/panel/purpose/config` 收 `scoringModel`。
 **沿用主动搭话的设置**（保持作息单一真相）：`config.speakUp.awakeFrom/awakeTo`（派生引擎安静时段；全天=关闭安静）、
 `idleMinutes`（→ idleThreshold）、`minIntervalMinutes/maxIntervalMinutes`（→ gap）、`maxPerDay`（→ dailyMax）——
 ext.purpose 同名键可覆写。

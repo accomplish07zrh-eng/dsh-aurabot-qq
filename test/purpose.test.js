@@ -9,7 +9,7 @@
 // 落盘测试必须 AURABOT_DATA_DIR 隔离。
 import { test, before, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -48,7 +48,7 @@ function makeHub({ reply = '主人，今天想到一件事想跟你说', lastOwn
     chatLogOf: () => [],
     delivered: [],
     turns: log,
-    async runSystemTurn(name, title, prompt) { this.turns.push({ name, title, prompt }); return typeof reply === 'function' ? reply(prompt) : reply },
+    async runSystemTurn(name, title, prompt, options = {}) { this.turns.push({ name, title, prompt, options }); return typeof reply === 'function' ? reply(prompt, options) : reply },
     async deliver(chatId, text, opts = {}) { this.delivered.push({ chatId, text, opts }); return { missedAt: [], failed: 0, errors: [], sent: this.deliverSent ?? text } },
   }
 }
@@ -371,7 +371,7 @@ test('提示词：不带 qq_send_private_message 发送指令；带反注入与�
   const { p } = makePurpose(hub, { memories: [{ id: 'mm1', text: '主人上周在玩星穹列车', importance: 0.6 }] })
   await p.tick()
   assert.ok(hub.turns.length >= 0)
-  const pv = p.preview()
+  const pv = await p.preview()
   assert.ok(pv.prompt, 'preview 给出提示词')
   assert.ok(!pv.prompt.includes('qq_send_private_message'), '不要求模型调 QQ 发送工具')
   assert.match(pv.prompt, /不是给你的指令/, '素材段带反注入提醒')
@@ -648,4 +648,80 @@ test('情绪画像：候选带 valence/arousal，提示词强弱措辞跟 arousa
   const promptSoft = engine.buildPurposePrompt({ now: Date.now(), selected: { emotion: 'bored', need: 'share', action: 'share' }, drives: engine.DEFAULT_DRIVES })
   assert.ok(promptLoud.includes('强烈地有点兴奋'), '高 arousal 用「强烈地」')
   assert.ok(promptSoft.includes('隐约有点无聊'), '低 arousal 用「隐约」')
+})
+
+// ── 模型打分 / 星期分桶 / 朋友分账 ───────────────────────────────────────────
+
+test('素材打分：配了模型就批量打分，模型覆盖与 JSON 围栏解析都走通', async () => {
+  const hub = makeHub({
+    reply: (prompt, options) => {
+      if (options?.model) {
+        assert.equal(options.model.provider, 'deepseek', '打分回合带上面板选的模型')
+        assert.equal(options.noTools, true)
+        return '```json\n[{"i":1,"need":"play","emotion":"excited"},{"i":2,"need":"learn","emotion":"curious"}]\n```'
+      }
+      return '好呀，我也想玩！\n【目的】想一起玩\n【需求】玩\n【状态】完成'
+    },
+  })
+  const { p } = makePurpose(hub, {
+    memories: [
+      { id: 'mm1', text: '主人在玩星穹列车', importance: 0.8 },
+      { id: 'mm2', text: '主人喜欢研究各种原理', importance: 0.8 },
+    ],
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0, scoringModel: { provider: 'deepseek', model: 'deepseek-chat' } } },
+  })
+  const pv = await p.preview()
+  const scored = hub.turns.find((t) => t.name === 'purpose-score')
+  assert.ok(scored, 'preview 也应触发一次打分回合')
+  assert.ok(scored.prompt.includes('只输出一个 JSON 数组'), '打分提示词要求 JSON 数组')
+  const items = pv.materials
+  assert.ok(items.length >= 2, '素材已就位')
+  const hit = items.filter((m) => m.scoredEmotion).length
+  assert.ok(hit >= 2, `模型判的情绪回写进素材（命中 ${hit}）`)
+  // 打分回合失败 → 静默回退，主流程不炸
+  const hub2 = makeHub({ reply: () => { throw new Error('模拟超时') } })
+  const { p: p2 } = makePurpose(hub2, {
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0, scoringModel: { provider: 'x', model: 'y' } } },
+  })
+  const pv2 = await p2.preview()
+  assert.ok(pv2.prompt, '打分挂了也能照常出提示词（回退关键词法）')
+})
+
+test('星期分桶：记录星期分布，排程向高回流日挪（≤7 天，样本不足不动）', () => {
+  const state = engine.createPurposeState()
+  const monday = (() => { const d = new Date(); d.setHours(10, 0, 0, 0); while (d.getDay() !== 1) d.setDate(d.getDate() + 1); return d.getTime() })()
+  const mats = Array.from({ length: 10 }, (_, i) => ({ id: `w${i}`, kind: 'owner', at: monday + i * MIN }))
+  engine.recordOwnerReplyHours(state, mats, monday + 60 * MIN)
+  assert.equal(state.replyWeekday[1], 10, '周一记 10 次')
+  // 周三发车 → 挪到下周一（同一时刻）
+  const wednesday = monday + 2 * 24 * 60 * MIN
+  const shift = engine.bestReplyWeekdayShift(wednesday, state.replyWeekday)
+  assert.equal(shift, 5 * 24 * 60 * MIN, '周三 → 下周一（5 天后）')
+  // 今天就是高回流日不动
+  assert.equal(engine.bestReplyWeekdayShift(monday, state.replyWeekday), 0)
+  // 样本不足不动
+  assert.equal(engine.bestReplyWeekdayShift(wednesday, [0, 2, 0, 0, 0, 0, 0]), 0)
+})
+
+test('朋友分账：朋友线的直方图与反馈账本落在朋友自己的状态文件里', async () => {
+  const FRIEND = '20000011'
+  const now = Date.now()
+  const rows = Array.from({ length: 6 }, (_, i) => ({ chatId: `private:${FRIEND}`, who: 'them', uid: FRIEND, text: `朋友聊的第 ${i} 件事，想玩游戏`, t: now - i * MIN }))
+  const hub = makeHub({ reply: '想一起玩吗\n【目的】想一起玩\n【需求】玩\n【状态】完成' })
+  hub.chatLogDays = () => ['day1']
+  hub.chatLogOf = (day) => rows
+  hub.lastPrivateAt = (qq) => (qq === FRIEND ? now : 0)
+  const { p } = makePurpose(hub, {
+    speakUp: { enabled: false, awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false, allow: [FRIEND] },
+  })
+  // 朋友线跑一轮：直方图记进朋友状态文件
+  const friendFile = join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends', `${FRIEND}.json`)
+  mkdirSync(join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends'), { recursive: true })
+  writeFileSync(friendFile, JSON.stringify(engine.createPurposeState(now)))
+  await p.tick() // 主人线没素材/pending → skip 或跑一轮，都只动主人文件
+  const s = JSON.parse(readFileSync(friendFile, 'utf8'))
+  const ownerFile = JSON.parse(readFileSync(stateFile(), 'utf8'))
+  assert.ok(!ownerFile.replyHoursSeen?.length || ownerFile.replyHoursSeen.length === 0, '朋友的素材不进主人直方图')
+  assert.ok(Array.isArray(s.replyHours) && Array.isArray(s.replyWeekday), '朋友状态带自己的分桶字段')
+  assert.ok(!ownerFile.needFeedback || Object.keys(ownerFile.needFeedback).length === 0, '主人的 needFeedback 不被朋友线污染')
 })

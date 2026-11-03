@@ -198,8 +198,9 @@ export function createPurposeState(now = Date.now()) {
     // 驱动向量：为什么今天特别想玩 / 特别想找人说话。跨天保留，随时间衰减。
     drives: { ...DEFAULT_DRIVES },
     drivesAt: now,
-    // 主人回复时段直方图（24 桶计数 + 已记素材 id）：往主人更容易在线的小时轻推排程。
+    // 主人回复时段直方图（24 桶计数 + 星期 7 桶 + 已记素材 id）：往主人更容易在线的小时/日子轻推排程。
     replyHours: new Array(24).fill(0),
+    replyWeekday: new Array(7).fill(0),
     replyHoursSeen: [],
     // 需要维度的长期正反馈账本：{ play: {positive, negative, neutral} ... }。
     needFeedback: {},
@@ -273,6 +274,7 @@ export function normalizePurposeState(raw, now = Date.now()) {
   base.drives = normalizeDrives(raw.drives);
   base.drivesAt = Number(raw.drivesAt) || 0;
   base.replyHours = normalizeReplyHours(raw.replyHours);
+  base.replyWeekday = normalizeCounts(raw.replyWeekday, 7);
   base.replyHoursSeen = (Array.isArray(raw.replyHoursSeen) ? raw.replyHoursSeen : []).map(String).slice(-200);
   base.needFeedback = normalizeNeedFeedback(raw.needFeedback);
   base.lastEmotion = String(raw.lastEmotion ?? '').slice(0, 20);
@@ -314,16 +316,18 @@ export function ensurePurposeSchedule(state, { now = Date.now(), config = DEFAUL
 }
 
 // ── 主人回复时段直方图（轻量学习：她慢慢知道主人几点最容易回）────────────────
-function normalizeReplyHours(raw) {
-  const out = new Array(24).fill(0);
+function normalizeCounts(raw, len) {
+  const out = new Array(len).fill(0);
   if (Array.isArray(raw)) {
-    for (let h = 0; h < 24; h += 1) {
+    for (let h = 0; h < len; h += 1) {
       const n = Number(raw[h]);
       if (Number.isFinite(n) && n > 0) out[h] = Math.min(9999, Math.round(n));
     }
   }
   return out;
 }
+
+const normalizeReplyHours = (raw) => normalizeCounts(raw, 24);
 
 /** 需要维度的反馈账本：坏值丢弃，计数钳到 0~9999。 */
 function normalizeNeedFeedback(raw) {
@@ -342,9 +346,10 @@ function normalizeNeedFeedback(raw) {
   return out;
 }
 
-/** 把素材里主人的私聊发言时刻记进 24 小时直方图（按素材 id 去重，无 id 用时刻键）。 */
+/** 把素材里主人的私聊发言时刻记进 24 小时 × 星期直方图（按素材 id 去重，无 id 用时刻键）。 */
 export function recordOwnerReplyHours(state, materials, now = Date.now()) {
   const hist = normalizeReplyHours(state.replyHours);
+  const week = normalizeCounts(state.replyWeekday, 7);
   const seen = new Set(Array.isArray(state.replyHoursSeen) ? state.replyHoursSeen.map(String) : []);
   let changed = false;
   for (const m of Array.isArray(materials) ? materials : []) {
@@ -354,11 +359,14 @@ export function recordOwnerReplyHours(state, materials, now = Date.now()) {
     const id = String(m.id ?? '') || `t:${at}`;
     if (seen.has(id)) continue;
     seen.add(id);
-    hist[new Date(at).getHours()] += 1;
+    const d = new Date(at);
+    hist[d.getHours()] += 1;
+    week[d.getDay()] += 1;
     changed = true;
   }
   if (changed) {
     state.replyHours = hist;
+    state.replyWeekday = week;
     state.replyHoursSeen = [...seen].slice(-200);
   }
   return state;
@@ -383,10 +391,31 @@ export function bestReplyHourShift(at, replyHours = [], { maxShiftMs = 3 * HOUR 
 }
 
 /**
+ * 星期分桶：今天是不是主人常回话的日子？不是就往未来 7 天里第一个高回流日挪（≤7 天）。
+ * 样本 <7 条不偏置；今天已是高回流日（≥最佳日 50%）不动。
+ */
+export function bestReplyWeekdayShift(at, replyWeekday = [], { minSamples = 7 } = {}) {
+  const hist = normalizeCounts(replyWeekday, 7);
+  const total = hist.reduce((s, v) => s + v, 0);
+  if (total < minSamples) return 0;
+  const best = Math.max(...hist);
+  if (best <= 0) return 0;
+  const cur = hist[new Date(at).getDay()];
+  if (cur >= best * 0.5) return 0;
+  for (let add = 1; add <= 7; add += 1) {
+    const t = new Date(at);
+    t.setDate(t.getDate() + add);
+    if (hist[t.getDay()] >= best * 0.8) return t.getTime() - at;
+  }
+  return 0;
+}
+
+/**
  * 下一次该在什么时候主动找主人。
  * · 距上次「真正完成」至少 gapMin~gapMax；
  * · 桥接停机很久后只补一枪（不连着补）；
  * · 有回复时段直方图时，向主人更可能在线的小时轻推（最多 3 小时）；
+ *   星期分桶再往主人常回话的日子轻推（最多 7 天，样本 <7 不偏置）；
  * · 算出来落在安静时段就推到安静结束 + 0~20 分钟抖动。
  */
 export function planNextFire({
@@ -395,6 +424,7 @@ export function planNextFire({
   lastRunAt = 0,
   countToday = 0,
   replyHours = [],
+  replyWeekday = [],
   random = Math.random,
 } = {}) {
   const min = Math.max(5 * MINUTE, Number(config.gapMinMs) || DEFAULT_PURPOSE_CONFIG.gapMinMs);
@@ -413,6 +443,9 @@ export function planNextFire({
   // 时段学习：主人常在几点回，就往那几点轻推一下（停在安静时段判定之前，之后还会被推离安静）。
   const shift = bestReplyHourShift(at, replyHours);
   if (shift > 0) at += shift;
+  // 星期学习：今天不是主人常回话的日子，就挪到下一个高回流日的同一时刻。
+  const dayShift = bestReplyWeekdayShift(at, replyWeekday);
+  if (dayShift > 0) at += dayShift;
   if (inQuietHours(at, config)) at = quietEndAfter(at, config) + Math.round(random() * 20 * MINUTE);
   return at;
 }
@@ -569,7 +602,7 @@ export function applyPurposeOutcome(state, {
     && Number(state.attempts) < Number(config.maxAttempts);
   state.nextFireAt = retry
     ? now + Math.max(MINUTE, Number(config.retryMs) || DEFAULT_PURPOSE_CONFIG.retryMs)
-    : planNextFire({ now, config, lastRunAt: now, countToday: state.countToday, replyHours: state.replyHours, random });
+    : planNextFire({ now, config, lastRunAt: now, countToday: state.countToday, replyHours: state.replyHours, replyWeekday: state.replyWeekday, random });
   prunePurposeState(state, { now, config });
   return state;
 }

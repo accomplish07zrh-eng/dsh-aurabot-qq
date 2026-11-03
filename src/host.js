@@ -21,6 +21,7 @@ import { createOneBotClient } from './onebot/client.js'
 import { createOutbox } from './onebot/outbox.js'
 import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, workspaceDirOf } from './chat/hub.js'
+import { normalizeSelection } from './chat/chat-model.js'
 import { grantOwner, moveWorkspace, realWorkspace } from './core/workspace-move.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
@@ -899,6 +900,9 @@ export function apply(ctx) {
       carrier: ext.carrier === 'pet' ? 'pet' : 'qq',
       petFallbackToQQ: ext.petFallbackToQQ !== false,
       pacing: ['conservative', 'default', 'active'].includes(ext.pacing) ? ext.pacing : 'default',
+      scoringModel: ext.scoringModel && ext.scoringModel.provider && ext.scoringModel.model
+        ? { provider: ext.scoringModel.provider, model: ext.scoringModel.model, reasoningEffort: ext.scoringModel.reasoningEffort || '' }
+        : null,
       quietStart: quiet.quietStart,
       quietEnd: quiet.quietEnd,
       dailyMax: Number.isFinite(sp.maxPerDay) ? sp.maxPerDay : null,
@@ -935,7 +939,13 @@ export function apply(ctx) {
 
   // ---------- 面板代理：目的引擎 / 桌宠 ----------
   // 统一走 /panel/* 前缀，避免和模块自注册的 /purpose/*、/pet/* 路由撞名；模块缺新接口时降级返回 available:false。
-  route('/panel/purpose/status', async () => ({ ok: true, purpose: purposeOverview(), pet: petStatus() }))
+  route('/panel/purpose/status', async () => ({
+    ok: true,
+    purpose: purposeOverview(),
+    pet: petStatus(),
+    // 「素材打分模型」下拉的选项：DSH 里现有的全部模型（provider/model/name）。
+    models: (modelCache || []).map((m) => ({ provider: m.provider, model: m.model, name: m.name || m.model })),
+  }))
   route('/panel/purpose/preview', async () => {
     const pu = use('purpose')
     if (typeof pu?.preview !== 'function') return { ok: false, available: false, message: '目的引擎模块没在跑，没法预览' }
@@ -993,6 +1003,8 @@ export function apply(ctx) {
     if (b.carrier === 'qq' || b.carrier === 'pet') extPatch.carrier = b.carrier
     if (typeof b.petFallbackToQQ === 'boolean') extPatch.petFallbackToQQ = b.petFallbackToQQ
     if (['conservative', 'default', 'active'].includes(b.pacing)) extPatch.pacing = b.pacing
+    // 素材打分模型：与「按聊天选模型」同款结构校验（provider+model 都有才算数；传空对象/坏值 = 清除）
+    if (b.scoringModel !== undefined) extPatch.scoringModel = normalizeSelection(b.scoringModel) || {}
     if (Object.keys(extPatch).length) patch.ext = { purpose: extPatch }
     const spPatch = {}
     for (const k of ['awakeFrom', 'awakeTo', 'maxPerDay']) if (Number.isFinite(b[k])) spPatch[k] = Math.max(0, Math.floor(b[k]))
