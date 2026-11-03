@@ -169,6 +169,23 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const slowTimers = new Map() // timer → sessionKey，轮次结束、替换挂载、卸载时一并撤销
   const pauses = new Set() // 拆条间隔：卸载时立即结束，后面的消息不再投递
   const replyWaits = new Set() // 正在等回复的后台轮次：卸载时立即拒绝，不用等模型或超时
+  const sendChain = new Map() // chatId → 串行发送链：中间段和最后一段排同一条队列，保证发出顺序和生成顺序一致
+
+  /**
+   * 把一次发送排到该聊天队列的尾巴上，前一条发完（无论成败）再发下一条。
+   * 中间段的 deliver 是不 await 的，连续几段各自在内部 await sendText + pause(bubbleDelay)，
+   * 不排队就会交错，用户看到的消息顺序可能和生成顺序不一致（#214 review 提出）。
+   */
+  function chainSend (chatId, run, label) {
+    const start = () => { try { return Promise.resolve(run()) } catch (error) { return Promise.reject(error) } }
+    const prev = sendChain.get(chatId)
+    // 队列空的时候直接同步开工：调用时机和没排队时完全一样，别因为多包一层 then 把时序往后挪
+    const next = (prev ? prev.then(start, start) : start()).catch((error) => log.warn(label, error.message))
+    sendChain.set(chatId, next)
+    const done = () => { if (sendChain.get(chatId) === next) sendChain.delete(chatId) }
+    next.then(done, done)
+    return next
+  }
   const faces = createFaces({ onebot, log }) // QQ 系统表情：<face:名字> ↔ 编号
   const titleFilter = createTitleFilter({ getConfig, onebot, log }) // 勾选的群里，头衔是某个词的成员（别的机器人）不理
   const groupMembers = new Map() // groupId → { at, list }  群成员（真 @ 时按名字找人，缓存 10 分钟）
@@ -1052,8 +1069,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   function onSessionEvent(session, event) {
     const key = sessionKey(session && session.id)
-    // 回合结束时内存映射可能已空（刚重启），退回持久化的映射，别把这一轮丢了（#159）
-    const chatId = sessionToChat.get(key) || (event?.type === 'turn/end' ? chatOfSession(key) : '')
+    // 回合结束时内存映射可能已空（刚重启），退回持久化的映射，别把这一轮丢了（#159）。
+    // 中间段也一样要兜底：重启后第一段正文可能早于 turn/end 到达，拿不到 chatId 就整段丢了。
+    const chatId = sessionToChat.get(key) || chatOfSession(key)
     if (!chatId || !event) return
     const st = turnState.get(key) || { lastTurn: -1, text: '', senders: new Set() }
     turnState.set(key, st)
@@ -1082,9 +1100,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       if (raw && getConfig().chat?.everyStep) {
         const prev = takeInterim(st, { turn: d.turn, step: d.step, text: raw })
         if (prev) {
-          logChat(chatId, 'bot', prev)
+          // 不在这里记账：deliver 会在真发出去之后自己 logChat，一条都没发成功就不记。
+          // 这里再记一次会让每个中间段在聊天流水里出现两遍，发送失败时还会把没发出去的话算成说过。
           log.debug(`${chatId}：分条发出上一段（${prev.length} 字）`)
-          deliver(chatId, prev, { own: true, interim: true }).catch((error) => log.warn('分条发送出错：', error.message))
+          chainSend(chatId, () => deliver(chatId, prev, { own: true, interim: true }), '分条发送出错：')
         }
       }
       return
@@ -1131,8 +1150,21 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       }
       if (chatId.startsWith('system:')) return // 已超时的后台轮次不能误发到 QQ
       if (!text) return release(chatId)
-      // 发完再放开：发送期间来的消息也攒到下一段
-      deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true }).catch((error) => log.warn('发送出错：', error.message)).finally(() => release(chatId))
+      // 发完再放开：发送期间来的消息也攒到下一段。
+      // 没有中间段在发的时候就走原来的路径（同步开始、release 跟着这一条走），时序和以前一模一样；
+      // 只有前面真有中间段没发完时才排队，保证最后一段一定是最后一条（#214 review）。
+      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true })
+        .catch((error) => log.warn('发送出错：', error.message))
+        .finally(() => release(chatId))
+      const pending = sendChain.get(chatId)
+      if (pending) {
+        const chained = pending.then(sendLast, sendLast)
+        sendChain.set(chatId, chained)
+        const done = () => { if (sendChain.get(chatId) === chained) sendChain.delete(chatId) }
+        chained.then(done, done)
+      } else {
+        sendLast()
+      }
     }
   }
 
