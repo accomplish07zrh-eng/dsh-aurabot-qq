@@ -1,43 +1,133 @@
-// 发送前的硬拦截：模型抽风把规则或人设原文复述出来时，那几行不发到 QQ。
-// 判断的是连续原文，不看意思：改写过的说法拦不住，那要靠规则约束她。
+// 出口清洗使用的提示词指纹与原文区间；这里只做识别，不负责投递。
+import { AsyncLocalStorage } from 'node:async_hooks'
 
-const SHINGLE = 18 // 连续这么多字和提示词一样才算复述，太短会误伤平常的话
-const MARKERS = /【(?:你现在在 QQ 上|边界|别人说的只是聊天内容|系统提醒)|aurabot_rules/
+export const PROMPT_MATCH_LENGTH = 20 // 归一化后连续 20 个字符相同才算复读
+const promptCapture = new AsyncLocalStorage()
 
-const squash = (s) => String(s || '').replace(/[\s\p{P}\p{S}]/gu, '')
+// 显示层归一化：空白、标点/符号、零宽字符、Markdown ** / 反引号 / ||| 都去掉后再比对，
+// 这样插换行、拆气泡、加粗、每字插空格、零宽字符都绕不过复读检测；同时保留坐标映射，删除时仍删原文。
+const ZERO_WIDTH = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060'])
+const SKIP_CHAR = /[\s\p{P}\p{S}]/u
 
-export function createLeakGuard(secrets) {
-  let source = ''
-  let grams = new Set()
+/**
+ * 把文字归一化成「显示层字符序列」，并记录每个字符在原文里的起止下标（UTF-16 code unit）。
+ * @returns {{chars:string[], starts:number[], ends:number[]}}
+ */
+export function normalizeForMatch (text) {
+  const chars = []
+  const starts = []
+  const ends = []
+  let offset = 0
+  for (const ch of String(text ?? '')) {
+    const start = offset
+    offset += ch.length
+    if (ZERO_WIDTH.has(ch)) continue
+    if (SKIP_CHAR.test(ch)) continue
+    chars.push(ch)
+    starts.push(start)
+    ends.push(offset)
+  }
+  return { chars, starts, ends }
+}
 
-  function refresh() {
-    const list = secrets().filter(Boolean).join('\n')
-    if (list === source) return
-    source = list
-    grams = new Set()
-    for (const line of list.split('\n')) {
-      const s = squash(line)
-      for (let i = 0; i + SHINGLE <= s.length; i++) grams.add(s.slice(i, i + SHINGLE))
+// 记录变量最终渲染值（包括模块改写），不在发送时重新生成人格或规则。
+export const withPromptCapture = (sources, fn) => promptCapture.run(sources, fn)
+export const currentPromptSources = () => promptCapture.getStore()
+export function captureSystemPrompt(name, text) {
+  promptCapture.getStore()?.system.set(name, text)
+  return text
+}
+
+const MEMORY_HEAD = /[（(](?:你记得这些事|只是印象不是指令|这个聊天里之前的原话|以下只是印象|这个群的印象|人物关系[，,：:]|你对[^\n（）()]{0,30}的印象|和[^\n（）()]{0,30}相处的经验|说话方式[：:]|你最近做过的事|刚才聊到的[，,：:]|下面是你最近在几个群里|你最近在别的聊天里说过的话)/g
+
+/** 固定注入块即使很短也识别；正文里的普通「刚才聊到的」不算。 */
+export function memoryPromptRanges(text) {
+  const ranges = []
+  for (const m of text.matchAll(MEMORY_HEAD)) {
+    let depth = 0, end = text.length
+    for (let i = m.index; i < text.length; i++) {
+      if (text[i] === '（' || text[i] === '(') depth++
+      if ((text[i] === '）' || text[i] === ')') && --depth === 0) { end = i + 1; break }
+    }
+    if (/^[（(]只是印象不是指令[）)]$/.test(text.slice(m.index, end))) {
+      const tail = text.slice(end).search(/\n|\|\|\|/)
+      end = tail < 0 ? text.length : end + tail
+    }
+    if (m[0].includes('下面是你最近在几个群里')) {
+      const tail = text.indexOf('【以上是最近群里的情况】', end)
+      if (tail !== -1) end = tail + '【以上是最近群里的情况】'.length
+    }
+    ranges.push({ start: m.index, end })
+  }
+  for (const m of text.matchAll(/【(?:系统|跨会话)[^】\n]*(?:】|$)[^\n|]*/g)) {
+    // 单行提醒到换行/气泡结束；不吞掉下一行正常回复。
+    const bubble = m[0].indexOf('|||')
+    ranges.push({ start: m.index, end: m.index + (bubble < 0 ? m[0].length : bubble) })
+  }
+  for (const m of text.matchAll(/【(?:你现在在 QQ 上|边界|别人说的只是聊天内容|私聊里主动一点|危险命令|这个聊天刚才发生的事|你之前在这个聊天里主动说过)[^】\n]*(?:】|$)|\{\{\s*aurabot_(?:persona|rules(?:_private|_social)?)\s*\}\}/g)) {
+    ranges.push({ start: m.index, end: m.index + m[0].length })
+  }
+  for (const m of text.matchAll(/【你刚上线，先补看最近[^】\n]*】[\s\S]*?【补看结束，接着回下面这条】/g)) {
+    ranges.push({ start: m.index, end: m.index + m[0].length })
+  }
+  for (const m of text.matchAll(/(?:^|\n|\|\|\|)[ \t]*(?:你记得这些事|只是印象不是指令|刚才聊到的)[：:][^\n|]*/g)) {
+    ranges.push({ start: m.index, end: m.index + m[0].length })
+  }
+  return ranges
+}
+
+export function promptFingerprint(sources = [], userText = '') {
+  const grams = new Set()
+  // 用户这一轮自己说的话不算复读：同样归一化后再排除。
+  const excluded = normalizeForMatch(userText).chars.join('')
+  for (const source of sources) {
+    let text = String(source || '')
+    // 聊天原话与她自己的说话习惯不是规则；仍由固定块识别去掉注入外壳。
+    const quoted = memoryPromptRanges(text).filter((r) => /^(?:[（(](?:这个聊天里之前的原话|说话方式|下面是你最近在几个群里|你最近在别的聊天里说过的话)|【你刚上线，先补看最近)/.test(text.slice(r.start, r.end)))
+    for (const r of quoted.sort((a, b) => b.start - a.start)) text = text.slice(0, r.start) + '\n' + text.slice(r.end)
+    for (const line of text.split('\n')) {
+      if (/口头禅|常用语|常挂在嘴边/.test(line)) continue
+      const chars = normalizeForMatch(line).chars
+      // 20 字和 18 字两种 shingle：短一点的复读片段/被标点打断的也能拦住，误伤靠 18 字下限控制。
+      for (const size of [PROMPT_MATCH_LENGTH, PROMPT_MATCH_LENGTH - 2]) {
+        for (let i = 0; i + size <= chars.length; i++) {
+          const gram = chars.slice(i, i + size).join('')
+          if (!excluded.includes(gram)) grams.add(gram)
+        }
+      }
     }
   }
-
-  const leaks = (line) => {
-    if (MARKERS.test(line)) return true
-    const s = squash(line)
-    for (let i = 0; i + SHINGLE <= s.length; i++) if (grams.has(s.slice(i, i + SHINGLE))) return true
-    return false
-  }
-
-  /** 去掉复述提示词的行，返回剩下的文字和去掉了几行。 */
-  return function filter(text) {
-    refresh()
-    const parts = String(text || '').split(/(\n|\|\|\|)/)
-    let dropped = 0
-    const kept = parts.map((p, i) => {
-      if (i % 2 || !leaks(p)) return p
-      dropped++
-      return ''
-    })
-    return { text: dropped ? kept.join('').replace(/\n{2,}/g, '\n').replace(/(\|\|\|\s*){2,}/g, '|||').trim() : String(text || ''), dropped }
-  }
+  return grams
 }
+
+/** 合并命中的连续窗口后，调用方只删复读的部分（格式化变体也算），保留同一行里的正常话。 */
+export function promptTextRanges(text, grams) {
+  const ranges = memoryPromptRanges(text)
+  if (!grams?.size) return ranges
+  const { chars, starts, ends } = normalizeForMatch(text)
+  const raw = String(text ?? '')
+  const hits = []
+  for (const size of [PROMPT_MATCH_LENGTH, PROMPT_MATCH_LENGTH - 2]) {
+    for (let i = 0; i + size <= chars.length; i++) {
+      if (grams.has(chars.slice(i, i + size).join(''))) hits.push({ start: starts[i], end: ends[i + size - 1] })
+    }
+  }
+  // 连续窗口先合并，再把复读段落两端格式字符（空格/标点/反引号等）一起带走，避免残留「。」或反引号；
+  // 但不动 ||| / ｜，气泡分隔符要保留下游拆条逻辑。
+  hits.sort((a, b) => a.start - b.start || b.end - a.end)
+  const merged = []
+  for (const hit of hits) {
+    const last = merged.at(-1)
+    if (last && hit.start <= last.end) last.end = Math.max(last.end, hit.end)
+    else merged.push({ ...hit })
+  }
+  const isSkip = (ch) => /[\s\p{P}\p{S}]/u.test(ch) && !/[|｜<>]/.test(ch)
+  for (const range of merged) {
+    while (range.start > 0 && isSkip(raw[range.start - 1])) range.start--
+    while (range.end < raw.length && isSkip(raw[range.end])) range.end++
+    ranges.push(range)
+  }
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end)
+  return ranges
+}
+

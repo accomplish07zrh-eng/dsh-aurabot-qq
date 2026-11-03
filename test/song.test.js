@@ -33,6 +33,15 @@ test('挑歌：钢琴版、伴奏这类排到最后，点歌时本来就要钢�
   assert.ok(studio.VOCAL_MIN_DB < -40)
 })
 
+test('清唱：不带伴奏输入，翻唱照常混音', () => {
+  const dry = studio.mixArgs({ vocals: 'v.wav', vol: 1, iv: 0.8, out: 'o.mp3' })
+  assert.equal(dry.filter((a) => a === '-i').length, 1)
+  assert.ok(!dry.join(' ').includes('amix'))
+  const full = studio.mixArgs({ vocals: 'v.wav', inst: 'i.wav', vol: 1, iv: 0.8, out: 'o.mp3' })
+  assert.equal(full.filter((a) => a === '-i').length, 2)
+  assert.ok(full.join(' ').includes('amix'))
+})
+
 test('音色列表：models 目录里的 .pth，配同名 .index', () => {
   const dir = mkdtempSync(join(tmpdir(), 'voices-'))
   for (const n of ['voiceB.pth', 'voiceA.pth', 'added_IVF_voiceA.index', 'readme.txt']) writeFileSync(join(dir, n), 'x')

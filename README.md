@@ -111,6 +111,8 @@ dsh plugin --profile <profile> add github:aureth-labs/dsh-aurabot-qq
 - **默认全关**：总开关关 + 试运行开，不手动打开一句都不会发到 QQ
 - **分场景权限**：主人私聊用完整工具；群聊和别人的私聊**不挂任何本机工具**；敏感操作（改资料、发文件、点歌、生图等）要求「这一轮说话的人全是主人」
 - **执行层兜底**：危险终端命令默认要你在 QQ 里回「确认」；QQ 要授权时可以在私聊回「确认」批准（可关）；插件卸载/重载会清掉等待中的确认和定时器
+- **管理接口只许本机**：面板的所有管理接口（改配置、装模块、取联动密钥、下载桌宠客户端包）默认只接受本机回环访问，并带跨站（CSRF）防护。远程管理要在面板「安全防护」页显式开 `security.panelRemoteAccess`，**并且**在反向代理层再加一道认证（Basic Auth / OAuth）
+- **放反代必须配两件事**（面板「安全防护」页）：① `security.trustedProxy` 填反代地址——插件判断请求来源只看 TCP 对端地址，反代部署时对端永远是反代自己，不填的话所有访问都被当成「本机」，管理接口对反代流量**形同虚设**（且要求反代追加 `X-Forwarded-For`）；② `security.publicHostname` 填面板对外域名——跨站防护把它算作同源，否则远端打开面板一保存就会被 403。反代请**只放行面板需要的精确路径**，不要整段 `/aurabot/api/*` 放行——那会把没有独立鉴权的模块接口一起暴露出去
 - **隐私边界**：主人私聊里的内容不会被带进群聊/别人的私聊；记忆按聊天来源隔离；社交场景只回忆当前聊天的事
 - **数据都在本地**：`%USERPROFILE%\.dsh\plugins-data\aurabot\`（配置、人格、表情、日记、记忆、日志、你的模块）；换电脑用面板「系统 → 备份」打成 zip 带走
 
@@ -119,7 +121,7 @@ dsh plugin --profile <profile> add github:aureth-labs/dsh-aurabot-qq
 | 分组 | 页面 |
 |---|---|
 | 概览 | 状态、日志、日志级别 |
-| 说话 | 连接、人格、权限、群聊、模型、语音、表情包、画图、心情与记忆 |
+| 说话 | 连接、人格、权限、群聊、模型、语音、表情包、画图、心情与记忆、人物记忆 |
 | 生活 | QQ 空间、B 站、翻唱、主动搭话、桌宠、模块市场 |
 | 系统 | 工作区、备份、关于、更新 |
 
@@ -227,6 +229,6 @@ QQ 交流群：安装踩坑、用法讨论、想法都在这（提问尽量带�
 
 [MIT](LICENSE)
 
-参考了 [Yuuyuko-uu](https://github.com/Yuuyuko-uu) 的 dsh-qq-bridge、dsh-speak-up、dsh-feiyu-mood、dsh-fish-memory 等插件（MIT）在 DSH 插件机制上踩过的坑；没有复制它们的代码。感谢所有贡献者、模块作者和群里一起折腾的朋友。
+参考了 [Yuuyuko-uu](https://github.com/Yuuyuko-uu) 的 dsh-qq-bridge、dsh-speak-up、dsh-feiyu-mood、dsh-fish-memory 等插件（MIT）在 DSH 插件机制上踩过的坑；没有复制它们的代码。人物记忆（人物画像、群印象、分层记忆、人物关系）的设计来自 [Emotionana](https://github.com/Emotionana) 的人像记忆库 persona-memory。感谢所有贡献者、模块作者和群里一起折腾的朋友。
 
 <div align="center"><sub>Made with 🐟 by the Aurabot community</sub></div>

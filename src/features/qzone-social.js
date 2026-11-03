@@ -2,13 +2,13 @@
 // 评论在专用的后台会话里按她的人格写；试运行时只记日志不发。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
-import { isSilence, stripMarkdown } from '../chat/reply.js'
+import { isSilence, stripMarkdown, cleanOutboundText } from '../chat/reply.js'
 
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
 /** 模型写的评论：去掉 Markdown、只要第一段、限长；不想评返回 ''。 */
-export function cleanComment(text, max = 60) {
-  const t = stripMarkdown(String(text || '')).replace(/\|\|\|/g, ' ').replace(/<[^>]+>/g, '').trim()
+export function cleanComment(text, max = 60, options) {
+  const t = stripMarkdown(cleanOutboundText(text, options)).replace(/\|\|\|/g, ' ').replace(/<[^>]+>/g, '').trim()
   if (!t || isSilence(t)) return ''
   const first = t.split(/\n+/).map((s) => s.trim()).filter(Boolean).slice(0, 2).join(' ')
   return first.length > max ? first.slice(0, max) : first
@@ -63,7 +63,7 @@ export function createQzoneSocial({ getConfig, onebot, hub, log, memory }) {
 
   async function write(prompt) {
     const out = await hub.runSystemTurn('qzone-social', 'QQ · 空间互动', `【空间互动，不是聊天，这一轮不会发到聊天里】\n${prompt}\n\n只输出评论正文本身，一两句、口语、不超过 40 个字，别加引号和前缀；不想评就只回 [沉默]。`, { timeoutMs: 120000 })
-    return cleanComment(out)
+    return cleanComment(out, 60, { warn: (message) => log.warn(`空间评论：${message}`) })
   }
 
   function record(s, item, counts = true) {

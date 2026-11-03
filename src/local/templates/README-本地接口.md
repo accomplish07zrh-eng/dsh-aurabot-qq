@@ -27,7 +27,10 @@
 - 返回：音频文件路径（wav / mp3 / silk），或 `{ file }`
 
 ### image.mjs
-- 参数：`{ prompt, size, outDir, log }`（`size` 形如 `"1024x1024"`，`prompt` 已带上面板里的固定风格）
+- 参数：`{ prompt, size, image?, outDir, log }`（`size` 形如 `"1024x1024"`，`prompt` 已带上面板里的固定风格）
+- `image` 是可选参考图的纯 base64，不带 `data:` 前缀；来自当前聊天收到 / 引用的图或她自己的画作。没传时照常文生图，传了就必须使用参考图。
+- 支持参考图时，在脚本顶层加 `export const supportsImage = true`，并把 `image` 接到服务的图生图接口（模板用 SD WebUI 的 `img2img` / `init_images`）。已有脚本不会自动覆盖，需要自行适配。
+- 没声明支持，或服务本身不支持时，应报「这个生图服务不支持参考图」，不能忽略 `image` 继续文生图。
 - 返回：图片 `Buffer`，或 `{ buffer }` / `{ file }` / `{ base64 }` / `{ url }`
 
 ### song-convert.mjs

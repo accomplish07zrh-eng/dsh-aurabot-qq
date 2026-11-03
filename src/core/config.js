@@ -34,7 +34,15 @@ export const DEFAULTS = {
   files: { enabled: true, maxMB: 50, imageByPath: true, dirs: [] },
   // 危险命令确认（可选保护，默认关）：她在私聊里执行删根目录/格式化/关机/下载后直接执行等
   // 终端命令前，先发 QQ 私聊问主人，回复「确认」才执行；超时或「取消」就拦下。
-  security: { dangerConfirm: false, ssrfMode: 'strict' },
+  // panelRemoteAccess：允许远端（非回环）访问管理接口；默认 false = 只有本机能管。
+  // trustedProxy：可信反向代理地址（逗号分隔）；只有请求确实从这些地址进来，才采信
+  //   X-Forwarded-For 的最后一跳作为真实来源。留空 = 从不相信任何转发头（最安全）。
+  // publicHostname：面板经反代对外时的域名（如 panel.example.com）；CSRF 同源校验把
+  //   这个域名的 Origin 也算同源。留空 = 只有回环 Origin 算同源。
+  security: { dangerConfirm: false, ssrfMode: 'strict', panelRemoteAccess: false, trustedProxy: '', publicHostname: '' },
+  // DeepSeek 峰谷省钱模式（默认关，现有行为不变）：打开后只把「不着急的后台模型调用」尽量挪到谷时，
+  // 聊天回复/工具/审批/定时任务本身不变。offPeakHolidays 是中国法定节假日（北京时间日期 'YYYY-MM-DD'）。
+  cost: { offPeak: false, offPeakHolidays: [] },
   update: { unstable: null }, // 订阅不稳定版本（beta、rc）；null = 没选过，按正在用的版本定
   snowluma: {
     dir: 'C:\\Aurabot\\snowluma', // 主人自己下载解压到这里（EULA 不允许自动部署）
@@ -63,8 +71,9 @@ export const DEFAULTS = {
     stylePrompt: '', // 每次生图自动加在前面的风格描述
     ownerOnly: true, // 只有主人能让她画
     seeOwn: true, // 「让她画完自己看一眼」：开着才把画好的图交给她看
+    img2img: true, // 允许参考聊天图片 / 自己的画作来改画
     galleryShown: 20, // 面板「她的画作」显示最近几张（1~50；只影响显示，不删文件）
-    // 自定义接法：url 里可以用 {prompt} {model} {size} {width} {height}；params 是参数名/值（值里也能用这些占位符）
+    // 自定义接法：url 里可以用 {prompt} {model} {size} {width} {height} {image}（参考图 base64）；params 是参数名/值（值里也能用这些占位符）
     custom: { method: 'GET', url: '', bodyType: 'json', responsePath: '', params: [] },
     // 实验性订阅接法；登录令牌独立保存在数据目录，不进入配置。
     codex: { model: 'gpt-image-2', quality: 'auto', background: 'auto' },
@@ -230,7 +239,14 @@ export const DEFAULTS = {
   },
   mood: { enabled: true, halfLifeHours: 3, judge: false, base: 60 }, // base：心情基线（0~100 里算「平常」的那个值）；judge：每轮聊完用模型判一次心情（更准，每轮多一次很短的调用）；关着用关键词
   chat: { seedHistory: false, seedHistoryCount: 20 }, // seedHistory：新会话第一次说话时先补最近几条历史（默认关）
-  memory: { enabled: true, recallCount: 6, dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, compress: true, compressAfterDays: 14, instantCommands: true, groupMemory: true, searchRrf: true, extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: { enabled: false, baseUrl: '', model: '', apiKey: '' } }, // extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
+  memory: {
+    enabled: true, recallCount: 6, recallMode: 'always', recallTriggers: ['上次', '上回', '之前', '以前', '那天', '那次', '还记得', '记不记得', '说过', '提过', '答应', '约好', '那时候'],
+    dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'], keepChatlogDays: 7, keepChatlogSet: false, mergeGroups: false, compress: true, compressAfterDays: 14, instantCommands: true, groupMemory: true, searchRrf: true,
+    profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
+    shortTerm: true, shortTermHours: 2, shortTermIdleMinutes: 3, shortTermChars: 150,
+    gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { 1: 7, 2: 30, 3: 90 },
+    extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: { enabled: false, baseUrl: '', model: '', apiKey: '' },
+  }, // extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
   song: {
     enabled: false,
     root: '', // 翻唱环境目录，留空 = 自动（老安装 C:\Aurabot\rvc，新安装在用户目录下）
@@ -282,6 +298,14 @@ const bool = (v, d) => (typeof v === 'boolean' ? v : d)
 const qq = (v) => String(v ?? '').replace(/\D/g, '')
 const qqList = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split(/[\s,，;；]+/)).map(qq).filter(Boolean))]
 const hhmm = (v, d) => (/^\d{1,2}:\d{2}$/.test(String(v)) ? String(v) : d)
+// 严格校验 'YYYY-MM-DD'（面板手填/配置文件手改都可能乱），非法日期当没填。
+const dateKey = (v) => {
+  const s = String(v ?? '').trim()
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return ''
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? s : ''
+}
 // 请求头：正常是字符串（一行一个）；手写成对象 / 数组时展开成同样的多行文本，
 // 免得下游按行解析时认不出来，静默把头全丢掉。
 const headerLines = (v) => {
@@ -326,6 +350,15 @@ export function normalize(raw) {
   if (!isObj(c.security)) c.security = {}
   c.security.dangerConfirm = bool(c.security.dangerConfirm, false)
   c.security.ssrfMode = c.security.ssrfMode === 'loose' ? 'loose' : 'strict'
+  // 远端管理开关与可信反代：放 security 段（顶层对象，不会被下面「ext 只留对象」的规则删掉）
+  c.security.panelRemoteAccess = bool(c.security.panelRemoteAccess, false)
+  c.security.trustedProxy = String(c.security.trustedProxy || '').trim()
+  c.security.publicHostname = String(c.security.publicHostname || '').trim().toLowerCase()
+  // DeepSeek 峰谷省钱模式：默认关；节假日列表去重、只留合法的 'YYYY-MM-DD'（北京时间日期）
+  if (!isObj(c.cost)) c.cost = {}
+  c.cost.offPeak = bool(c.cost.offPeak, false)
+  const rawHolidays = Array.isArray(c.cost.offPeakHolidays) ? c.cost.offPeakHolidays : String(c.cost.offPeakHolidays || '').split(/[\n,，;；\s]+/)
+  c.cost.offPeakHolidays = [...new Set(rawHolidays.map(dateKey).filter(Boolean))].sort().slice(0, 60)
   c.update = { unstable: typeof c.update?.unstable === 'boolean' ? c.update.unstable : null }
   c.files.enabled = bool(c.files.enabled, true)
   c.files.maxMB = num(c.files.maxMB, 50, 1, BIG)
@@ -496,6 +529,16 @@ export function normalize(raw) {
   c.chat.seedHistory = bool(c.chat.seedHistory, false)
   c.chat.seedHistoryCount = num(c.chat.seedHistoryCount, 20, 1, BIG)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, BIG)
+  c.memory.recallMode = c.memory.recallMode === 'trigger' ? 'trigger' : 'always'
+  c.memory.recallTriggers = [...new Set((Array.isArray(c.memory.recallTriggers) ? c.memory.recallTriggers : String(c.memory.recallTriggers || '').split(/[\n,，;；]+/)).filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 40)).filter(Boolean))].slice(0, 100)
+  for (const k of ['chatImpression', 'gistEnabled', 'shortTerm']) c.memory[k] = bool(c.memory[k], true)
+  c.memory.dislikeSilence = num(c.memory.dislikeSilence, 0.85, 0, 1)
+  c.memory.shortTermHours = num(c.memory.shortTermHours, 2, 0.1, BIG)
+  c.memory.shortTermIdleMinutes = num(c.memory.shortTermIdleMinutes, 3, 0, BIG)
+  c.memory.shortTermChars = Math.round(num(c.memory.shortTermChars, 150, 1, BIG))
+  for (const k of ['profileFieldChars', 'profilePeople', 'profileChars', 'chatImpressionChars', 'gistDays', 'impressionDays', 'gistDailyBatches']) c.memory[k] = Math.round(num(c.memory[k], DEFAULTS.memory[k], 0, BIG))
+  if (!isObj(c.memory.tierDays)) c.memory.tierDays = {}
+  for (const k of ['1', '2', '3']) c.memory.tierDays[k] = Math.round(num(c.memory.tierDays[k], DEFAULTS.memory.tierDays[k], 0, BIG))
   // 老版本的 0 是当时的默认值，不是谁选的：升级后改成留 7 天，以后面板里再选 0 才算数
   const keepUnset = raw?.memory?.keepChatlogDays === 0 && !raw.memory.keepChatlogSet
   c.memory.keepChatlogDays = keepUnset ? 7 : num(c.memory.keepChatlogDays, 7, -1, 3650)
@@ -548,6 +591,7 @@ export function normalize(raw) {
   c.imageGen.enabled = bool(c.imageGen.enabled, false)
   c.imageGen.ownerOnly = bool(c.imageGen.ownerOnly, true)
   c.imageGen.seeOwn = bool(c.imageGen.seeOwn, true)
+  c.imageGen.img2img = bool(c.imageGen.img2img, true)
   if (!/^\d{3,4}x\d{3,4}$/.test(String(c.imageGen.size))) c.imageGen.size = '1024x1024'
   c.imageGen.galleryShown = Math.min(50, Math.max(1, Math.round(Number(c.imageGen.galleryShown) || 20)))
   c.imageGen.shape = ['her', 'square', 'portrait', 'landscape', 'wide'].includes(c.imageGen.shape) ? c.imageGen.shape : 'her'

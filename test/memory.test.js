@@ -20,7 +20,8 @@ const dsh = {
       if (system.includes('整理长期记忆') && text.includes('戒辣')) {
         const id = (text.match(/#(\w+) [^\n]*喜欢吃辣/) || [])[1]
         out = JSON.stringify([{ op: 'outdated', id, text: '小明戒辣了', about: '小明', importance: 0.6 }])
-      } else if (system.includes('人物小档案')) out = '小明是主人，最近戒辣了，爱钓鱼'
+      } else if (system.includes('整理自己的记忆')) out = '{"text":"我记得和对方聊过这些事情"}'
+      else if (system.includes('人物小档案')) out = '小明是主人，最近戒辣了，爱钓鱼'
       else if (system.includes('整理长期记忆')) out = text.includes('看海') ? '[{"text":"阿花周末去看海了","about":"阿花","about_qq":"30000003","importance":0.5}]' : text.includes('辣') ? '[{"text":"小明喜欢吃辣","about":"小明","importance":0.6}]' : '[]'
       else if (system.includes('{"insights"')) out = '{"insights":["他喜欢被吐槽"],"style":["消息很短，常一句话分几条发","爱用 hhh"]}'
       else if (system.includes('自然会被带上')) out = '["偶尔用 hhh"]'
@@ -160,7 +161,7 @@ test('想起来的记忆带时间；最近想起了什么有记录（含想不�
   mem.add({ text: '阿花最近爱晒太阳', about: '30000003', aboutName: '阿花', importance: 0.6, source: 'tool', chatId: 'private:30000003' })
   hubState.text = '阿花最近怎么样'
   const hint = mem.recallHint({ kind: 'private', userId: '30000003', chatId: 'private:30000003' }, '阿花最近怎么样')
-  assert.ok(hint.includes('[今天] [阿花(30000003)] 阿花'), hint)
+  assert.ok(hint.includes('[今天 私聊] [阿花(30000003)] 阿花'), hint)
   const log = mem.recalls()[0]
   assert.equal(log.where, 'private:30000003')
   assert.ok(log.hits.length && log.hits[0].why.length)

@@ -133,6 +133,26 @@ export interface Events {
   [custom: string]: (...args: any[]) => any
 }
 
+/** 平台是工具；确认平台账号对应的 QQ 后，才能写入和读取同一份私聊记忆。 */
+export interface MemoryModule {
+  [key: string]: any
+  /** 外部视频、帖子、网页用 seen；省略 kind 仍是原有做过的事。source 固定 event，仍存 items。
+   * seen 不作为事实、画像或相处经验来源，也不挂到 about 人物名下。 */
+  addEvent(args: {
+    text?: string; about?: string; aboutName?: string; tags?: string[]; importance?: number
+    saidAt?: number; chatId?: string; kind?: 'seen'
+    /** 仅保留这些字段，长度上限依次为 160 / 80 / 500 / 40 / 100 字符。 */
+    meta?: { title?: string; author?: string; url?: string; platform?: string; id?: string | number }
+  }): { ok: boolean; message?: string; id?: string; updated?: string }
+  /** 事实时间段可选；开始默认 saidAt；旧 invalidAt 读取时作为 validUntil。 */
+  add(args: { text: string; about?: string; aboutName?: string; chatId?: string; source?: string; importance?: number; tags?: string[]; saidAt?: number; validFrom?: number | string; validUntil?: number | string; [key: string]: any }): { ok: boolean; id?: string; updated?: string; message?: string }
+  update(id: string, patch: { text?: string; validFrom?: number | string | null; validUntil?: number | string | null; [key: string]: any }): { ok: boolean; item?: any; message?: string }
+  timeline(filters?: { kind?: 'gist' | 'seen'; platform?: string; chatId?: string; level?: number | string; about?: string }): Array<{ id: string; kind: 'gist' | 'seen'; platforms: string[]; displayText: string; [key: string]: any }>
+  /** 接聊天平台时用 noteVia；确认身份后写入同一个 QQ 的私聊流水，短期状态自动生效。 */
+  noteVia(args: { via: string; qq: string | number; who: 'user' | 'bot'; text: string; at?: number }): { ok: boolean }
+  contextVia(args: { qq: string | number; query?: string }): string
+}
+
 export interface Api {
   id: string
   source: 'builtin' | 'user'
@@ -183,6 +203,7 @@ export interface Api {
   onDispose(fn: () => void): Off
 
   // ---- 别的模块和插件内部 ----
+  use(id: 'memory'): MemoryModule | null
   use<T = any>(id: string): T | null
   lazy<T = any>(id: string): Partial<T>
   has(id: string): boolean

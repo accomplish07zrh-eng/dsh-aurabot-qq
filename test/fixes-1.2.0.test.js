@@ -84,7 +84,7 @@ test('聊天流水：群聊传入其他聊天也只能搜索当前群，不能�
   assert.match(otherGroup.message, /没找到/)
 })
 
-test('常驻记忆：超过 600 字截断并加省略号，恰好 600 字保留原文', (t) => {
+test('常驻记忆：超过 900 字截断并加省略号，恰好 900 字保留原文', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'aurabot-fixes-memory-'))
   const oldDir = process.env.AURABOT_DATA_DIR
   process.env.AURABOT_DATA_DIR = dir
@@ -98,35 +98,35 @@ test('常驻记忆：超过 600 字截断并加省略号，恰好 600 字保留�
   const chat = { kind: 'private', userId: 'fictional-person', chatId: 'private:fictional-person' }
   const key = 'qq:fictional-person'
   mem.setProfile(chat.userId, '档'.repeat(190))
-  mem.setInsights(key, Array.from({ length: 8 }, (_, i) => `经验${i}${'甲'.repeat(27)}`))
+  mem.setInsights(key, Array.from({ length: 8 }, (_, i) => `经验${i}${'甲'.repeat(60)}`))
   const beforeStyle = mem.contextFor(chat, 'fictional-session')
-  assert.ok(beforeStyle.length < 600)
+  assert.ok(beforeStyle.length < 900)
   assert.doesNotMatch(beforeStyle, /…$/)
 
   mem.setStyle(key, Array.from({ length: 5 }, (_, i) => `风格${i}${'乙'.repeat(37)}`))
   const long = mem.contextFor(chat, 'fictional-session')
-  assert.equal(long.length, 601, '600 字正文加一个省略号')
+  assert.equal(long.length, 901, '900 字正文加一个省略号')
   assert.ok(long.startsWith(beforeStyle + '\n'))
   assert.match(long, /说话方式/)
   assert.equal(long.at(-1), '…')
 
-  // 利用公开的 setInsights 微调长度，检查恰好 600 字和多一个字的边界。
+  // 利用公开的 setInsights 微调长度，检查恰好 900 字和多一个字的边界。
   mem.setStyle(key, [])
   mem.setInsights(key, ['丙'])
   const oneChar = mem.contextFor(chat, 'fictional-session')
-  const count = 600 - oneChar.length + 1
+  const count = 900 - oneChar.length + 1
   assert.ok(count > 0)
   mem.setInsights(key, ['丙'.repeat(count)])
   const exact = mem.contextFor(chat, 'fictional-session')
-  assert.equal(exact.length, 600)
+  assert.equal(exact.length, 900)
   assert.doesNotMatch(exact, /…$/)
 
   mem.setInsights(key, ['丙'.repeat(count + 1)])
   const over = mem.contextFor(chat, 'fictional-session')
-  assert.equal(over.length, 601)
+  assert.equal(over.length, 901)
   assert.equal(over.slice(0, 599), exact.slice(0, 599))
   assert.equal(over[599], '丙')
-  assert.equal(over[600], '…')
+  assert.equal(over[900], '…')
 })
 
 test('自动配表情：不随机的表情既不参与关键词匹配，也不参与随机兜底', (t) => {

@@ -3,6 +3,7 @@
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { fetchImage } from '../core/net.js'
 import { resolveAudience } from './qzone-audience.js'
+import { cleanOutboundText } from '../chat/reply.js'
 
 const toMin = (hhmm) => {
   const [h, m] = String(hhmm).split(':').map(Number)
@@ -34,7 +35,7 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage, c
 
   async function post(content, { images = [], visibility, beforeSend } = {}) {
     const cfg = getConfig()
-    const text = String(content || '').trim()
+    const text = cleanOutboundText(content, { warn: (message) => log.warn(`空间：${message}`) }).trim()
     if (!text) return { ok: false, message: '说说是空的' }
     // 面板定的范围说了算；单次请求只能收窄成「仅自己」，不能扩大。
     let audience

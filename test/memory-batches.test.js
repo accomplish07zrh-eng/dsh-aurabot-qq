@@ -1,7 +1,8 @@
 // 聊天流水按批提炼，跨整理、失败和重启都从已完成的位置接着做。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMemoryStore } from '../src/features/memory.js'
@@ -25,18 +26,19 @@ function setup(t, lines, day = dateKey(new Date())) {
       if (failOnce && text.includes(failOnce)) { failOnce = ''; throw new Error('模型暂时失败') }
       if (invalidOnce && text.includes(invalidOnce)) { invalidOnce = ''; yield { type: 'text-delta', text: '没有 JSON' } }
       else yield { type: 'text-delta', text: '[]' }
-    } else yield { type: 'text-delta', text: '{"insights":[],"style":[]}' }
+    } else if (system.includes('整理自己的记忆')) yield { type: 'text-delta', text: '{"text":"我记得和对方聊过这些事情"}' }
+    else yield { type: 'text-delta', text: '{"insights":[],"style":[]}' }
     yield { type: 'finish', reason: { kind: 'completed' } }
   } } }
   const hub = { chatLogDays: () => [...logs.keys()], chatLogOf: (d) => logs.get(d) || [], deleteChatLog: (d) => logs.delete(d) }
-  const cfg = normalize({ model: { provider: 'p', model: 'm' }, memory: { keepChatlogDays: 0, keepChatlogSet: true } })
+  const cfg = normalize({ model: { provider: 'p', model: 'm' }, memory: { keepChatlogDays: 0, keepChatlogSet: true, gistDailyBatches: 12 } })
   const make = () => createMemoryStore({ dsh, getConfig: () => cfg, hub, log })
   t.after(() => {
     if (old === undefined) delete process.env.AURABOT_DATA_DIR
     else process.env.AURABOT_DATA_DIR = old
     rmSync(dir, { recursive: true, force: true })
   })
-  return { make, logs, calls, day, fail: (s) => { failOnce = s }, invalid: (s) => { invalidOnce = s }, progress: () => JSON.parse(readFileSync(join(dir, 'memories.json'), 'utf8')).processed[day] }
+  return { make, logs, calls, day, fail: (s) => { failOnce = s }, invalid: (s) => { invalidOnce = s }, progress: () => readMemoryState(dir).processed[day] }
 }
 const linesOf = (n) => Array.from({ length: n }, (_, i) => ({ chatId: `private:${10000001 + i % 3}`, who: '朋友', text: `消息-${i}-结束` }))
 const ids = (calls) => calls.flat().sort((a, b) => a - b)

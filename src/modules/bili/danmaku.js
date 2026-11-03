@@ -3,6 +3,7 @@ import { loginSessionKey } from '../../bili/login-pause.js'
 import { prepareDanmaku } from '../../bili/api.js'
 import { readJson, writeJson } from '../../core/store.js'
 import { clipText } from '../../core/text.js'
+import { cleanOutboundText } from '../../chat/reply.js'
 
 const modes = { scroll: 1, top: 5, bottom: 4 }
 const dayKey = (at) => new Intl.DateTimeFormat('sv-SE').format(new Date(at))
@@ -93,7 +94,11 @@ export function createDanmaku(api, { prepare = prepareDanmaku, now = Date.now, r
   async function send(raw, { auto = false } = {}) {
     if (busy) return { ok: false, message: '上一条弹幕还在处理' }
     let input
-    try { input = danmakuInput(raw) } catch (error) { return { ok: false, message: error.message } }
+    try {
+      const text = cleanOutboundText(raw?.text, { warn: (message) => api.log.warn(`B 站弹幕：${message}`) })
+      if (!text.trim() && String(raw?.text || '').trim()) return { ok: true, silent: true, message: '本轮保持沉默，未发送弹幕' }
+      input = danmakuInput({ ...raw, text })
+    } catch (error) { return { ok: false, message: error.message } }
     busy = true
     const key = session()
     const accountKey = quotaKey()

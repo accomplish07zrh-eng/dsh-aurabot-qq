@@ -165,7 +165,7 @@ export default {
 
 | | |
 |---|---|
-| `hub` | 聊天中枢：`deliver(chatId, text)` `sendText` `sendVoice(chatId, 文字)` `sendVoiceFile(chatId, 音频文件)` `sendImage` `sendSticker(chatId, 名字)` `sendSegments` `runSystemTurn(名字, 标题, 提示词)` `pushToSession(...)` `resetChat(chatId)` `groupName(群号)` `turnHasOwner(sessionId)`（只表示本轮有人是主人，别拿它做权限门，用下面的 `turnSendersAllOwner`） `turnSendersAllOwner(sessionId)` `chatOfSession(sessionId)` `stats()` `sessions()` `chatLogOf(日期)` `lastChatAt` `lastOwnerChatAt` …… |
+| `hub` | 聊天中枢：`deliver(chatId, text)` `sendText` `sendVoice(chatId, 文字)` `sendVoiceFile(chatId, 音频文件)` `sendImage` `sendSticker(chatId, 名字)` `sendSegments` `runSystemTurn(名字, 标题, 提示词)` `pushToSession(...)` `resetChat(chatId)` `groupName(群号)` `turnHasOwner(sessionId)`（只表示本轮有人是主人，别拿它做权限门，用下面的 `turnSendersAllOwner`） `turnSendersAllOwner(sessionId)` `referenceImage(chat, 'last' 或 'quote')`（取当前聊天最近收到 / 引用的图，返回 Buffer，沿用短期缓存） `chatOfSession(sessionId)` `stats()` `sessions()` `chatLogOf(日期)` `lastChatAt` `lastOwnerChatAt` …… |
 | `onebot` | QQ 网关：`call(action, params, { timeoutMs })`、`state` |
 | `snowluma` | SnowLuma 管理：`running()` `start()` `stop()` `detect()` …… |
 | `local` | 本地接口（「本地接口」页那四项）：`active(slot)` `call(slot, 参数)` |
@@ -310,7 +310,7 @@ return function Panel({ settings, save, toast }) {
 | `stickers` | 表情包 | `library()` `match(名字)` `pickForReply(文字)` `collect(消息段, chatId)` `addFromBuffer(buf, { name, tags })` `rename(md5, 名字, 标签)` `remove(md5)` `segmentFor(item)` |
 | `voice` | 语音 | `speak(文字) → { file, engine }` |
 | `mood` | 心情 | `state()` `label()` `nudge(变化量, 原因)` `effects()` `contextLine()` |
-| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `topicScore(文字)` `profiles()` `consolidate()` …… |
+| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance, kind, meta })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `noteVia({ via, qq, who, text, at })` `contextVia({ qq, query })` `topicScore(文字)` `profiles()` `consolidate()` …… |
 | `qq-tools` | 基础 QQ 工具 | （只有工具：`qq_chat_history`、`qq_send_message`、`qq_send_file`） |
 | `imagegen` | 生图 | `enabled()` `generate(描述) → Buffer` |
 | `diary` | 空间日记 | `writeDiary()` `post(正文, { images, visibility })` `remove(tid)` `history()` `nextTime()` |
@@ -318,6 +318,14 @@ return function Panel({ settings, save, toast }) {
 | `speakup` | 主动搭话 | `fire(原因)` `state()` |
 | `bili` | B 站 | `watch(链接)` `comment(链接, 文字)` `run()` `checkReplies()` `account()` `state()` |
 | `song` | 翻唱 | `request({ song, pitch, chatId })` `search(关键词)` `status()` `install()` |
+
+平台是工具，同一个人只有一套记忆。模块确认平台账号对应的 QQ 后，可以用 `noteVia` 把双方对话写进同一份私聊流水（`who` 为 `user` 或 `bot`，`at` 是可选的毫秒时间戳），用 `contextVia` 取得这位 QQ 用户的私聊记忆上下文。模块用 `noteVia` 写入流水后，开启的短期状态会自动生效。核对不了身份的账号不要写入，也不要读取记忆。
+
+接 B 站、抖音、帖子、网页等外部内容平台时，看见或分享的内容用 `memory.addEvent({ kind: 'seen', text, meta: { title, author, url, platform, id } })`。它表示「她看过的内容」，不是作者对她说的话，不参与人物事实、画像、相处经验或长期印象的提炼。仍存于 `memories.json` 的 `items`，`source` 仍为 `event`。不要再把内容里的 `remember` 结果另存成普通事实或经历。
+
+`addEvent` 的 `kind` 可省略（原有「做过的事」），或传 `'seen'`。`meta` 可省略，只保留 title / author / url / platform / id 五个可选字符串，分别最多 160 / 80 / 500 / 40 / 100 字符，其他字段丢弃；`id` 也接受数字并转成字符串。`seen` 不挂到某个人名下；`text` 可记感受，省略时用标题。时间轴平台选项从 `meta.platform` 和聊天梗概保留的 `via` 自动汇总，不要求固定平台名。写入真实聊天平台的双方对话则用上面的 `noteVia`，不要用 `seen` 代替聊天流水。
+
+事实 `add` / `update` 支持可选 `validFrom`、`validUntil`（毫秒时间戳或明确年月日），开始时间默认取 `saidAt`。老记录只有 `invalidAt` 时，按它作为结束时间读取；新事实使旧事实过时时，保留 `supersededBy`，结束时间取新事实的 `saidAt`。`related` 是最多 6 个事实 id 的双向引用，由记忆库维护。面板返回的 `validityText`、`displayText`、`relatedItems` 是显示用的派生值，不重复存储。`timeline({ kind?, platform?, chatId?, level?, about? })` 汇总聊天梗概和 `seen`，其中 `kind` 为 `gist` 或 `seen`，平台来自每条返回值的 `platforms`。
 
 聊天中枢需要的时候会去找 `stickers`（发表情、偷表情）、`voice`（发语音）、`mood`（心情影响表情 / 语音频率）、`memory`（群聊插话判断）。
 这几个被关掉，对应的事就不做（想发语音时改发文字）；被替换，就用你的——所以替换时**导出的函数名要和上表一样**。

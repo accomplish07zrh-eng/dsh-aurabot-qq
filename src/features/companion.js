@@ -3,6 +3,7 @@
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel } from '../core/llm.js'
 import { cleanText, clipText } from '../core/text.js'
+import { shouldDeferBackground } from '../core/offpeak.js'
 
 // ---------------- 心情 ----------------
 // 0~100，基线 60。聊天里的话按关键词推一推，随时间按半衰期回到基线。
@@ -69,6 +70,7 @@ export function parseMoodJudge(out) {
 }
 
 export function createMood({ getConfig, dsh, log }) {
+  let judgeDeferLogged = false
   const file = () => dataDir('mood.json')
   /** 当前配置的基线：衰减、初始值、兜底、判断提示词四处统一读它。 */
   const base = () => {
@@ -105,8 +107,10 @@ export function createMood({ getConfig, dsh, log }) {
      * 聊天里的一句话。direct = 是对她说的（私聊、@她、叫她）；owner = 主人说的。
      * 不是对她说的群聊只算三成，主人的话算 1.5 倍。
      */
-    observe(text, who, { direct = true, owner = false } = {}) {
-      if (getConfig().mood.judge && dsh) return // 开了模型判断就不用关键词
+    observe(text, who, { direct = true, owner = false, silent = false } = {}) {
+      // 开了模型判断就不用关键词；但峰时省钱模式会把模型判断推迟到谷时，这时退回关键词，心情照样有起伏
+      const modelJudge = getConfig().mood.judge && dsh && !shouldDeferBackground(getConfig())
+      if (silent ? !modelJudge : modelJudge) return
       const d0 = scoreText(text)
       if (!d0) return
       const d = Math.round(d0 * (direct ? 1 : 0.3) * (owner ? 1.5 : 1))
@@ -119,6 +123,12 @@ export function createMood({ getConfig, dsh, log }) {
     async judge({ userText, reply, who = '对方', origin = 'user' }) {
       const cfg = getConfig().mood
       if (!cfg.enabled || !cfg.judge || !dsh) return null
+      // 峰谷省钱：峰时不跑这次额外模型调用，observe() 已经用关键词兜底；谷时恢复模型判断
+      if (shouldDeferBackground(getConfig())) {
+        if (!judgeDeferLogged) { log?.debug?.('峰时：心情模型判断推迟到谷时（先用关键词）'); judgeDeferLogged = true }
+        return null
+      }
+      judgeDeferLogged = false
       const v = current()
       const scene = origin === 'speak-up' ? `这一轮是她自己想${who}了、主动去找${who}说话（不是被叫来干活）` : `这一轮是${who}在跟她说话`
       try {
@@ -152,7 +162,7 @@ export function createMood({ getConfig, dsh, log }) {
 
 // ---------------- 主动搭话 ----------------
 
-export function createSpeakUp({ getConfig, hub, log, isMuted }) {
+export function createSpeakUp({ getConfig, hub, log, isMuted, memory }) {
   const file = () => dataDir('speakup.json')
   const load = () => readJson(file(), () => ({ day: '', count: 0, nextAt: 0, last: 0 }))
   const save = (s) => writeJson(file(), s)
@@ -206,7 +216,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted }) {
     const today = new Date().toDateString()
     s.friends = s.friends || {}
     for (const qq of c.allow || []) {
-      if (qq === String(cfg.ownerQQ) || isMuted?.(`private:${qq}`)) continue
+      if (String(qq) === String(cfg.ownerQQ) || isMuted?.(`private:${qq}`) || memory?.()?.dislikes?.(qq)) continue
       const f = s.friends[qq] || (s.friends[qq] = {})
       if (f.day !== today) Object.assign(f, { day: today, count: 0 })
       if (!f.nextAt) schedule(f, c)

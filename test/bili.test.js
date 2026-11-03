@@ -76,6 +76,7 @@ function fakes({ decisions, replyText = '是呀 我也觉得', cfgOver = {}, pos
   const posted = []
   const sent = []
   const events = []
+  const eventRecords = []
   const facts = []
   const fakeApi = {
     nav: async () => ({ isLogin: true, uname: '肥鱼小号' }),
@@ -103,16 +104,16 @@ function fakes({ decisions, replyText = '是呀 我也觉得', cfgOver = {}, pos
   const memory = {
     list: () => [{ text: '主人喜欢猫', about: '10000001' }],
     recentEvents: () => [],
-    addEvent: (e) => events.push(e.text),
+    addEvent: (e) => { eventRecords.push(e); events.push(e.text) },
     add: (m) => facts.push(m.text),
   }
   const cfg = normalize({ enabled: true, dryRun: false, ownerQQ: '10000001', bili: { enabled: true, cookie: 'SESSDATA=x; bili_jct=y', perRun: 2, maxCommentsPerDay: 1, ...cfgOver } })
   const b = duty.createBili({ getConfig: () => cfg, hub, memory, log: { info() {}, warn() {}, debug() {} }, api: fakeApi })
-  return { b, posted, sent, events, facts }
+  return { b, posted, sent, events, eventRecords, facts }
 }
 
 test('刷一轮：看视频、按每天上限评论、分享给主人、记成她的经历', async () => {
-  const { b, posted, sent, events, facts } = fakes({ decisions: [
+  const { b, posted, sent, events, eventRecords, facts } = fakes({ decisions: [
     { i: 1, feeling: '米饭好香', comment: '看饿了', share: '', remember: '有个米饭大赛很好玩' },
     { i: 2, feeling: '猫好可爱', comment: '猫猫好会', share: '主人你看这只猫会做饭！', remember: '' },
   ] })
@@ -124,9 +125,14 @@ test('刷一轮：看视频、按每天上限评论、分享给主人、记成�
   assert.equal(sent.length, 1)
   assert.equal(sent[0].chatId, 'private:10000001')
   assert.match(sent[0].text, /会做饭！\nhttps:\/\/www\.bilibili\.com\/video\/BV1/)
-  assert.ok(events.some((e) => e.includes('在B站看了《米饭大赛》') && e.includes('米饭好香')))
+  const seen = eventRecords.filter((e) => e.kind === 'seen')
+  assert.equal(seen.length, 2)
+  assert.equal(seen[0].meta.title, '米饭大赛')
+  assert.equal(seen[0].meta.platform, 'bili')
+  assert.match(seen[0].meta.url, /bilibili\.com\/video\//)
+  assert.match(seen[0].text, /米饭好香.*有个米饭大赛很好玩/)
   assert.ok(events.some((e) => e.includes('下评论：看饿了')))
-  assert.deepEqual(facts, ['有个米饭大赛很好玩'])
+  assert.deepEqual(facts, [], '看见的内容留在 seen 中，不另存成事实')
   assert.equal(b.state().comments, 1)
   // 看过的不会再看
   const r2 = await b.run({ force: true })
