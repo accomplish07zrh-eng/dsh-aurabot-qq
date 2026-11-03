@@ -301,6 +301,9 @@ export function ensurePurposeDay(state, now = Date.now()) {
 export function ensurePurposeSchedule(state, { now = Date.now(), config = DEFAULT_PURPOSE_CONFIG, random = Math.random } = {}) {
   if (!state.nextFireAt) {
     let at = now + Math.max(MINUTE, Math.min(config.initialDelayMinMs, config.gapMinMs));
+    // 重启后的首次排程同样吃时段学习（老状态里已有的直方图不该只在 gap 排程里生效）。
+    const shift = bestReplyHourShift(at, state.replyHours);
+    if (shift > 0) at += shift;
     if (inQuietHours(at, config)) at = quietEndAfter(at, config) + Math.round(random() * 20 * MINUTE);
     state.nextFireAt = at;
   }
@@ -2355,12 +2358,22 @@ export function parseFeelings(text, { need = '' } = {}) {
   const drives = {};
   let moodDelta = 0;
   let any = false;
-  const re = /([喜欲意玩学装陪关心分享自我创作体验]|play|learn|install|connect|care|share|identity|create|consume)\s*([+-])\s*(\d+(?:\.\d+)?)/g;
-  let m;
-  while ((m = re.exec(raw.toLowerCase())) !== null) {
-    const key = m[1];
-    const sign = m[2] === '-' ? -1 : 1;
-    const value = Math.min(0.5, Math.max(0, Number(m[3]) || 0)) * sign;
+  // 先按完整词匹配（「关心/分享/自我/创作/体验」这些多字需要词不被字符类拆开吃掉），
+  // 再退回单字/英文词；同一处文本只结算一次，避免「关心」被重复拆成 关+心。
+  const multi = /(?<word>关心|分享|自我|创作|体验|play|learn|install|connect|care|share|identity|create|consume)\s*(?<sign>[+-])\s*(?<value>\d+(?:\.\d+)?)/g;
+  const single = /(?<word>[喜欲意玩学装陪])\s*(?<sign>[+-])\s*(?<value>\d+(?:\.\d+)?)/g;
+  const tokens = [];
+  for (const m of String(raw ?? '').toLowerCase().matchAll(multi)) tokens.push(m);
+  for (const m of String(raw ?? '').toLowerCase().matchAll(single)) {
+    // 单字命中若落在某个完整词的区间内，说明已被完整词结算过，跳过
+    const overlap = tokens.some((t) => m.index >= t.index && m.index < t.index + t[0].length);
+    if (!overlap) tokens.push(m);
+  }
+  tokens.sort((a, b) => a.index - b.index);
+  for (const m of tokens) {
+    const key = m.groups.word;
+    const sign = m.groups.sign === '-' ? -1 : 1;
+    const value = Math.min(0.5, Math.max(0, Number(m.groups.value) || 0)) * sign;
     if (!Number.isFinite(value) || value === 0) continue;
     any = true;
     if (key === '喜') {

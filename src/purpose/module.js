@@ -188,7 +188,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       materials: materials.items, now, lastMasterAt, personaBias: persona.bias,
       needFeedback: state.needFeedback, halfLifeHours: config.driveHalfLifeHours,
     })
-    const { goals, observations } = formGoalHypotheses({
+    const { goals, observations, needFeedback } = formGoalHypotheses({
       // 跟进的排程和次数只属于事实，不再生成另一份目标或观察账本。
       materials: materials.items.filter((m) => m.kind !== 'memory-follow-up'), goals: state.goals, observations: state.observations,
       drives, now, lastMasterAt, config, roleName: selfName(cfg), persona,
@@ -197,7 +197,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       materials: materials.items, now, roleName: selfName(cfg), config,
       drives, history: state.history, lastMasterAt,
     })
-    return { materials, persona, lastMasterAt, drives, goals, observations, seeds, followUp }
+    return { materials, persona, lastMasterAt, drives, goals, observations, seeds, needFeedback, followUp }
   }
 
   const friendName = (friend) => {
