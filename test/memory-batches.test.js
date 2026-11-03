@@ -1,7 +1,8 @@
 // 聊天流水按批提炼，跨整理、失败和重启都从已完成的位置接着做。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMemoryStore } from '../src/features/memory.js'
@@ -37,7 +38,7 @@ function setup(t, lines, day = dateKey(new Date())) {
     else process.env.AURABOT_DATA_DIR = old
     rmSync(dir, { recursive: true, force: true })
   })
-  return { make, logs, calls, day, fail: (s) => { failOnce = s }, invalid: (s) => { invalidOnce = s }, progress: () => JSON.parse(readFileSync(join(dir, 'memories.json'), 'utf8')).processed[day] }
+  return { make, logs, calls, day, fail: (s) => { failOnce = s }, invalid: (s) => { invalidOnce = s }, progress: () => readMemoryState(dir).processed[day] }
 }
 const linesOf = (n) => Array.from({ length: n }, (_, i) => ({ chatId: `private:${10000001 + i % 3}`, who: '朋友', text: `消息-${i}-结束` }))
 const ids = (calls) => calls.flat().sort((a, b) => a - b)

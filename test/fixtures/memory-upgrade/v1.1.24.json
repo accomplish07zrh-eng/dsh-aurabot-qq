@@ -1,0 +1,31 @@
+{
+  "items": [
+    { "id": "1124-auto-1", "text": "小明在春天开始学习陶艺。", "about": "30000001", "aboutName": "小明", "source": "auto", "chatId": "private:30000001", "importance": 0.35, "at": 1775952000000, "hits": 4, "hitDays": 3, "lastHit": 1779840000000 },
+    { "id": "1124-auto-2", "text": "小明每周去工作室练习拉坯。", "about": "30000001", "aboutName": "小明", "source": "auto", "chatId": "private:30000001", "importance": 0.35, "at": 1776816000000, "hits": 0 },
+    { "id": "1124-auto-3", "text": "小明把第一只杯子送给了姐姐。", "about": "30000001", "aboutName": "小明", "source": "auto", "chatId": "private:30000001", "importance": 0.8, "at": 1777680000000, "hits": 0 },
+    { "id": "1124-auto-4", "text": "小明准备继续学釉色搭配。", "about": "30000001", "aboutName": "小明", "source": "auto", "chatId": "private:30000001", "importance": 0.7, "at": 1778544000000, "hits": 0 },
+    { "id": "1124-tool", "text": "主人明确让我记住：周末想安静看书。", "about": "10000001", "aboutName": "主人", "tags": ["约定"], "source": "tool", "chatId": "private:10000001", "importance": 0.4, "at": 1769904000000, "hits": 1 },
+    { "id": "1124-event", "text": "陪小雨听完了一场音乐会。", "about": "30000002", "aboutName": "小雨", "tags": ["经历"], "source": "event", "chatId": "", "importance": 0.75, "at": 1772496000000, "hits": 0 },
+    { "id": "1124-diary", "text": "今天写日记时想起大家一起种花。", "about": "", "aboutName": "", "tags": ["日记"], "source": "diary", "chatId": "", "importance": 0.45, "at": 1775088000000, "hits": 0 },
+    { "id": "1124-panel", "text": "面板原文：喜欢雨天、乌龙茶和猫 🐈\n保留换行。", "about": "30000002", "aboutName": "小雨", "source": "panel", "chatId": "", "importance": 0.2, "at": 1767225600000, "hits": 0 },
+    { "id": "1124-import", "text": "旧档案导入：小雨从前住在北方。", "about": "30000002", "aboutName": "小雨", "source": "import", "importance": 0.3, "at": 1768089600000, "history": [{ "text": "小雨住在北方", "at": 1767225600000 }] },
+    { "id": "1124-outdated", "text": "小明以前喜欢很甜的饮料。", "about": "30000001", "source": "auto", "chatId": "private:30000001", "importance": 0.5, "at": 1772496000000, "invalidAt": 1779408000000, "supersededBy": "1124-current" },
+    { "id": "1124-current", "text": "小明现在喜欢不加糖的茶。", "about": "30000001", "source": "auto", "chatId": "private:30000001", "importance": 0.7, "at": 1779408000000, "hits": 0, "history": [{ "text": "小明喜欢微甜的茶。", "at": 1776816000000 }] },
+    { "id": "1124-import-core", "text": "导入兼容字段：这段约定要一直保留。", "about": "10000001", "source": "import", "tier": "core", "at": 1767225600000, "importance": 0.9, "legacyLabel": "旧档案扩展字段" },
+    { "id": "1124-import-detail", "text": "导入兼容字段：小雨喜欢用纸笔画画。", "about": "30000002", "source": "import", "tier": "detail", "at": 1772496000000, "importance": 0.4 }
+  ],
+  "profiles": {
+    "30000001": { "text": "小明是学陶艺的老朋友，喜欢不加糖的茶。" },
+    "30000002": { "text": "小雨爱种花，聊天时不急着追问。", "name": "小雨", "at": 1779408000000 }
+  },
+  "insights": {
+    "qq:30000001": [{ "id": "1124-insight", "text": "他累的时候陪着就好", "at": 1778544000000 }],
+    "group:777": [{ "id": "1124-group-insight", "text": "大家喜欢轻松分享作品", "at": 1779408000000 }]
+  },
+  "insightNames": { "qq:30000001": "小明", "group:777": "手作群" },
+  "styles": { "qq:30000001": ["消息很短", "常分几条说"], "group:777": ["爱用表情"], "self": ["偶尔说呀"] },
+  "processed": { "2026-05-30": 37 },
+  "runs": { "04:00": "2026-05-31" },
+  "lastConsolidate": { "day": "2026-05-31", "at": 1780185600000, "added": 2, "insights": 1, "days": 1, "forgot": 0, "profiles": 0 },
+  "rev": 24
+}

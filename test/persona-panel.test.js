@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { Script } from 'node:vm'
 import { normalize } from '../src/core/config.js'
 import { createMemoryStore } from '../src/features/memory.js'
+import { readMemoryState } from './helpers/memory-state.js'
 import memoryModule from '../src/modules/memory/index.js'
 
 const OWNER = '10000001'
@@ -62,7 +63,7 @@ function setup(t) {
   }
   const cfg = normalize({ ownerQQ: OWNER, memory: { dailyConsolidate: false } })
   const make = () => createMemoryStore({ getConfig: () => cfg, hub, log })
-  const state = () => JSON.parse(readFileSync(file, 'utf8'))
+  const state = () => readMemoryState(dir)
   t.after(() => {
     if (previous === undefined) delete process.env.AURABOT_DATA_DIR
     else process.env.AURABOT_DATA_DIR = previous

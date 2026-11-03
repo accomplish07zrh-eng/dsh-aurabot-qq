@@ -2,7 +2,8 @@
 // 只读审计发现的三条路径：主人私聊里关于某人的记忆不能进别人的聊天、群聊不能翻不在场的人、合并不能跨来源。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync } from 'node:fs'
+import { readMemoryState } from './helpers/memory-state.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -112,7 +113,7 @@ function mergeDsh (getDir, mode) {
           let foreign = []
           if (mode.crossAttempt) {
             try {
-              const items = JSON.parse(readFileSync(join(getDir(), 'memories.json'), 'utf8')).items
+              const items = readMemoryState(getDir()).items
               // 只挑“不在当前组里”的条目：整组都来自另一个来源时，模型想把它们和本组并在一起
               if (!own.some((id) => items.find((m) => m.id === id)?.chatId === OWNER_CHAT)) {
                 foreign = items.filter((m) => m.chatId === OWNER_CHAT && !own.includes(m.id)).slice(0, 2).map((m) => m.id)

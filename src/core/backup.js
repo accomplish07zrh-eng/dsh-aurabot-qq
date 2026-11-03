@@ -9,6 +9,7 @@ import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib'
 import { homedir } from 'node:os'
 import { dirname, join, parse, relative, resolve, sep } from 'node:path'
 import { dataDir, dshHome } from './store.js'
+import { captureMemoryBackup, MEMORY_FILES } from '../features/memory-store.js'
 
 const MANIFEST = 'aurabot-backup.json'
 const SCHEMA = 1
@@ -22,7 +23,7 @@ const STORE_EXT = /\.(png|jpe?g|gif|webp|mp3|mp4|m4a|ogg|opus|webm|zip|7z|rar|pt
  * 带过去也用不了。市场模块不打包，恢复后按名单重新下载。
  */
 const SKIP = ['backups', '.restore', '.restore-sessions', '.restore-pending.json', '.restore-modules.json', 'logs', 'tmp', 'voice-cache', 'archive-cache', 'douyin/edge-profile']
-const skipped = (rel) => SKIP.some((s) => rel === s || rel.startsWith(s + '/')) || rel.split('/').includes('node_modules') || rel.endsWith('.tmp')
+const skipped = (rel) => SKIP.some((s) => rel === s || rel.startsWith(s + '/')) || rel.split('/').includes('node_modules') || rel.endsWith('.tmp') || rel === 'memory.sqlite-shm' || rel.startsWith('memory.sqlite.migrating')
 
 const backupsDir = () => dataDir('backups')
 const stageDir = () => dataDir('.restore')
@@ -105,7 +106,11 @@ export async function createBackup({ version = '', workspaceDir = '', now = new 
   const final = join(backupsDir(), name)
   const tmp = final + '.tmp'
   const market = []
-  const files = await walk(root, '', [], market)
+  const walked = await walk(root, '', [], market)
+  // 在同一个同步临界区取主库、WAL 和 JSON 回退状态，后续异步打包只读快照。
+  // 记忆快照失败必须让备份失败，不能把缺一半的记忆库当成功交给用户。
+  const memoryFiles = captureMemoryBackup(root)
+  const files = [...walked.filter((rel) => !MEMORY_FILES.includes(rel)), ...memoryFiles.keys()]
   const sessionsRoot = workspaceDir ? join(dshHome(), 'sessions', sessionDirName(workspaceDir)) : ''
   const sessionFiles = sessionsRoot && existsSync(sessionsRoot) ? await walk(sessionsRoot) : []
   const total = files.length + sessionFiles.length
@@ -132,13 +137,17 @@ export async function createBackup({ version = '', workspaceDir = '', now = new 
     for (const [base, rel, prefix] of queue) {
       const path = join(base, ...rel.split('/'))
       try {
-        const st = await stat(path)
-        if (st.size > MAX_FILE) { tooBig.push(rel); continue }
-        const data = await readFile(path)
+        const captured = base === root ? memoryFiles.get(rel) : undefined
+        const st = captured ? { size: captured.length, mtime: now } : await stat(path)
+        if (st.size > MAX_FILE) {
+          if (captured) throw new Error('记忆数据库过大，无法完整备份')
+          tooBig.push(rel); continue
+        }
+        const data = captured || await readFile(path)
         await put(prefix + rel, data, st.mtime)
         bytes += data.length
       } catch (error) {
-        if (error.message.includes('4GB')) throw error
+        if (error.message.includes('4GB') || (base === root && memoryFiles.has(rel))) throw error
         tooBig.push(rel) // 文件正好被占用或删掉：记下来告诉主人，不让整个备份失败
       }
       onProgress({ done: ++done, total })
@@ -273,6 +282,14 @@ export function applyPendingRestore(now = Date.now()) {
   const root = dataDir()
   const keep = join(backupsDir(), `pre-restore-${now}`)
   const files = listFiles(stage)
+  // 整套记忆一起替换：恢复旧 JSON 时不能让现有 SQLite 遮住它；恢复新库时也
+  // 不能把另一代 WAL 接到新库上，或让旧的 JSON 回退标记覆盖恢复结果。
+  if (existsSync(join(stage, 'memory.sqlite')) || existsSync(join(stage, 'memories.json'))) {
+    for (const name of MEMORY_FILES) {
+      const current = join(root, name)
+      if (existsSync(current) && statSync(current).isFile()) move(current, join(keep, name))
+    }
+  }
   for (const from of files) {
     const rel = relative(stage, from)
     const to = join(root, rel)
