@@ -66,6 +66,18 @@ const sessionKey = (id) => {
 // 模拟测试：这里面发出去的消息只记下来，不真发
 const captureStore = new AsyncLocalStorage()
 const failStore = new AsyncLocalStorage() // deliver 这一次里发失败的原因，好让调用方如实告诉她
+/**
+ * 一轮结束时该发到 QQ 的文字：只认「这一轮最后一条 assistant 消息」里的 text 块。
+ * 带工具调用的 assistant 消息是过程性发言（模型在调工具前写的计划/心里话），不是给用户看的回复；
+ * 如果把它当回复补发，就会出现「模型把自己的思考发出来」——这种情况宁可沉默，也不要把过程性文字发出去。
+ */
+export function assistantReplyText (message) {
+  if (!message || !Array.isArray(message.content)) return ''
+  const hasToolCall = message.content.some((b) => b && (b.type === 'tool-call' || b.type === 'tool_use'))
+  if (hasToolCall) return ''
+  return message.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n').trim()
+}
+
 export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildTools, contextProviders, onActivity, memoryScore, onMemoryCommand, onCommand, isMuted, dislikes, random = Math.random, moodEffects, localApi, hooks, availableModels, toolsGeneration, capabilitiesOf }) {
   // 心情对行为的影响（表情 / 语音概率、回复快慢、插话积极程度），没接就是 1
   const mood = () => (typeof moodEffects === 'function' ? moodEffects() : null) || { sticker: 1, voice: 1, delay: 1, chatty: 1 }
@@ -1051,11 +1063,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (event.type === 'assistant/message') {
       const d = event.data || {}
       if (d.interrupted) return
-      const t = textOf(d.message)
-      if (t) {
-        st.lastTurn = d.turn
-        st.text = t
-      }
+      // 最后一条 assistant 消息才是本轮回复；总是覆盖（空也覆盖），
+      // 否则最后一条是空的（或只有工具调用）时会拿上一条过程性文字补发，把思考发出去。
+      st.lastTurn = d.turn
+      st.text = assistantReplyText(d.message)
       return
     }
     if (event.type === 'turn/end') {
