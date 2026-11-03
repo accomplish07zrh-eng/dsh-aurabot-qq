@@ -5017,8 +5017,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function RemoteBackup({ toast }) {
       const [s, setS] = useState(null)
       const [form, setForm] = useState(null)
-      const set = (k) => (e) => setForm({ ...form, [k]: k === 'keep' ? Math.max(1, Math.round(Number(e.target.value) || 1)) : (k === 'enabled' || k === 'autoCreate' ? e.target.checked : e.target.value) })
-      const load = () => get('/backup/remote/state').then((st) => { setS(st); const v = st.remote || {}; setForm({ enabled: !!v.enabled, owner: v.owner || '', repo: v.repo || '', token: '', branch: v.branch || 'master', time: v.time || '03:30', keep: v.keep || 7, autoCreate: v.autoCreate !== false }) })
+      const set = (k) => (e) => setForm({ ...form, [k]: k === 'keep' ? Math.max(1, Math.round(Number(e.target.value) || 1)) : (k === 'enabled' || k === 'autoCreate' || k === 'forceOverwrite' ? e.target.checked : e.target.value) })
+      const load = () => get('/backup/remote/state').then((st) => { setS(st); const v = st.remote || {}; setForm({ enabled: !!v.enabled, owner: v.owner || '', repo: v.repo || '', token: '', branch: v.branch || 'master', time: v.time || '03:30', keep: v.keep || 7, autoCreate: v.autoCreate !== false, forceOverwrite: !!v.forceOverwrite }) })
       useEffect(() => { load() }, [])
       const running = Boolean(s && s.job && s.job.running)
       useEffect(() => { if (!running) return; const t = setInterval(load, 1000); return () => clearInterval(t) }, [running])
@@ -5031,7 +5031,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-small ab-muted', style: { marginBottom: 2 } }, label),
         Input(k, placeholder, type))
       return h(Card, { title: '云备份（Gitee 私有仓库）', desc: '每天到点自动打包一份备份，推到你自己的 Gitee 私有仓库，换电脑或坏盘时也能找回来。' },
-        h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, '⚠️ 仓库必须是「私有」的！备份里有你全部的聊天记录、记忆和账号凭证，推到公开仓库等于把它们挂到网上。下面照引导做就不会出错。'),
+        h('div', { className: 'ab-note warn', style: { marginBottom: 10 } }, '⚠️ 仓库必须是「私有」的！备份里有你全部的聊天记录、记忆和账号凭证，推到公开仓库等于把它们挂到网上。推送前会先向 Gitee 核实仓库确实是私有的，公开仓库一律拒绝推。'),
         h('div', { className: 'ab-flex', style: { alignItems: 'center' } },
           h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.enabled, onChange: set('enabled') }), '每天自动备份并推送'),
           form.enabled ? h('span', { className: 'ab-small ab-muted' }, '下次：' + (s && s.nextAt ? String(s.nextAt).slice(0, 16).replace('T', ' ') : '到点就跑')) : null),
@@ -5043,8 +5043,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           Field('Gitee 私人令牌', 'token', s && s.remote && s.remote.hasToken ? '已保存，留空就不改' : '下面第 2 步生成的那串', 'password'),
           Field('每天几点备份', 'time', '如 03:30'),
           Field('远端留几份', 'keep', '如 7')),
-        h('div', { className: 'ab-flex', style: { marginTop: 8, alignItems: 'center' } },
+        h('div', { className: 'ab-flex', style: { marginTop: 8, alignItems: 'center', flexWrap: 'wrap' } },
           h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.autoCreate, onChange: set('autoCreate') }), '仓库不存在时自动建（建的就是私有，推荐开）'),
+          h('label', { className: 'ab-small', style: { display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: form.forceOverwrite, onChange: set('forceOverwrite') }), '允许覆盖已有内容的仓库'),
           h('span', { className: 'ab-flex' },
             h(Btn, { small: true, kind: 'primary', disabled: running, onClick: async () => { const body = { ...form }; if (!body.token) delete body.token; after(await call('/backup/remote/config', body)) } }, '保存设置'),
             h(Btn, { small: true, disabled: running, onClick: async () => { if (!confirm('现在就把最新备份推到 Gitee？（不会重新打包，推 backups 里最新的一份）')) return; after(await call('/backup/push')) } }, running ? '推送中…' : '立即推送'))),

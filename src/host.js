@@ -77,7 +77,7 @@ export function apply(ctx) {
   let pushTimer = null // 云备份每日定时
   const getConfig = () => cfg
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
-  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token) }
+  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token) } // backup 令牌也按密钥脱敏（云备份）
   const setConfig = (next) => {
     const before = cfg
     cfg = saveConfig(next)
@@ -689,6 +689,7 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     unloaded = true
     clearTimeout(firstWatch)
+    if (pushTimer) { clearTimeout(pushTimer); pushTimer = null } // 云备份的每日定时也要收尾，别留悬空回调
     dangerGuard?.dispose()
     approvalRelay?.dispose()
     hub.dispose()
@@ -1392,7 +1393,7 @@ export function apply(ctx) {
     if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
     return next.toISOString()
   }
-  const remoteView = (r = cfg.backup?.remote || {}) => ({ enabled: !!r.enabled, owner: r.owner, repo: r.repo, branch: r.branch, time: r.time, keep: r.keep, autoCreate: r.autoCreate !== false, hasToken: Boolean(r.token) })
+  const remoteView = (r = cfg.backup?.remote || {}) => ({ enabled: !!r.enabled, owner: r.owner, repo: r.repo, branch: r.branch, time: r.time, keep: r.keep, autoCreate: r.autoCreate !== false, forceOverwrite: !!r.forceOverwrite, hasToken: Boolean(r.token) })
   route('/backup/remote/state', async () => ({ ok: true, remote: remoteView(), job: pushJob, nextAt: nextRemoteAt() }))
   route('/backup/remote/config', backupAction(async (req) => {
     const patch = { ...(await readBody(req)) }

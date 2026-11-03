@@ -308,6 +308,7 @@ export const DEFAULTS = {
       time: '03:30', // 每天几点自动备份并推送
       keep: 7, // 远端保留最近几份
       autoCreate: true, // 远端没有这个仓库时自动建一个私有的
+      forceOverwrite: false, // 允许覆盖「已有内容但不是本工具推的」仓库（清空远端历史重推）：面板显式勾选才开
     },
   },
   tabs: {}, // 面板记住的小偏好
@@ -710,18 +711,21 @@ export function normalize(raw) {
   c.song.pypiMirror = { '': 'auto', tuna: 'cn' }[c.song.pypiMirror] ?? c.song.pypiMirror
   if (!['auto', 'cn', 'off'].includes(c.song.pypiMirror)) c.song.pypiMirror = 'auto'
   c.song.root = String(c.song.root || '').trim()
-  // 云备份：owner/repo 去空格，令牌按密钥处理（SECRETS 里有登记）
+  // 云备份：owner/repo 去空格，令牌按密钥处理（SECRETS 里有登记）。
+  // owner/repo 只留 URL 白名单字符（@ : / ? # 空格等能改语义的直接去掉，push 时还有白名单硬校验兜底）；
+  // branch 拒 .. 与 - 开头，防 refspec/选项注入。
   c.backup = c.backup || {}
   if (!isObj(c.backup.remote)) c.backup.remote = { ...DEFAULTS.backup.remote }
   const br = c.backup.remote
   br.enabled = bool(br.enabled, false)
-  br.owner = String(br.owner || '').trim().replace(/^https?:\/\//i, '').replace(/^gitee\.com\//i, '').split(/[/?]/)[0].replace(/\.git$/, '').slice(0, 100)
-  br.repo = String(br.repo || '').trim().replace(/\.git$/, '').slice(0, 100)
+  br.owner = String(br.owner || '').trim().replace(/^https?:\/\//i, '').replace(/^gitee\.com\//i, '').split(/[/?]/)[0].replace(/\.git$/, '').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 100)
+  br.repo = String(br.repo || '').trim().replace(/\.git$/, '').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 100)
   br.token = String(br.token || '').trim()
-  br.branch = String(br.branch || '').trim().replace(/^refs\/heads\//, '').slice(0, 100) || 'master'
+  br.branch = String(br.branch || '').trim().replace(/^refs\/heads\//, '').replace(/[^A-Za-z0-9._/-]/g, '').replace(/^[.\-]+/, '').replace(/\.\.+/g, '.').slice(0, 100) || 'master'
   br.time = hhmm(br.time, '03:30')
   br.keep = Math.round(num(br.keep, 7, 1, 365))
   br.autoCreate = bool(br.autoCreate, true)
+  br.forceOverwrite = bool(br.forceOverwrite, false)
   if (!isObj(c.modules)) c.modules = {}
   for (const [id, m] of Object.entries(c.modules)) {
     if (!isObj(m)) { delete c.modules[id]; continue }
