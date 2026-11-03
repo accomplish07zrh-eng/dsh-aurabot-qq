@@ -426,7 +426,9 @@ export function apply(ctx) {
    * 但它们也不是 rebinding 载体，且有各自的鉴权层。
    */
   const hostAllowedForAdmin = (hostRaw) => {
-    const h = String(hostRaw || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/:\d+$/, '').replace(/\.$/, '')
+    // 复审 3·小建议：先剥端口再剥方括号。IPv6 回环 Host 是 `[::1]:5099`——
+    // 若先剥 `[` 再剥 `]`，结尾已是数字，`]` 剥不掉，端口剥完剩 `::1]`，会被 403。
+    const h = String(hostRaw || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '').replace(/\.$/, '')
     if (!h) return false
     if (h === 'localhost' || h.endsWith('.localhost')) return true
     if (isLoopbackAddr(h)) return true
@@ -1070,7 +1072,10 @@ export function apply(ctx) {
     handler: (req, res) => answer(res, async () => {
       // 【安全】这一条不走 route()，必须自己过面板闸：包内嵌 host.json（含 bearer 令牌），
       // 公网上谁都能无鉴权下到就等于把桌宠令牌送出去。CSRF 闸也要过（一致性；GET 本身不受影响）。
+      // 复审 3·P1-1：还必须过 Host 校验——此前手动注册路由漏了 adminHostBlocked，
+      // 实测 socket 回环 + `Host: evil.example` 的 GET 能拿到含令牌的 zip（DNS rebinding 载体）。
       if (panelBlocked(req, res)) return undefined
+      if (adminHostBlocked(req, res)) return undefined
       if (csrfBlocked(req, res)) return undefined
       const pet = use('pet')
       if (typeof pet?.clientPackage !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，打不了客户端包' }

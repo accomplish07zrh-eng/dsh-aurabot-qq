@@ -157,6 +157,22 @@ test('Host 允许名单：rebind 域名的 GET 请求必须 403（复审 2·P1-1
   const ok3 = await fake.call('/state', null, { host: 'panel.example.com' }, '127.0.0.1')
   assert.equal(ok3.status, 200, 'publicHostname 正常')
   api.setConfig({ ...api.getConfig(), security: { ...api.getConfig().security, publicHostname: '' } })
+  // 复审 3 点名补齐：/bridge/token（返回 bearer 令牌）与 /panel/pet/client-package
+  //（含令牌的 zip，手动注册路由）对异常 Host 必须同样 403——client-package 之前漏接 Host 校验。
+  const tokenEvil = await fake.call('/bridge/token', null, { host: 'evil.example' }, '127.0.0.1')
+  assert.equal(tokenEvil.status, 403, '/bridge/token 的异常 Host 必须拒绝')
+  const pkgEvil = await fake.call('/panel/pet/client-package', null, { host: 'evil.example' }, '127.0.0.1')
+  assert.equal(pkgEvil.status, 403, '/panel/pet/client-package 的异常 Host 必须拒绝')
+})
+
+test('Host 允许名单：IPv6 回环带端口的 Host 必须放行（复审 3·小建议回归）', async () => {
+  // 旧实现先剥 `[` 再剥 `]`：`[::1]:5099` 剥完端口剩 `::1]`，回环 Host 被误 403。
+  // 正确顺序是先剥端口再剥方括号。
+  const r = await fake.call('/state', null, { host: '[::1]:5099' }, '127.0.0.1')
+  assert.equal(r.status, 200, 'IPv6 回环 `[::1]:5099` 是本机面板，必须放行')
+  // 方括号之外的经典 rebinding Host 照旧拒绝
+  const evil = await fake.call('/state', null, { host: 'evil.example' }, '127.0.0.1')
+  assert.equal(evil.status, 403, '异常 Host 依旧拒绝')
 })
 
 test('Host 允许名单：反代场景缺 XFF 从 fail-open 兜成 fail-closed（复审 2·P1-1）', async () => {
