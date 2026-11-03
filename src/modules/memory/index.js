@@ -12,10 +12,11 @@ export default {
   version: '1.0.0',
   description: '长期记忆：记事、想起、每日整理、小档案和相处经验',
   tab: 'mood',
-  files: ['features/memory.js', 'features/memory-vector.js'],
+  files: ['features/memory.js', 'features/memory-store.js', 'features/memory-vector.js'],
   setup(api, { fetchImpl } = {}) {
     const { hub, http } = api.core
     const memory = createMemoryStore({ dsh: api.dsh, getConfig: api.config, hub, log: api.log, fetchImpl })
+    memory.list('') // 启动时完成旧 JSON 迁移，不必等第一条聊天或打开面板。
 
     api.context(({ chat, sessionId }) => (chat.kind === 'system' ? '' : memory.contextFor(chat, sessionId)))
     // #79：随消息变化的相关记忆放在「交给她的内容」里，不放进每轮都会追加的运行时上下文快照
@@ -96,7 +97,7 @@ export default {
     api.route('/memories', async (req) => ({ ok: true, items: memory.list(http.query(req).q || '').slice(0, 300), stats: memory.stats() }))
     api.route('/memory/add', async (req) => {
       const b = await http.body(req)
-      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel' })
+      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil })
     })
     api.route('/memory/update', async (req) => {
       const b = await http.body(req)
@@ -127,6 +128,10 @@ export default {
     api.route('/memory/gists', async (req) => {
       const q = http.query(req)
       return { ok: true, list: memory.gists({ chatId: q.chatId || '', level: q.level || '', about: q.about || '' }) }
+    })
+    api.route('/memory/timeline', async (req) => {
+      const { kind, platform, chatId, level, about } = http.query(req)
+      return { ok: true, list: memory.timeline({ kind, platform, chatId, level, about }) }
     })
     api.route('/memory/gists/delete', async (req) => memory.deleteGist((await http.body(req)).id))
     api.route('/profiles', async () => ({ ok: true, list: memory.profiles() }))

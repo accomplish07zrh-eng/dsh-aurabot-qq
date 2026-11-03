@@ -56,6 +56,7 @@ export function createLocal({ getConfig, log }) {
     try {
       // 带上修改时间：脚本改了就重新加载
       const mod = await import(pathToFileURL(file).href + '?v=' + statSync(file).mtimeMs)
+      if (slot === 'image' && args?.image && mod.supportsImage !== true) throw new Error('这个生图服务不支持参考图')
       const fn = mod.default || mod.run
       if (typeof fn !== 'function') throw new Error(`${spec.file} 里没有 export default 的函数`)
       mkdirSync(outDir(), { recursive: true })

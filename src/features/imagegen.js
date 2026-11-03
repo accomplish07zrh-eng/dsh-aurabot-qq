@@ -3,7 +3,9 @@
 //   ② custom —— 自己填接口：GET / POST、URL 模板（{prompt} 占位）、自定义参数名、从返回 JSON 里按路径取图
 // 地址和密钥由主人在面板里填；生成结果统一成 Buffer 交给 QQ 发出。
 
+import { lstatSync, readFileSync } from 'node:fs'
 import { fetchImage } from '../core/net.js'
+import { paintingPath } from './paintings.js'
 import { createCodexAuth } from './codex-auth.js'
 import { createCodexImage } from './codex-image.js'
 import { mimeOf } from '../chat/inbound.js'
@@ -53,20 +55,50 @@ function findImage (obj, depth = 0) {
   return null
 }
 
+/** 工具只接受聊天里的短期引用或图库文件名；绝不把模型给的路径 / URL 当图片读。 */
+export async function resolveDrawImage(image, { hub, chat }) {
+  if (image === undefined || image === null || image === '') return null
+  if (typeof image !== 'string') throw new Error('参考图只接受 last、quote 或画作文件名')
+  const ref = image.trim()
+  let buf
+  if (/^(last|最近|最近一张|最近发的图|对方最近发的图)$/i.test(ref)) {
+    buf = await hub.referenceImage(chat, 'last')
+  } else if (/^(quote|引用|引用消息里的图)$/i.test(ref)) {
+    buf = await hub.referenceImage(chat, 'quote')
+  } else {
+    if (!ref || /[\\/:\0]/.test(ref)) throw new Error('参考图只接受 last、quote 或画作文件名，不接受路径或网址')
+    const path = paintingPath(ref)
+    if (!path || !lstatSync(path).isFile()) throw new Error('找不到这张画作，请使用图库里的文件名')
+    buf = readFileSync(path)
+  }
+  if (!Buffer.isBuffer(buf) || !String(mimeOf(buf)).startsWith('image/')) throw new Error('参考图不是可用的图片')
+  return buf
+}
+
+const UNSUPPORTED_REFERENCE = '这个生图服务不支持参考图'
+function serviceError(status, message, image) {
+  const unsupported = [404, 405, 415, 501].includes(status)
+    || ([400, 422].includes(status) && /(?:(?:unsupported|not support|does not support|not available|unknown|unrecognized).*(?:image|edit|model)|(?:image|edit|model).*(?:unsupported|not support|does not support|not available)|不支持.*(?:图|编辑|模型)|(?:图|编辑|模型).*不支持)/i.test(message))
+  return new Error(image && unsupported ? UNSUPPORTED_REFERENCE : message)
+}
+
 /**
  * 自定义接口这一次要发什么（纯函数，方便单独测）。
  * 返回 { url, method, headers, body }。
  */
-export function customRequest (imageGen, prompt) {
+export function customRequest (imageGen, prompt, image) {
   const cp = imageGen.custom || {}
   const method = String(cp.method || 'GET').toUpperCase() === 'GET' ? 'GET' : 'POST'
   const { width, height } = dimsOf(imageGen.size)
-  const raw = { prompt, model: imageGen.model || '', size: imageGen.size || '', width, height }
-  const enc = { ...raw, prompt: encodeURIComponent(prompt) }
+  const raw = { prompt, model: imageGen.model || '', size: imageGen.size || '', width, height, image: image ? image.toString('base64') : '' }
+  const enc = { ...raw, prompt: encodeURIComponent(prompt), image: encodeURIComponent(raw.image) }
   const params = (Array.isArray(cp.params) ? cp.params : [])
     .map((p) => ({ key: String(p && p.key != null ? p.key : '').trim(), value: p ? p.value : '' }))
     .filter((p) => p.key)
 
+  // URL 的 fragment 不会发给服务端；重复参数按最终实际发送的值判断。
+  const sentParams = method === 'POST' ? Object.values(Object.fromEntries(params.map((p) => [p.key, p.value]))) : params.map((p) => p.value)
+  if (image && ![String(cp.url || '').split('#')[0], ...sentParams].some((v) => String(v || '').includes('{image}'))) throw new Error(UNSUPPORTED_REFERENCE)
   let url = fill(cp.url, enc)
   if (method === 'GET' && params.length) {
     const q = params.map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(fill(p.value, raw))}`).join('&')
@@ -104,21 +136,23 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
   const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
-  async function generate(prompt, { shape } = {}) {
+  async function generate(prompt, { shape, image } = {}) {
     const config = getConfig().imageGen
     const c = { ...config, size: imageSizeFor(shape, config) }
+    if (image != null && (!Buffer.isBuffer(image) || !String(mimeOf(image)).startsWith('image/'))) throw new Error('参考图不是可用的图片')
+    if (image && c.img2img === false) throw new Error('参考图功能已关闭')
     // 本地接口接管：用用户自己电脑上的画图服务
     if (local?.active('image')) {
       const { toImageBuffer } = await import('../local/local.js')
       const t = Date.now()
-      const buf = await toImageBuffer(await local.call('image', { prompt: [c.stylePrompt, prompt].filter(Boolean).join('，'), size: c.size }))
+      const buf = await toImageBuffer(await local.call('image', { prompt: [c.stylePrompt, prompt].filter(Boolean).join('，'), size: c.size, ...(image ? { image: image.toString('base64') } : {}) }))
       log.info(`本地画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
       return buf
     }
     if (!c.enabled) throw new Error('生图还没开启')
     const full = [c.stylePrompt, prompt].filter(Boolean).join('，')
     const t = Date.now()
-    const buf = c.provider === 'codex' ? await viaCodex(c, full, { shape }) : c.provider === 'custom' ? await viaCustom(c, full) : await viaOpenAI(c, full)
+    const buf = c.provider === 'codex' ? await viaCodex(c, full, { shape, image }) : c.provider === 'custom' ? await viaCustom(c, full, image) : await viaOpenAI(c, full, image)
     if (!buf || !buf.length) throw new Error('生图接口没有返回图片')
     if (!String(mimeOf(buf)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
     log.info(`画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
@@ -126,21 +160,27 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
   }
 
   /** OpenAI 兼容接口。 */
-  async function viaOpenAI (c, prompt) {
+  async function viaOpenAI (c, prompt, image) {
     const base = String(c.baseUrl || '').replace(/\/+$/, '')
     if (!base || !c.model) throw new Error('还没填生图服务地址或模型')
-    const headers = { 'content-type': 'application/json' }
+    const headers = image ? {} : { 'content-type': 'application/json' }
     if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
     // response_format、image_size 不是每家都认（官方 OpenAI 就不认）：被拒了去掉再发。被拒的请求没出图，重发不会多画
     const body = { model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }
+    let requestBody
+    if (image) {
+      requestBody = new FormData()
+      requestBody.append('image', new Blob([image], { type: mimeOf(image) }), 'reference.' + mimeOf(image).split('/')[1])
+      for (const [key, value] of Object.entries({ prompt, model: c.model, size: c.size })) requestBody.append(key, value)
+    }
     let r, j
     for (;;) {
-      r = await fetch(`${base}/images/generations`, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(180000) })
+      r = await fetch(`${base}/images/${image ? 'edits' : 'generations'}`, { method: 'POST', headers, body: requestBody || JSON.stringify(body), signal: AbortSignal.timeout(180000) })
       j = await r.json().catch(() => ({}))
       if (r.ok) break
       const message = j?.error?.message || j?.message || `HTTP ${r.status}`
-      const bad = r.status === 400 && ['response_format', 'image_size'].find((k) => k in body && message.includes(k))
-      if (!bad) throw new Error(message)
+      const bad = !image && r.status === 400 && ['response_format', 'image_size'].find((k) => k in body && message.includes(k))
+      if (!bad) throw serviceError(r.status, message, image)
       delete body[bad]
     }
     const item = (j.data || j.images || [])[0] || {}
@@ -153,11 +193,11 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
   }
 
   /** 自定义接口：GET 直接把参数拼在地址上，POST 放进 JSON / 表单。 */
-  async function viaCustom (c, prompt) {
+  async function viaCustom (c, prompt, image) {
     const cp = c.custom || {}
     if (!cp.url) throw new Error('还没填自定义生图接口地址')
-    const req = customRequest(c, prompt)
-    log.info(`生图请求：${req.method} ${req.url.slice(0, 160)}`)
+    const req = customRequest(c, prompt, image)
+    log.info(`生图请求：${req.method} ${image ? '（含参考图）' : req.url.slice(0, 160)}`)
     const r = await fetch(req.url, {
       method: req.method,
       headers: req.headers,
@@ -167,11 +207,11 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
     const type = String(r.headers.get('content-type') || '')
     // 直接返回图片字节（pollinations 这类）
     if (type.startsWith('image/')) {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      if (!r.ok) throw serviceError(r.status, `HTTP ${r.status}`, image)
       return Buffer.from(await r.arrayBuffer())
     }
     const j = await r.json().catch(() => null)
-    if (!r.ok) throw new Error((j && (j.error?.message || j.message)) || `HTTP ${r.status}`)
+    if (!r.ok) throw serviceError(r.status, (j && (j.error?.message || j.message)) || `HTTP ${r.status}`, image)
     if (!j) throw new Error('生图接口没有返回图片')
     const v = (cp.responsePath ? dotted(j, cp.responsePath) : null) || findImage(j)
     if (!v) throw new Error('生图接口没有返回图片地址')

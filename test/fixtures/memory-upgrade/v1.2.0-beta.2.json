@@ -1,0 +1,27 @@
+{
+  "items": [
+    { "id": "beta-auto-1", "text": "小雨开始在阳台种薄荷。", "about": "30000002", "aboutName": "小雨", "tags": ["植物"], "source": "auto", "chatId": "group:777", "importance": 0.35, "at": 1775088000000, "hits": 2, "hitDays": 2, "lastHit": 1779408000000 },
+    { "id": "beta-auto-2", "text": "小雨给薄荷换了更大的花盆。", "about": "30000002", "aboutName": "小雨", "source": "auto", "chatId": "group:777", "importance": 0.4, "at": 1775952000000, "hits": 0 },
+    { "id": "beta-auto-3", "text": "小雨会把薄荷叶放在茶里。", "about": "30000002", "aboutName": "小雨", "source": "auto", "chatId": "group:777", "importance": 0.7, "at": 1776816000000, "hits": 0 },
+    { "id": "beta-auto-4", "text": "小雨把薄荷苗分给了朋友。", "about": "30000002", "aboutName": "小雨", "source": "auto", "chatId": "group:777", "importance": 0.75, "at": 1777680000000, "hits": 0 },
+    { "id": "beta-tool", "text": "主人让我记住：晚上不要催他回消息。", "about": "10000001", "aboutName": "主人", "tags": ["边界"], "source": "tool", "chatId": "private:10000001", "importance": 0.3, "at": 1767225600000, "hits": 0 },
+    { "id": "beta-event", "text": "给小明唱过一首生日歌。", "about": "30000001", "aboutName": "小明", "tags": ["经历"], "source": "event", "chatId": "", "importance": 0.8, "at": 1769904000000, "hits": 0 },
+    { "id": "beta-diary", "text": "日记里写下了和大家一起看晚霞的心情。", "about": "", "tags": ["日记"], "source": "diary", "chatId": "", "importance": 0.4, "at": 1772496000000, "hits": 0 },
+    { "id": "beta-panel", "text": "面板原文：他不吃香菜，别弄混！🌿", "about": "30000001", "aboutName": "小明", "source": "panel", "chatId": "", "importance": 0.2, "at": 1768089600000, "hits": 0 },
+    { "id": "beta-import", "text": "旧笔记导入：小明珍惜朋友送的手工杯。", "about": "30000001", "aboutName": "小明", "source": "import", "at": 1768953600000, "importance": 0.4 },
+    { "id": "beta-old", "text": "小明以前在上海工作。", "about": "30000001", "source": "auto", "chatId": "private:30000001", "importance": 0.7, "at": 1772496000000, "invalidAt": 1779840000000, "supersededBy": "beta-new" },
+    { "id": "beta-new", "text": "小明现在搬到杭州工作。", "about": "30000001", "aboutName": "小明", "source": "auto", "chatId": "private:30000001", "importance": 0.8, "at": 1779840000000, "hits": 0, "history": [{ "text": "小明在上海工作。", "at": 1772496000000 }] },
+    { "id": "beta-import-tier", "text": "导入兼容字段：小明平时会带素描本。", "about": "30000001", "source": "import", "tier": "detail", "at": 1769904000000, "importance": 0.4 }
+  ],
+  "profiles": {
+    "30000001": { "text": "小明是老朋友，最近搬到杭州。", "name": "小明", "at": 1779840000000 },
+    "30000002": { "text": "小雨喜欢种花，也乐意把小苗分享给别人。" }
+  },
+  "insights": { "qq:30000001": [{ "id": "beta-insight", "text": "工作忙时先别追问", "at": 1779840000000 }] },
+  "insightNames": { "qq:30000001": "小明" },
+  "styles": { "qq:30000001": ["说话简短", "喜欢用省略号"], "self": ["自然地接话"] },
+  "processed": { "2026-05-30": { "offset": 0, "end": 100, "chats": { "private:30000001": 80 } } },
+  "runs": { "04:00": "2026-05-31", "16:00": "2026-05-31" },
+  "lastConsolidate": { "day": "2026-05-31", "at": 1780185600000, "added": 0, "insights": 0, "days": 1, "forgot": 0, "profiles": 0 },
+  "rev": 42
+}

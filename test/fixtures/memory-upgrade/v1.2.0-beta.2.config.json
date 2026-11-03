@@ -1,0 +1,14 @@
+{
+  "raw": {
+    "ownerQQ": "10000001",
+    "memory": { "enabled": true, "recallCount": 27, "dailyConsolidate": true, "consolidateTimes": ["19:30", "07:15", "19:30"], "keepChatlogDays": -1, "mergeGroups": true }
+  },
+  "normalizedMemory": {
+    "enabled": true,
+    "recallCount": 27,
+    "dailyConsolidate": true,
+    "consolidateTimes": ["07:15", "19:30"],
+    "keepChatlogDays": -1,
+    "mergeGroups": true
+  }
+}
