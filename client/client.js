@@ -2009,22 +2009,37 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             models === null ? h('span', { className: 'ab-muted ab-small' }, ' 正在查模型…') : null,
             cmHit && cmHit.vision === false ? h('span', { className: 'ab-small', style: { color: 'var(--ab-warn)' } }, ' 这个模型看不了图，起名会被跳过') : null),
         ),
+        h(Card, { title: '表情库' + (items ? '（' + items.length + ' 张）' : ''), right: h('div', { className: 'ab-flex' }, bar) },
+          job ? h('div', { className: 'ab-flex', style: { margin: '0 0 10px' } },
+            job.running ? h('i', { key: 's', className: 'ab-spin' }) : h('span', { key: 'k', style: { color: job.failed ? 'var(--ab-warn)' : 'var(--ab-ok)' } }, '✓'),
+            h('span', { key: 't', className: 'ab-small' }, job.running
+              ? 'AI 起名中 ' + (job.done || 0) + ' / ' + (job.total || 0) + (job.model ? '（' + job.model + '）' : '') + (job.last ? '，刚起好「' + job.last + '」' : '')
+              : (job.message || '整理完了')),
+            job.running ? h('div', { key: 'bar', className: 'ab-progress' }, h('i', { style: { width: Math.round(((job.done || 0) / Math.max(job.total || 1, 1)) * 100) + '%' } })) : null,
+            job.running
+              ? h(Btn, { key: 'stop', small: true, kind: 'ghost', onClick: async () => { const r = await post('/sticker/caption-stop', {}); toast(r.message || '停了') } }, '停')
+              : h(Btn, { key: 'ok', small: true, kind: 'ghost', onClick: () => setJob(null) }, '知道了'),
+          ) : null,
+          items === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : items.length === 0 ? h(Empty, { icon: '🐳', text: '表情库还是空的。别人在群里发表情包，ta会自己收；也可以点右上角上传，或者「从 QQ 收藏导入」机器人号已经收藏的表情。' }) :
+            h('div', { className: cx('ab-stickers', picking && 'picking') },
+              items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
+        ),
         h(Card, {
           title: '贴表情',
           right: f.sw('stickers.react'),
-          desc: '看到谁的消息，就可能贴个表情——不一定回话，只在旁边看着也行。emoji 直接给 Unicode 码点（🍬 127852、👍 128077），QQ 老表情是另一套编号（❓ 10068），两种混着用都行。',
+          desc: '默认关。打开后看到谁的消息，就可能贴个表情——不一定回话，只在旁边看着也行。emoji 直接给 Unicode 码点（🍬 127852、👍 128077），QQ 老表情是另一套编号（❓ 10068），两种混着用都行。',
         },
-          h(Row, { label: '主动贴表情的概率', hint: '和上面「自动配表情」同一个算法，心情好会更频繁。现在是跟随表情包的概率，拖一下就单独固定' },
+          h(Row, { label: '主动贴表情的概率', hint: '默认 15%，和「表情包」那张卡里的自动配表情各算各的，互不影响；心情好会更频繁' },
             h(Range, {
               min: 0,
               max: 100,
-              value: pct(draft.stickers.reactChance ?? draft.stickers.autoChance),
+              value: pct(draft.stickers.reactChance ?? 0.15),
               onChange: (v) => setDraft(setPath(draft, 'stickers.reactChance', v / 100)),
               fmt: (v) => v + '%',
             })),
           h(Row, { label: '概率表', hint: '实际概率 = 拖拽条的值 × 心情系数（心情越高越爱贴；超过 100% 就是必贴）' },
             (() => {
-              const base = Number(draft.stickers.reactChance ?? draft.stickers.autoChance) || 0
+              const base = Number(draft.stickers.reactChance ?? 0.15) || 0
               const cell = (key, text, extra) => h('td', { key, style: Object.assign({ padding: '3px 16px 3px 0' }, extra) }, text)
               return h('table', { style: { borderCollapse: 'collapse', fontSize: 12, marginTop: 2 } },
                 h('thead', null, h('tr', null,
@@ -2042,21 +2057,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '每小时上限', hint: '每个会话单独算，免得在热闹的群里刷屏' }, f.range('stickers.reactMaxPerHour', 0, 60, 1, (v) => v + ' 次')),
         ),
         h(FaceMapCard, null),
-        h(Card, { title: '表情库' + (items ? '（' + items.length + ' 张）' : ''), right: h('div', { className: 'ab-flex' }, bar) },
-          job ? h('div', { className: 'ab-flex', style: { margin: '0 0 10px' } },
-            job.running ? h('i', { key: 's', className: 'ab-spin' }) : h('span', { key: 'k', style: { color: job.failed ? 'var(--ab-warn)' : 'var(--ab-ok)' } }, '✓'),
-            h('span', { key: 't', className: 'ab-small' }, job.running
-              ? 'AI 起名中 ' + (job.done || 0) + ' / ' + (job.total || 0) + (job.model ? '（' + job.model + '）' : '') + (job.last ? '，刚起好「' + job.last + '」' : '')
-              : (job.message || '整理完了')),
-            job.running ? h('div', { key: 'bar', className: 'ab-progress' }, h('i', { style: { width: Math.round(((job.done || 0) / Math.max(job.total || 1, 1)) * 100) + '%' } })) : null,
-            job.running
-              ? h(Btn, { key: 'stop', small: true, kind: 'ghost', onClick: async () => { const r = await post('/sticker/caption-stop', {}); toast(r.message || '停了') } }, '停')
-              : h(Btn, { key: 'ok', small: true, kind: 'ghost', onClick: () => setJob(null) }, '知道了'),
-          ) : null,
-          items === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : items.length === 0 ? h(Empty, { icon: '🐳', text: '表情库还是空的。别人在群里发表情包，ta会自己收；也可以点右上角上传，或者「从 QQ 收藏导入」机器人号已经收藏的表情。' }) :
-            h('div', { className: cx('ab-stickers', picking && 'picking') },
-              items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
-        ),
       )
     }
 

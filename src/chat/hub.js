@@ -178,8 +178,15 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   async function maybeReact(msg) {
     try {
       const cfg = getConfig()
+      // 贴表情也是「对外做了个动作」，必须和发消息走同一套闸（#216 review）：
+      // 总开关关掉就什么都不做；试运行开着只记一笔，不真往对方消息上贴。
+      if (cfg.enabled === false) return
+      if (cfg.dryRun) {
+        log.debug?.(`${msg.chatId}：试运行模式，不真贴表情`)
+        return
+      }
       if (cfg.stickers?.enabled === false || cfg.stickers?.react === false) return
-      const chance = cfg.stickers?.reactChance ?? cfg.stickers?.autoChance ?? 0
+      const chance = cfg.stickers?.reactChance ?? 0
       if (!(chance > 0) || !msg.messageId || msg.messageId === '0') return
       if (Math.random() >= chance * mood().sticker) return
       const cap = cfg.stickers?.reactMaxPerHour ?? 10
@@ -2438,6 +2445,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     onPoke,
     onGroupFile,
     onSessionEvent,
+    /** 主动贴表情（内部实现，导出给回归测试用：#216 review 要求 dry-run 有测试兜底） */
+    maybeReact,
     deliver,
     sendText,
     sendVoice,
