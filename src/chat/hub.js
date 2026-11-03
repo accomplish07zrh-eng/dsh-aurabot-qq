@@ -751,8 +751,21 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       if (d.interrupted) return
       const t = textOf(d.message)
       if (t) {
+        // 一轮里可能有多个 step：工具调用前后的两段发言，或者 steer 插话让 DSH 重开一段。
+        // 以前这里是 `st.text = t` 直接覆盖，于是只有最后一个 step 发得出去，前面的永久丢失（#205）。
+        //
+        // 现在分两种情况：
+        //   - 这一轮里插进过新消息（steer）：前一段是「说过时半截」，按 #10 的取舍丢掉、只留最后一段，
+        //     免得她前后自相矛盾；
+        //   - 没插过（工具调用产生的前后两段）：两段都是用户从没收到过的正常内容，累加起来一起发。
+        //
+        // 用 (turn, step) 去重：DSH 可能对同一个 step 重复推送，累加会让同一句发两遍。
+        const stepKey = d.step === undefined ? null : `${d.turn}:${d.step}`
+        if (stepKey !== null && st.lastStepKey === stepKey) return
+        st.lastStepKey = stepKey
         st.lastTurn = d.turn
-        st.text = t
+        if (st.steered && st.text) st.text = t
+        else st.text = st.text ? `${st.text}\n${t}` : t
       }
       return
     }
@@ -768,6 +781,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const autoReply = st.autoReply
       st.autoReply = null
       st.text = ''
+      st.lastStepKey = null
+      st.steered = false
       // 上一轮还在跑时新消息已经排队给「下一轮」：这一轮 turn/end 不能把下一轮的说话人清掉（#90）
       st.senders = st.pendingSenders || new Set()
       st.pendingSenders = new Set()
@@ -1454,6 +1469,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
     if (opts.wantVoice) st.wantVoice = true
     if (!opts.steer) st.autoReply = opts.autoReply || null
+    // 这一轮里插进过新消息：标记一下，让 turn/end 那边知道前一段是被取代的「说过时半截」，
+    // 而不是工具调用产生的、用户还没收到的正常内容（#205 的区分依据）。
+    if (opts.steer) st.steered = true
     turnState.set(key, st)
     const admitted = await admit(agent, content)
     startTyping(key, chat)
