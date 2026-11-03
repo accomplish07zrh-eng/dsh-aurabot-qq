@@ -2315,20 +2315,31 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       })
       const r = await activation.result
       if (r && r.error) throw new Error(`子智能体执行失败：${r.error}`)
-      // result 形状不定（字符串 / {output|text} / 消息块数组）：递归收集字符串，取最后一段当最终回答；
-      // 全不是字符串就整包 JSON 化，调用方自己解析，绝不把非字符串透传出去
+      // 新版 DSH 用 stopReason 标记结果，非正常完成时 output 可能是不完整的过程内容。
+      if (r && typeof r === 'object' && 'stopReason' in r && r.stopReason !== 'completed') {
+        throw Object.assign(new Error('子智能体没有正常完成'), { code: 'SUBAGENT_INCOMPLETE' })
+      }
+      // 兼容旧版字符串/包装对象；有类型的消息块只接受 text，绝不递归读取 reasoning 或工具块。
       const collect = (v, out = []) => {
-        if (v == null || out.length > 200) return out
+        if (v == null || out.length >= 200) return out
         if (typeof v === 'string') { if (v.trim()) out.push(v); return out }
-        if (Array.isArray(v)) { for (const x of v) collect(x, out); return out }
+        if (Array.isArray(v)) {
+          // 最终消息仍带工具调用时，旁边的文字可能只是工具执行前的过程说明。
+          if (v.some((block) => block && (block.type === 'tool-call' || block.type === 'tool_use'))) return out
+          for (const x of v) collect(x, out)
+          return out
+        }
         if (typeof v === 'object') {
-          if (v.type === 'text' || typeof v.text === 'string') collect(v.text, out)
+          if ('type' in v) {
+            if (v.type === 'text' && typeof v.text === 'string') collect(v.text, out)
+          } else if (typeof v.text === 'string') collect(v.text, out)
           else for (const k of ['content', 'output', 'summary', 'message', 'result']) if (k in v) collect(v[k], out)
         }
         return out
       }
       const parts = collect(r)
-      return parts.length ? parts[parts.length - 1] : JSON.stringify(r ?? '')
+      if (!parts.length) throw Object.assign(new Error('子智能体没有可用的最终文字'), { code: 'SUBAGENT_EMPTY_OUTPUT' })
+      return parts[parts.length - 1]
     } finally {
       clearTimeout(timer)
       // 结果到手（或超时/失败）就释放整个子树；已完成/已失败的 activation dispose 只是清理，不会抛断流程

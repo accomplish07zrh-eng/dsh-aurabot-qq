@@ -101,6 +101,29 @@ test('结果形状兜底：字符串 / 消息块数组 / 包着 output 的对象
   }
 })
 
+test('结构化子智能体结果只返回 text 块，不能返回 reasoning 或工具块', async (t) => {
+  let result
+  const s = setup(t, { subagents: { async startActivation() { return { result: Promise.resolve(result), dispose: async () => {} } } } })
+  result = { stopReason: 'completed', output: [{ type: 'reasoning', text: '私密推理' }, { type: 'text', text: '可见结果' }, { type: 'reasoning', text: '后续私密推理' }] }
+  assert.equal(await s.run(), '可见结果')
+  result = { stopReason: 'completed', output: [{ type: 'reasoning', text: '私密推理' }] }
+  await assert.rejects(s.run(), (error) => error.code === 'SUBAGENT_EMPTY_OUTPUT' && !error.message.includes('私密推理'))
+  result = { stopReason: 'completed', output: [{ type: 'tool-call', text: '内部工具参数', content: [{ type: 'text', text: '不能回传' }] }] }
+  await assert.rejects(s.run(), (error) => error.code === 'SUBAGENT_EMPTY_OUTPUT' && !error.message.includes('内部工具参数'))
+  result = { stopReason: 'completed', output: [{ type: 'text', text: '调用工具之前的计划' }, { type: 'tool-call', arguments: '内部参数' }] }
+  await assert.rejects(s.run(), (error) => error.code === 'SUBAGENT_EMPTY_OUTPUT' && !error.message.includes('调用工具之前的计划'))
+})
+
+test('子智能体非正常结束不能把未完成输出当成成功', async (t) => {
+  let reason = 'aborted'
+  const s = setup(t, { subagents: { async startActivation() {
+    return { result: Promise.resolve({ stopReason: reason, output: [{ type: 'text', text: '未完成内容' }] }), dispose: async () => {} }
+  } } })
+  for (reason of ['aborted', 'error', 'max-tokens', 'refusal']) {
+    await assert.rejects(s.run(), (error) => error.code === 'SUBAGENT_INCOMPLETE' && !error.message.includes('未完成内容'))
+  }
+})
+
 test('子智能体失败：result 带 error 时抛错，但子树仍然释放（不泄漏挂载）', async (t) => {
   const s = setup(t)
   const disposed = []
