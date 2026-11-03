@@ -378,6 +378,9 @@ export function apply(ctx) {
     if (list.length && list.includes(sock)) { // ② 可信反代：看最后一跳
       const hops = String(req?.headers?.['x-forwarded-for'] || '').split(',').map((x) => normAddr(x)).filter(Boolean)
       if (hops.length) return isLoopbackAddr(hops[hops.length - 1])
+      // 【复审 2·P1-1】反代场景却没带 XFF：反代没配好（没追加转发头）。按回环放行等于
+      // 「反代后的所有用户都被当成本机」——这是 fail-open。兜成 fail-closed：拒绝。
+      return false
     }
     return isLoopbackAddr(sock) // ③ 本机直连
   }
@@ -411,6 +414,33 @@ export function apply(ctx) {
     const ph = panelPublicHost()
     return Boolean(ph) && h === ph
   }
+  /**
+   * 【复审 2·P1-1】管理面 Host 允许名单（防 DNS rebinding）。
+   * 攻击：恶意页面把 evil.example 的 DNS rebind 到 127.0.0.1，然后 `fetch('http://evil.example:port/state')`
+   * ——socket 是本机回环（本机闸放行）、方法是 GET（不过 CSRF）→ 管理面被「同源可读」：
+   * /state、/logs、/bridge/token（返回 bearer）、client-package（含令牌）全部外泄。
+   * 修法：管理面请求的 Host 头必须在白名单内（回环 / localhost / publicHostname）。
+   * Host 头虽是请求方可控的，但浏览器同源策略保证「页面 JS 发出的请求 Host = 页面所在的源」——
+   * rebinding 页面发出的 Host 就是 evil.example 本身，进不了白名单；同源面板请求 Host 必然是
+   * 127.0.0.1 / localhost / publicHostname 之一。非浏览器客户端（curl/脚本）不受浏览器防护，
+   * 但它们也不是 rebinding 载体，且有各自的鉴权层。
+   */
+  const hostAllowedForAdmin = (hostRaw) => {
+    const h = String(hostRaw || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/:\d+$/, '').replace(/\.$/, '')
+    if (!h) return false
+    if (h === 'localhost' || h.endsWith('.localhost')) return true
+    if (isLoopbackAddr(h)) return true
+    const ph = panelPublicHost()
+    return Boolean(ph) && h === ph
+  }
+  /** Host 校验 + 失败响应。只用于管理面（模块路由的 Host 另有 Host 闸策略）。 */
+  const adminHostBlocked = (req, res) => {
+    const hostHeader = String(req.headers?.host || '')
+    if (hostAllowedForAdmin(hostHeader)) return false
+    log.warn(`管理接口拒绝异常 Host：${hostHeader}（疑似 DNS rebinding；白名单：回环/localhost/security.publicHostname）`)
+    send(res, 403, { ok: false, message: '管理接口拒绝该 Host（只接受本机回环、localhost 或已配置的面板对外域名）' })
+    return true
+  }
   /** 【复审 P1-1】CSRF 闸：所有改状态的方法都要过同源校验。
    *  背景（复审实测）：恶意网页可以从攻击者页面 `fetch('http://127.0.0.1:<port>/save', {method:'POST'})`——
    *  请求 socket 是本机回环（面板闸放行）、方法 POST、跨站。没有 CSRF 校验的话
@@ -442,12 +472,15 @@ export function apply(ctx) {
     }
     return false
   }
-  /** 面板闸：面板写/读接口统一过它（见上方 panelBlocked 说明）。 */
-  const route = (path, handler) => ctx.effect(() => ctx.webServer.register({
+  /** 面板闸：面板写/读接口统一过它（见上方 panelBlocked 说明）。
+   *  opts.skipHostCheck：给 /open/* 这类「非浏览器、自带密钥鉴权」的接口用——
+   *  它们没有浏览器同源概念，跨机调用是正常用法，Host 允许名单不该拦。 */
+  const route = (path, handler, opts = {}) => ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: PREFIX + path,
     handler: (req, res) => answer(res, () => {
       if (panelBlocked(req, res)) return undefined
+      if (!opts.skipHostCheck && adminHostBlocked(req, res)) return undefined // DNS rebinding 防护（含 GET）
       if (csrfBlocked(req, res)) return undefined
       return handler(req, res)
     }),
@@ -458,6 +491,11 @@ export function apply(ctx) {
     handler: (req, res) => answer(res, () => {
       let path = ''
       try { path = new URL(req.url, 'http://x').pathname } catch (error) {}
+      // 【复审 2·P1-2】模块 prefix 路由也过 CSRF：实测本机 socket + 恶意 Origin 能跨站打
+      // POST /aurabot/api/heybox/run、/ext/phone/run 等无 token 的模块路由（真实触发逛/ADB）。
+      // 模块路由有自己的 Host 闸与鉴权，但同样缺跨站防护；桌宠 native 客户端不带 Origin，
+      // 不受影响；桌面面板的 fetch 是同源，也不受影响。
+      if (csrfBlocked(req, res)) return undefined
       return mods.handle(path, req, res)
     }),
   }), 'aurabot: 模块接口')
@@ -1461,11 +1499,12 @@ export function apply(ctx) {
   route('/bridge/token', async () => ({ ok: true, token: cfg.bridge.http ? bridge.ensureToken() : '' }))
   route('/bridge/token/reset', async () => ({ ok: true, token: bridge.resetToken(), message: '换了新密钥，旧的立刻失效' }))
   route('/bridge/examples', async (req) => ({ ok: true, ...bridge.examples(String(query(req).base || 'http://127.0.0.1:端口')) }))
-  // 开放接口：都要带密钥
+  // 开放接口：都要带密钥。/open/* 给外部程序（curl/脚本）用，跨机 + 自定义 Host 是正常用法，
+  // 且有自己的 Bearer 鉴权——跳过管理面的 Host 允许名单（复审 2·P1-2 的豁免原则同理）。
   const open = (path, fn) => route('/open' + path, async (req) => {
     if (!bridge.authorized(req)) return { ok: false, code: 401, message: cfg.bridge.http ? '密钥不对（请求头 Authorization: Bearer 密钥）' : '开放接口没打开（面板「扩展」→ 联动）' }
     return fn(req)
-  })
+  }, { skipHostCheck: true })
   open('/info', async () => bridge.ops.info())
   open('/send', async (req) => bridge.ops.send(await readBody(req)))
   open('/think', async (req) => bridge.ops.think(await readBody(req)))

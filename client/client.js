@@ -1098,7 +1098,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                   if (r.ok) { setPubBase(null); reload() }
                 } }, '验证并保存'),
                 h(Btn, { small: true, kind: 'ghost', disabled: !String(curPubBase).trim(), title: '服务器自己打不通自己的公网地址（hairpin NAT）时用：不验证直接保存', onClick: async () => {
-                  const r = await post('/panel/pet/public-base', { publicBaseUrl: String(curPubBase).trim(), force: true })
+                  // 【复审 2·P1-3】内网/本机地址需要 force + confirm 显式二次确认（后端审计要求）。
+                  // 公网地址不用 confirm（后端只对内网地址要它），但带上也无害——统一带，简单可靠。
+                  const addr = String(curPubBase).trim()
+                  if (!window.confirm(`确定跳过验证保存「${addr}」吗？\n\n若该地址指向本机/内网（局域网自测），保存会记入审计日志；公网部署请务必用 https 公网域名。`)) return
+                  const r = await post('/panel/pet/public-base', { publicBaseUrl: addr, force: true, confirm: true })
                   toast(r.message || (r.ok ? '已保存' : '没成功'), r.ok ? 'ok' : 'err')
                   if (r.ok) { setPubBase(null); reload() }
                 } }, '跳过验证保存'),

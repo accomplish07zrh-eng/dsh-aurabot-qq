@@ -152,9 +152,12 @@ export function createFakeDsh({ brain }) {
     let status = 200
     const req = {
       url: '/aurabot/api' + path,
+      // 默认带本机 Host：真实场景里本机面板/测试直调都带 127.0.0.1 的 Host，
+      // 而管理面的 Host 允许名单（DNS rebinding 防护）会拒绝没有 Host 的请求。
+      // 测试要模拟异常 Host（rebinding / 反代域名）时在 headers 里显式覆盖。
+      headers: { host: '127.0.0.1:5099', ...headers },
       // 默认带 body 的调用按 POST 处理；要测别的写方法（PUT/DELETE…）用第五个参数显式给
       method: method || (body != null ? 'POST' : 'GET'),
-      headers,
       async *[Symbol.asyncIterator]() { if (body) yield JSON.stringify(body) },
     }
     // 模拟真实连接的来源地址：不传 = 进程内直调（无 socket，插件按本机处理）；
