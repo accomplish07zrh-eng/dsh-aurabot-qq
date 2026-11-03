@@ -66,6 +66,26 @@ window.__ModuleLoader__.load({
     }
 
     const getPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj)
+    // 自动记忆原本按来源分别限额；调整总数时按当前比例分配整数名额。
+    const MEMORY_CAPACITY_DEFAULT = { auto: 2000, event: 600, diary: 400 }
+    const memoryCapacity = (value) => Object.fromEntries(Object.entries(MEMORY_CAPACITY_DEFAULT).map(([key, fallback]) => {
+      const n = Number(value?.[key])
+      return [key, value?.[key] != null && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback]
+    }))
+    const resizeMemoryCapacity = (current, total) => {
+      const values = memoryCapacity(current)
+      let weights = Object.values(values)
+      let sum = weights.reduce((a, n) => a + n, 0)
+      if (!sum) { weights = Object.values(MEMORY_CAPACITY_DEFAULT); sum = 3000 }
+      const limits = weights.map((n) => Math.floor(n * total / sum))
+      let extra = total - limits.reduce((a, n) => a + n, 0)
+      while (extra-- > 0) {
+        let best = 0
+        for (let i = 1; i < weights.length; i++) if (weights[i] * (limits[best] + 1) > weights[best] * (limits[i] + 1)) best = i
+        limits[best]++
+      }
+      return Object.fromEntries(Object.keys(MEMORY_CAPACITY_DEFAULT).map((key, i) => [key, limits[i]]))
+    }
     const pct = (v) => Math.round((Number(v) || 0) * 100)
     const cx = (...a) => a.filter(Boolean).join(' ')
     // 音调存的是 '+20Hz' 这种字符串，滑条要数字；合法范围 ±80Hz（再往上 edge-tts 服务端会夹）
@@ -252,10 +272,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-deep:#9cc4f5;--ab-sea:#6
 .ab-pm-face img{width:100%;height:100%;object-fit:cover;display:block}
 .ab-pm-face.big{width:64px;height:64px;font-size:24px}
 .ab-pm-split{display:grid;grid-template-columns:272px minmax(0,1fr);gap:12px;align-items:start}
-.ab-pm-list{display:flex;flex-direction:column;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);overflow:hidden;position:sticky;top:64px;max-height:calc(100vh - 96px)}
-.ab-pm-search{padding:10px;border-bottom:1px solid var(--ab-line)}
+.ab-pm-list{display:flex;flex-direction:column;border:1px solid var(--ab-line);border-radius:14px;background:var(--ab-card);overflow:visible;position:sticky;top:64px;z-index:1;max-height:calc(100vh - 96px)}
+.ab-pm-search{position:relative;z-index:2;padding:10px;border-bottom:1px solid var(--ab-line)}
 .ab-pm-search input{width:100%;box-sizing:border-box}
-.ab-pm-rows{overflow-y:auto;padding:4px}
+.ab-pm-search .ab-sel{flex:1 1 100px;min-width:0;max-width:100%}
+.ab-pm-search .ab-sel-pop{box-sizing:border-box;min-width:max(100%,160px);max-width:min(320px,calc(100vw - 32px))}
+.ab-pm-search .ab-sel:last-child .ab-sel-pop{left:auto;right:0}
+.ab-pm-search .ab-sel-opt .tx{white-space:normal;overflow-wrap:anywhere}
+.ab-pm-rows{overflow-y:auto;min-height:0;padding:4px}
 .ab-pm-row{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border:0;border-radius:10px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .ab-pm-row:hover{background:var(--ab-card-2)}
 .ab-pm-row.on{background:var(--ab-foam-2)}
@@ -564,10 +588,13 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     /** 自定义下拉：替代系统自带的蓝白 select。options: [{value, label, desc?, group?}] */
-    function Select({ value, options, onChange, placeholder, width }) {
+    let nextSelectId = 0
+    function Select({ value, options, onChange, placeholder, width, ariaLabel }) {
       const [open, setOpen] = useState(false)
       const [act, setAct] = useState(-1)
       const ref = useRef(null)
+      const listId = useRef(null)
+      if (!listId.current) listId.current = 'ab-sel-list-' + (++nextSelectId)
       const cur = options.find((o) => o.value === value)
       useEffect(() => {
         if (!open) return
@@ -595,15 +622,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       options.forEach((o, i) => {
         if (o.group && o.group !== lastGroup) items.push(h('div', { key: 'g' + i, className: 'ab-sel-group' }, o.group))
         lastGroup = o.group || lastGroup
-        items.push(h('div', { key: 'o' + i, role: 'option', 'aria-selected': o.value === value, className: cx('ab-sel-opt', o.value === value && 'on', i === act && 'act'), onMouseEnter: () => setAct(i), onMouseDown: (e) => { e.preventDefault(); pick(o) } },
+        items.push(h('div', { key: 'o' + i, id: listId.current + '-' + i, role: 'option', 'aria-selected': o.value === value, className: cx('ab-sel-opt', o.value === value && 'on', i === act && 'act'), onMouseEnter: () => setAct(i), onMouseDown: (e) => e.preventDefault(), onClick: () => pick(o) },
           h('span', { className: 'ck' }, o.value === value ? '✓' : ''),
           h('span', { className: 'tx' }, o.label, o.desc ? h('span', { className: 'ds' }, o.desc) : null)))
       })
-      return h('div', { className: cx('ab-sel', open && 'open'), ref, style: width ? { minWidth: width } : null },
-        h('button', { type: 'button', className: 'ab-sel-btn', onClick: () => (open ? setOpen(false) : openAt()), onKeyDown: onKey, 'aria-haspopup': 'listbox', 'aria-expanded': open },
+      return h('div', { className: cx('ab-sel', open && 'open'), ref, style: width ? { minWidth: width } : null, onBlur: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false) } },
+        h('button', { type: 'button', role: 'combobox', className: 'ab-sel-btn', onClick: () => (open ? setOpen(false) : openAt()), onKeyDown: onKey, 'aria-label': ariaLabel, 'aria-haspopup': 'listbox', 'aria-expanded': open, 'aria-controls': open ? listId.current : undefined, 'aria-activedescendant': open && act >= 0 ? listId.current + '-' + act : undefined },
           h('span', { className: 'v' }, cur ? cur.label : h('span', { className: 'ab-muted' }, placeholder || '请选择')),
           h('svg', { className: 'chev', width: 12, height: 12, viewBox: '0 0 12 12', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8 }, h('path', { d: 'M3 4.5 6 7.5 9 4.5' }))),
-        open ? h('div', { className: 'ab-sel-pop', role: 'listbox' }, items) : null)
+        open ? h('div', { id: listId.current, className: 'ab-sel-pop', role: 'listbox', 'aria-label': ariaLabel }, items) : null)
     }
 
     /** 卡片式单选：选项少、需要解释时用。 */
@@ -2742,6 +2769,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [mem, setMem] = useState(null)
       const [stats, setStats] = useState(null)
       const [q, setQ] = useState('')
+      const [capacityInput, setCapacityInput] = useState(null)
+      const capacityBeforeEdit = useRef(null)
+      const capacity = memoryCapacity(draft.memory.capacity)
+      const capacityTotal = Object.values(capacity).reduce((sum, n) => sum + n, 0)
       const [adding, setAdding] = useState({ text: '', aboutName: '', importance: 0.6 })
       const load = (query) => get('/memories?q=' + encodeURIComponent(query ?? q)).then((r) => { setMem(r.items || []); setStats(r.stats || null) })
       const [styles, setStyles] = useState({})
@@ -2781,6 +2812,28 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('span', { className: 'ab-muted' }, '和'),
             h('input', { className: 'ab-input sm', type: 'time', value: times[1] || '16:00', onChange: (e) => setTime(1, e.target.value) }),
             h(Btn, { small: true, onClick: async () => { toast('正在整理，可能要一两分钟…'); const r = await post('/memory/extract', {}); toast(r.message); load(); loadIns() } }, '现在整理一次')),
+          h(Row, { label: '自动记忆容量', hint: '默认 3000 条，可调高到 100000；聊天提炼、经历和日记按现有比例分配。手动记忆和分档事实不受此限制，过期与压缩规则照常生效。调低容量后，新记忆可能按原有规则替换旧的普通记忆。' },
+            h('input', {
+              className: 'ab-input sm', type: 'number', min: 3000, max: 100000, step: 1, 'aria-label': '自动记忆容量',
+              value: capacityInput === null ? capacityTotal : capacityInput,
+              onFocus: () => { capacityBeforeEdit.current = capacity },
+              onChange: (e) => {
+                const raw = e.target.value
+                setCapacityInput(raw)
+                const n = Number(raw)
+                if (raw !== '' && Number.isInteger(n) && n >= 3000 && n <= 100000) {
+                  setDraft(setPath(draft, 'memory.capacity', resizeMemoryCapacity(capacityBeforeEdit.current || capacity, n)))
+                }
+              },
+              onBlur: (e) => {
+                const n = Number(e.target.value)
+                if ((e.target.value === '' || !Number.isInteger(n) || n < 3000 || n > 100000) && capacityBeforeEdit.current) {
+                  setDraft(setPath(draft, 'memory.capacity', capacityBeforeEdit.current))
+                }
+                capacityBeforeEdit.current = null
+                setCapacityInput(null)
+              },
+            }), h('span', { className: 'ab-muted' }, '条')),
           h(Row, { label: '每轮最多想起几条' }, f.range('memory.recallCount', 0, 12, 1, (v) => v + ' 条')),
           h(Row, { label: '什么时候自动翻旧账' }, f.select('memory.recallMode', [{ value: 'always', label: '每轮都查' }, { value: 'trigger', label: '提到过去时才查' }])),
           h(Row, { label: '翻旧账的触发词', hint: '一行一个，也可用逗号分隔；主动查记忆的工具不受影响' }, f.list('memory.recallTriggers')),
@@ -2887,7 +2940,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-pm-list' },
           h('div', { className: 'ab-pm-search', style: { display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 } },
             h('input', { className: 'ab-input', style: { flex: '1 1 140px', minWidth: 0 }, placeholder: `在 ${list.length} 个人里找`, 'aria-label': '搜索人物', value: query, onChange: (e) => setQuery(e.target.value) }),
-            ...[[group, setGroup, '所有群', groups], [tag, setTag, '所有标签', tags.map((x) => [x, x])], [status, setStatus, '所有状态', [['owner', '主人'], ['active', '最近 7 天活跃'], ['relations', '有人物关系'], ['insights', '有相处经验']]]].map(([value, set, label, options]) => h('select', { key: label, className: 'ab-input', style: { flex: '1 1 100px', minWidth: 0, maxWidth: '100%' }, 'aria-label': label, value, onChange: (e) => set(e.target.value) }, h('option', { value: '' }, label), options.map(([v, text]) => h('option', { key: v, value: v }, text))))),
+            ...[[group, setGroup, '所有群', groups], [tag, setTag, '所有标签', tags.map((x) => [x, x])], [status, setStatus, '所有状态', [['owner', '主人'], ['active', '最近 7 天活跃'], ['relations', '有人物关系'], ['insights', '有相处经验']]]].map(([value, set, label, options]) => h(Select, { key: label, ariaLabel: label, value, onChange: set, options: [{ value: '', label }, ...options.map(([v, text]) => ({ value: v, label: text }))] }))),
           h('div', { className: 'ab-pm-rows' },
             visible.length ? visible.map((p) => h('button', { key: p.qq, type: 'button', className: cx('ab-pm-row', p.qq === selected && 'on'), onClick: () => setSelected(p.qq) },
               h(PersonFace, { p }),
