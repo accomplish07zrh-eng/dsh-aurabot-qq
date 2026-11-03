@@ -33,6 +33,13 @@ test('面板源码契约：贡献者头像墙走 contrib.rocks 自动更新', ()
   assert.ok(src.includes("loading: 'lazy'"), '头像墙要懒加载，别拖慢面板首屏')
 })
 
+test('面板源码契约：仓库地址走 aureth-labs 组织，且带模块仓库入口', () => {
+  assert.ok(src.includes("const repo = 'https://github.com/aureth-labs/dsh-aurabot-qq'"), '主仓库地址要指向组织 aureth-labs')
+  assert.ok(src.includes("const mods = 'https://github.com/aureth-labs/dsh-aurabot-qq-mods'"), '缺模块仓库地址（模块市场/桌宠素材都在模块仓）')
+  assert.ok(src.includes('href: mods'), '「关于」页要有模块仓库入口按钮或链接')
+  assert.ok(src.includes('aureth-labs 组织'), '要说明仓库已迁入组织')
+})
+
 test('面板源码契约：「关于」页是只读的，不走任何写接口', () => {
   const start = src.indexOf('function About({ st })')
   const end = src.indexOf('function RecentLogs({ go })')
