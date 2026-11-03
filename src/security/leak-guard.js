@@ -1,8 +1,34 @@
 // 出口清洗使用的提示词指纹与原文区间；这里只做识别，不负责投递。
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-export const PROMPT_MATCH_LENGTH = 20 // 连续 20 个 Unicode 字符逐字相同才算复读
+export const PROMPT_MATCH_LENGTH = 20 // 归一化后连续 20 个字符相同才算复读
 const promptCapture = new AsyncLocalStorage()
+
+// 显示层归一化：空白、标点/符号、零宽字符、Markdown ** / 反引号 / ||| 都去掉后再比对，
+// 这样插换行、拆气泡、加粗、每字插空格、零宽字符都绕不过复读检测；同时保留坐标映射，删除时仍删原文。
+const ZERO_WIDTH = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060'])
+const SKIP_CHAR = /[\s\p{P}\p{S}]/u
+
+/**
+ * 把文字归一化成「显示层字符序列」，并记录每个字符在原文里的起止下标（UTF-16 code unit）。
+ * @returns {{chars:string[], starts:number[], ends:number[]}}
+ */
+export function normalizeForMatch (text) {
+  const chars = []
+  const starts = []
+  const ends = []
+  let offset = 0
+  for (const ch of String(text ?? '')) {
+    const start = offset
+    offset += ch.length
+    if (ZERO_WIDTH.has(ch)) continue
+    if (SKIP_CHAR.test(ch)) continue
+    chars.push(ch)
+    starts.push(start)
+    ends.push(offset)
+  }
+  return { chars, starts, ends }
+}
 
 // 记录变量最终渲染值（包括模块改写），不在发送时重新生成人格或规则。
 export const withPromptCapture = (sources, fn) => promptCapture.run(sources, fn)
@@ -52,7 +78,8 @@ export function memoryPromptRanges(text) {
 
 export function promptFingerprint(sources = [], userText = '') {
   const grams = new Set()
-  const excluded = String(userText || '')
+  // 用户这一轮自己说的话不算复读：同样归一化后再排除。
+  const excluded = normalizeForMatch(userText).chars.join('')
   for (const source of sources) {
     let text = String(source || '')
     // 聊天原话与她自己的说话习惯不是规则；仍由固定块识别去掉注入外壳。
@@ -60,25 +87,47 @@ export function promptFingerprint(sources = [], userText = '') {
     for (const r of quoted.sort((a, b) => b.start - a.start)) text = text.slice(0, r.start) + '\n' + text.slice(r.end)
     for (const line of text.split('\n')) {
       if (/口头禅|常用语|常挂在嘴边/.test(line)) continue
-      const chars = Array.from(line)
-      for (let i = 0; i + PROMPT_MATCH_LENGTH <= chars.length; i++) {
-        const gram = chars.slice(i, i + PROMPT_MATCH_LENGTH).join('')
-        if (!excluded.includes(gram)) grams.add(gram)
+      const chars = normalizeForMatch(line).chars
+      // 20 字和 18 字两种 shingle：短一点的复读片段/被标点打断的也能拦住，误伤靠 18 字下限控制。
+      for (const size of [PROMPT_MATCH_LENGTH, PROMPT_MATCH_LENGTH - 2]) {
+        for (let i = 0; i + size <= chars.length; i++) {
+          const gram = chars.slice(i, i + size).join('')
+          if (!excluded.includes(gram)) grams.add(gram)
+        }
       }
     }
   }
   return grams
 }
 
-/** 合并命中的连续窗口后，调用方只删逐字复读的部分，保留同一行里的正常话。 */
+/** 合并命中的连续窗口后，调用方只删复读的部分（格式化变体也算），保留同一行里的正常话。 */
 export function promptTextRanges(text, grams) {
   const ranges = memoryPromptRanges(text)
   if (!grams?.size) return ranges
-  const chars = Array.from(text), offsets = [0]
-  for (const c of chars) offsets.push(offsets.at(-1) + c.length)
-  for (let i = 0; i + PROMPT_MATCH_LENGTH <= chars.length; i++) {
-    if (grams.has(chars.slice(i, i + PROMPT_MATCH_LENGTH).join(''))) ranges.push({ start: offsets[i], end: offsets[i + PROMPT_MATCH_LENGTH] })
+  const { chars, starts, ends } = normalizeForMatch(text)
+  const raw = String(text ?? '')
+  const hits = []
+  for (const size of [PROMPT_MATCH_LENGTH, PROMPT_MATCH_LENGTH - 2]) {
+    for (let i = 0; i + size <= chars.length; i++) {
+      if (grams.has(chars.slice(i, i + size).join(''))) hits.push({ start: starts[i], end: ends[i + size - 1] })
+    }
   }
+  // 连续窗口先合并，再把复读段落两端格式字符（空格/标点/反引号等）一起带走，避免残留「。」或反引号；
+  // 但不动 ||| / ｜，气泡分隔符要保留下游拆条逻辑。
+  hits.sort((a, b) => a.start - b.start || b.end - a.end)
+  const merged = []
+  for (const hit of hits) {
+    const last = merged.at(-1)
+    if (last && hit.start <= last.end) last.end = Math.max(last.end, hit.end)
+    else merged.push({ ...hit })
+  }
+  const isSkip = (ch) => /[\s\p{P}\p{S}]/u.test(ch) && !/[|｜<>]/.test(ch)
+  for (const range of merged) {
+    while (range.start > 0 && isSkip(raw[range.start - 1])) range.start--
+    while (range.end < raw.length && isSkip(raw[range.end])) range.end++
+    ranges.push(range)
+  }
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end)
   return ranges
 }
 

@@ -789,7 +789,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (!tgt) return null
     if (!cfg.files?.enabled) throw new Error('发文件没打开（面板「聊天」页 → 发文件），打开后才能发')
     const { src, external, size, maxBytes } = checkSendableFile(cfg, file)
-    const label = fileLabel(name, src)
+    // 文件显示名也会出现在 QQ 文件卡片上：和正文一样过一遍出站清洗，避免工具文字/提示词借文件名露出。
+    const label = cleanOutboundText(fileLabel(name, src), cleaningFor(chatId)).trim() || '文件'
     // 模拟测试：只记下来，不真发
     const cap = captureStore.getStore()
     if (cap) {
@@ -2362,6 +2363,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   return {
     dispose,
+    // 给模块用的出站清洗（和 QQ 投递同一套：工具标记 + 提示词复读 + 格式变体）。
+    cleanOutbound: (chatId, text) => cleanOutboundText(String(text ?? ''), cleaningFor(chatId)),
     // 仅关闭本中枢持有的短期媒体缓存，迟到的事件不能重新写入。
     disposeRecentMedia: () => recentMedia.dispose(),
     modelFor: targetModel,

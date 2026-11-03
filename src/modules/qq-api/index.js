@@ -4,6 +4,7 @@
 import { defineTool, str } from '../../tools/tools.js'
 import { QQ_API, paramsOf } from './actions.js'
 import { clipText } from '../../core/text.js'
+import { cleanOutboundText } from '../../chat/reply.js'
 
 const RESULT_CHARS = 3000
 
@@ -37,6 +38,66 @@ export function refusal({ action, params, cfg, owner, chat }) {
   if (entry[0] !== 'open') return '这个只有主人开口才能用'
   if (action !== 'translate_en2zh' && (chat.kind !== 'group' || String(params.group_id) !== String(chat.groupId))) return '只能查当前这个群'
   return ''
+}
+
+/**
+ * 会显示到对方界面上的文本参数：原始 OneBot 动作（转发、AI 语音、Ark 卡片、群名片等）也要过出站清洗。
+ * 否则模型被诱导时可以把工具标记/提示词复读原样塞进转发内容或卡片标题，绕过 QQ 投递路径的清洗。
+ */
+export const TEXT_PARAM_FIELDS = {
+  send_forward_msg: ['messages', 'message', 'source', 'summary', 'prompt', 'news'],
+  send_group_forward_msg: ['messages', 'message', 'source', 'summary', 'prompt', 'news'],
+  send_private_forward_msg: ['messages', 'message', 'source', 'summary', 'prompt', 'news'],
+  send_group_ai_record: ['text'],
+  get_ai_record: ['text'],
+  send_tuwen_ark: ['title', 'desc', 'summary', 'preview_url', 'jump_url'],
+  set_group_name: ['group_name'],
+  set_friend_remark: ['remark'],
+  set_group_card: ['card'],
+  set_group_remark: ['remark'],
+}
+
+/** 递归清洗：字符串里是 JSON（转发消息常见）就先解析、清完再序列化；消息段只改内容和数据，不动 type。 */
+function cleanParamValue (value, clean) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        return JSON.stringify(cleanParamValue(parsed, clean))
+      } catch (error) {}
+    }
+    return clean(value)
+  }
+  if (Array.isArray(value)) return value.map((item) => cleanParamValue(item, clean))
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [key, item] of Object.entries(value)) out[key] = key === 'type' ? item : cleanParamValue(item, clean)
+    return out
+  }
+  return value
+}
+
+/**
+ * 对会外显的文本参数做出站清洗。清洗后必填文本变空（整段都是工具调用/提示词复读）就拒绝这次调用。
+ * @param {(text:string)=>string} cleanText 与 QQ 投递一致的清洗函数（hub.cleanOutbound）
+ */
+export function cleanOutboundParams (action, params, cleanText) {
+  const fields = TEXT_PARAM_FIELDS[action]
+  if (!fields || typeof cleanText !== 'function') return { ok: true, params, changed: false }
+  const out = { ...params }
+  let changed = false
+  let emptied = false
+  for (const field of fields) {
+    if (!Object.hasOwn(params, field)) continue
+    const before = params[field]
+    const after = cleanParamValue(before, (text) => String(cleanText(String(text ?? '')) ?? ''))
+    if (JSON.stringify(after) !== JSON.stringify(before)) changed = true
+    if (typeof after === 'string' && !after.trim() && String(before ?? '').trim()) emptied = true
+    out[field] = after
+  }
+  if (emptied) return { ok: false, message: '内容里有工具调用文字或提示词复读，已拦下' }
+  return { ok: true, params: out, changed }
 }
 
 /** 只留表里写的参数，模型多写的不传给网关。 */
@@ -83,8 +144,15 @@ export default {
             const name = String(action || '')
             const no = refusal({ action: name, params, cfg: api.config(), owner: isOwner(), chat })
             if (no) return { ok: false, message: no }
+            // 原始动作里的文本/转发/卡片参数也过出站清洗（和 QQ 投递同一套），别让工具文字走旁路露出。
+            const clean = typeof hub.cleanOutbound === 'function'
+              ? (text) => hub.cleanOutbound(chat.chatId, text)
+              : (text) => cleanOutboundText(text, { ownerPrivate: chat.chatId === `private:${api.config().ownerQQ}` })
+            const cleaned = cleanOutboundParams(name, pickParams(name, params), clean)
+            if (!cleaned.ok) return { ok: false, message: cleaned.message }
+            if (cleaned.changed) api.log.info(`qq_api：${chat.chatId} 调用 ${name} 前清洗了外显文本`)
             api.log.info(`qq_api：${chat.chatId} 调用 ${name}`)
-            const data = await onebot.call(name, pickParams(name, params), { timeoutMs: 15000, retries: 0 })
+            const data = await onebot.call(name, cleaned.params, { timeoutMs: 15000, retries: 0 })
             return { ok: true, message: clipText(JSON.stringify(data ?? null), RESULT_CHARS) }
           },
           render: (_args, value) => [{ type: 'text', text: value?.message || '' }],

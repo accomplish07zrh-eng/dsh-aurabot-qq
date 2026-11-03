@@ -36,78 +36,166 @@ export function isSilence(text) {
   return t === '' || t === SILENCE || t === '［沉默］' || t === '(沉默)' || t === '（沉默）'
 }
 
+const ZERO_WIDTH_CHARS = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060'])
+const stripZeroWidth = (s) => { let out = ''; for (const ch of String(s || '')) if (!ZERO_WIDTH_CHARS.has(ch)) out += ch; return out }
+const FULLWIDTH = (s) => String(s || '').replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+
+// 「解释格式/示例」的上下文：这类回答里的代码块/示例不该被工具删除掏空。
+const EXPLAIN_CONTEXT = /(?:例如|比如|示例|例子|举例|解释|说明|格式|写法|怎么写|怎样写|如何写|这样写|这么写|写成|教我|模板|代码如下|代码块|演示|demo|example|提示词|标签)/i
+const PROTO_ATTRS = /^(?:name|arguments?|input|id|callid|type|function|parameters?|parameter|prompt|content|text|json|args|new|old|value|tool|query|q)$/
+const PROTO_NAMES = ['functioncalls', 'functioncall', 'toolcalls', 'toolcall', 'tooloutputs', 'tooloutput', 'toolsection', 'tooluse', 'parameter', 'parameters', 'invoke', 'calls', 'call', 'prompt']
+
+/** 代码围栏 / 行内代码范围：解释语境下里面的工具示例保留。 */
+function codeRanges (raw) {
+  const ranges = []
+  for (const m of raw.matchAll(/```[\s\S]*?```/g)) ranges.push({ start: m.index, end: m.index + m[0].length, fence: true })
+  for (const m of raw.matchAll(/`[^`\n]+`/g)) {
+    if (ranges.some((r) => m.index >= r.start && m.index < r.end)) continue
+    ranges.push({ start: m.index, end: m.index + m[0].length, fence: false })
+  }
+  return ranges
+}
+const insideCode = (code, start, end) => code.some((r) => start >= r.start && end <= r.end)
+
 /** 只识别工具协议标签；普通的 <、|、HTML 和聊天控制标签不在这里处理。 */
-function toolTag(token) {
-  let body = token.replace(/[！-～]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)).slice(1).replace(/>$/, '').trim()
-  const closing = /^\//.test(body)
-  body = body.replace(/^\/\s*/, '')
-  const dsml = /^(?:[|｜]\s*)+d\s*s\s*m\s*l(?=\s|[|｜]|$)\s*(?:[|｜]\s*)*/i.exec(body)
-  const antml = /^antml\s*:\s*/i.exec(body)
-  if (dsml || antml) body = body.slice((dsml || antml)[0].length)
-  const boundary = /^[|｜]+(tool(?:[▁_]*(?:calls?|outputs?|section))*)[▁_]*(begin|end)[|｜]+$/i.exec(body.replace(/\s/g, ''))
+function toolTag (token) {
+  let body = FULLWIDTH(stripZeroWidth(token)).slice(1).replace(/>$/, '').trim()
+  if (!body) return null
+  // 闭合标签可能是 </invoke>、</|DSML|invoke>、<|DSML|/invoke>：斜杠可能在前缀前或前缀后
+  const closing = /^[|｜]*\s*\//.test(body) ||
+    /^(?:(?:[|｜]\s*)+d\s*s\s*m\s*l(?=\s|[|｜]|$)\s*(?:[|｜]\s*)+)\s*\//i.test(body) ||
+    /^antml\s*:\s*\//i.test(body)
+  // 先去掉最前面的斜杠（</invoke>、</|DSML|invoke>），再剥 DSML / antml 前缀，最后再处理前缀后的多余斜杠。
+  body = body.replace(/^[|｜]*\s*\/\s*/, '')
+  const prefix = /^(?:(?:[|｜]\s*)+d\s*s\s*m\s*l(?=\s|[|｜]|$)\s*(?:[|｜]\s*)*|antml\s*:\s*)/i.exec(body)
+  const hadPrefix = Boolean(prefix)
+  if (hadPrefix) body = body.slice(prefix[0].length)
+  body = body.replace(/^[|｜]*\s*\/\s*/, '').replace(/\/\s*$/, '') // </|DSML|/invoke> 这类多余斜杠；<tool_call/> 自闭合
+  const compact = body.replace(/[\s\u3000]+/g, '')
+  // 成对开始/结束标记：|tool_calls_begin|、<|tool▁calls▁begin|>、DSML 前缀版
+  const boundary = /^(?:[|｜]+)?(tool(?:[▁_]*(?:calls?|outputs?|section))*)[▁_]*(begin|end)(?:[|｜]+)?$/i.exec(compact)
   if (boundary) return { key: boundary[1].toLowerCase().replace(/[▁_]/g, ''), closing: boundary[2].toLowerCase() === 'end' }
-  if (/^[|]+tool[▁_]*sep[|]+$/i.test(body.replace(/\s/g, ''))) return { key: 'toolsep', closing: true }
-  const name = /^(function[\s_:-]*calls?|tool[\s_:-]*(?:calls?|use)|invoke|calls?|parameters?|prompt)(?=\s|\/|$)/i.exec(body)
-  if (!name && !dsml && !antml) return null
-  return { key: name ? name[1].toLowerCase().replace(/[\s_:-]/g, '') : 'protocol:' + body.toLowerCase(), closing }
+  if (/^[|｜]*tool[▁_]*sep[|｜]*$/i.test(compact)) return { key: 'toolsep', closing: true }
+  const bare = compact.replace(/^[|｜]+|[|｜]+$/g, '')
+  // 内部推理标记：begin_of_thought / end_of_thought / thinking / <|/thinking|>
+  if (/^(?:begin[\s_-]*of[\s_-]*thought|end[\s_-]*of[\s_-]*thought)$/i.test(bare)) return { key: 'thinking', closing: /^end/i.test(bare) }
+  if (/^think(?:ing)?$/i.test(bare)) return { key: 'thinking', closing }
+  // 标签名内部可能被插了全角空格/换行（<in　voke>、<in\nvoke>）；去掉属性部分再认协议名
+  const eq = body.indexOf('=')
+  const head = FULLWIDTH(eq >= 0 ? body.slice(0, eq) : body).replace(/[\s\u3000_:-]+/g, '').toLowerCase()
+  for (const name of [...PROTO_NAMES].sort((a, b) => b.length - a.length)) {
+    if (!head.startsWith(name)) continue
+    const rest = head.slice(name.length)
+    if (!rest || PROTO_ATTRS.test(rest)) return { key: name, closing }
+  }
+  if (hadPrefix) return { key: 'protocol:' + compact.toLowerCase(), closing }
+  return null
+}
+
+/** 单次线性括号扫描：只收集配平的 {…} / […] 区间（含单引号/双引号字符串边界）。 */
+function balancedSpans (raw, maxLen) {
+  const spans = []
+  const stack = []
+  let quote = ''
+  let escaped = false
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]
+    if (quote) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === quote) quote = ''
+      else if (c === '\n' && quote === "'") quote = '' // 单引号不跨行，避免句子里的撇号吞掉后面
+      continue
+    }
+    if ((c === '"' || c === "'") && stack.length > 0) { quote = c; continue }
+    if (c === '{' || c === '[') { stack.push({ i, c }); continue }
+    if (c === '}' || c === ']') {
+      const top = stack.pop()
+      if (!top) continue
+      if ((c === '}' && top.c !== '{') || (c === ']' && top.c !== '[')) { stack.length = 0; continue }
+      const span = { start: top.i, end: i + 1 }
+      if (span.end - span.start <= maxLen) spans.push(span)
+    }
+  }
+  return spans
+}
+
+/** 严格 JSON 不行时，容忍单引号 / 无引号 key / Python 的 True/False/None（模型常这么写调用）。 */
+function parseJsonLoose (text) {
+  try { return JSON.parse(text) } catch (error) {}
+  let t = String(text)
+  t = t.replace(/'((?:[^'\\]|\\.)*)'/g, (m, inner) => JSON.stringify(inner.replace(/\\'/g, "'")))
+  t = t.replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false').replace(/\bNone\b/g, 'null')
+  t = t.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')
+  try { return JSON.parse(t) } catch (error) { return null }
+}
+
+function isToolCallValue (v) {
+  const toolName = (name) => typeof name === 'string' && /^[a-z][a-z0-9_.:-]*$/i.test(name)
+  const isCall = (x) => x && typeof x === 'object' && !Array.isArray(x) && (
+    (toolName(x.name) && Object.hasOwn(x, 'arguments') && Object.keys(x).every((k) => ['name', 'arguments', 'id', 'type'].includes(k))) ||
+    (x.type === 'tool_use' && toolName(x.name) && Object.hasOwn(x, 'input')) ||
+    (x.type === 'function' && isCall(x.function)) || isCall(x.function_call) ||
+    (x.functionCall && toolName(x.functionCall.name) && Object.hasOwn(x.functionCall, 'args')) ||
+    (Array.isArray(x.tool_calls) && x.tool_calls.length && x.tool_calls.every(isCall))
+  )
+  return Boolean(isCall(v)) || Boolean(Array.isArray(v) && v.length && v.every(isCall))
+}
+
+/** 解释/示例语境里，代码块或示例里的工具写法保留；其余照旧删除。 */
+function rangeExempt (range, { explain, code, ownerPrivate, raw }) {
+  const inCode = insideCode(code, range.start, range.end)
+  const fenceOnly = /^\s*```[\s\S]*```\s*$/.test(raw)
+  if (range.kind === 'tag') {
+    if (inCode && (explain || (ownerPrivate && !fenceOnly))) return true
+    // 解释句里提到的单个标签名（「在提示词里写 <invoke> 会怎样」）不当调用删
+    if (!range.paired && explain && !inCode) return true
+    return false
+  }
+  if (range.kind === 'json') return inCode ? (explain || (ownerPrivate && !fenceOnly)) : (explain && ownerPrivate)
+  if (range.kind === 'generic') return inCode && (explain || ownerPrivate)
+  return false
 }
 
 /** 成对调用连同参数一起去掉；孤立开/闭标签、缺少 > 的尾片只去标记，保留旁边的正常话。 */
-function toolTextRanges(raw) {
-  const ranges = [], stack = []
+function toolTextRanges (raw, { ownerPrivate = false } = {}) {
+  const found = [] // { start, end, kind, paired }
+  // 1) 协议标签：成对的连同中间参数一起删，孤立的只删标记；未闭合的内部推理整段吞掉
+  const stack = []
   for (const match of raw.matchAll(/[<＜][^<>＜＞]*(?:[>＞]|(?=[<＜])|$)/g)) {
     const tag = toolTag(match[0])
     if (!tag) continue
-    const range = { start: match.index, end: match.index + match[0].length }
-    ranges.push(range)
+    const range = { start: match.index, end: match.index + match[0].length, kind: 'tag', paired: false }
+    found.push(range)
     if (tag.closing) {
-      const i = stack.findLastIndex((open) => open.key === tag.key)
-      if (i !== -1) {
-        ranges.push({ start: stack[i].start, end: range.end })
-        stack.splice(i)
+      let hit = -1
+      for (let i = stack.length - 1; i >= 0; i--) if (stack[i].key === tag.key) { hit = i; break }
+      if (hit !== -1) {
+        found.push({ start: stack[hit].start, end: range.end, kind: 'tag', paired: true })
+        stack.splice(hit)
       }
     } else if (/[>＞]$/.test(match[0]) && !/[\/／]\s*[>＞]$/.test(match[0])) {
       stack.push({ key: tag.key, start: range.start })
     }
   }
-  // 按 JSON 的括号和字符串边界取完整对象，嵌套参数、字符串参数和转义引号都能处理。
-  const toolName = (name) => typeof name === 'string' && /^[a-z][a-z0-9_.:-]*$/i.test(name)
-  const isCall = (v) => v && typeof v === 'object' && !Array.isArray(v) && (
-    (toolName(v.name) && Object.hasOwn(v, 'arguments') && Object.keys(v).every((k) => ['name', 'arguments', 'id', 'type'].includes(k))) ||
-    (v.type === 'tool_use' && toolName(v.name) && Object.hasOwn(v, 'input')) ||
-    (v.type === 'function' && isCall(v.function)) || isCall(v.function_call) ||
-    (v.functionCall && toolName(v.functionCall.name) && Object.hasOwn(v.functionCall, 'args')) ||
-    (Array.isArray(v.tool_calls) && v.tool_calls.length && v.tool_calls.every(isCall)))
-  for (let start = 0; start < raw.length; start++) {
-    if (!['{', '['].includes(raw[start])) continue
-    const stack = [], begin = start
-    let quoted = false, escaped = false
-    for (let i = start; i < raw.length; i++) {
-      const c = raw[i]
-      if (quoted) {
-        if (escaped) escaped = false
-        else if (c === '\\') escaped = true
-        else if (c === '"') quoted = false
-        continue
-      }
-      if (c === '"') quoted = true
-      else if (c === '{' || c === '[') stack.push(c)
-      else if (c === '}' || c === ']') {
-        if (stack.pop() !== (c === '}' ? '{' : '[')) break
-        if (!stack.length) {
-          try {
-            const v = JSON.parse(raw.slice(begin, i + 1))
-            if (isCall(v) || (Array.isArray(v) && v.length && v.every(isCall))) {
-              ranges.push({ start: begin, end: i + 1 })
-              start = i
-            }
-          } catch (error) {}
-          break
-        }
-      }
-    }
+  for (const open of stack) if (open.key === 'thinking') found.push({ start: open.start, end: raw.length, kind: 'tag', paired: true })
+
+  // 2) JSON 调用对象：单次线性括号扫描 + 长度/预算上限，避免 O(n²)
+  const budget = { chars: 300_000, parses: 400 }
+  const parsed = []
+  for (const span of balancedSpans(raw, 8000).sort((a, b) => a.start - b.start || b.end - a.end)) {
+    if (parsed.some((r) => span.start >= r.start && span.end <= r.end)) continue
+    const slice = raw.slice(span.start, span.end)
+    if (!/(?:name|arguments|tool_use|function_call|functionCall|tool_calls|input)/.test(slice)) continue
+    if (budget.chars < slice.length || budget.parses <= 0) break
+    budget.chars -= slice.length
+    budget.parses--
+    if (!isToolCallValue(parseJsonLoose(slice))) continue
+    found.push({ start: span.start, end: span.end, kind: 'json', paired: true })
+    parsed.push(span)
   }
-  // 只拦整段都是「调用工具 xxx(参数)」的输出，讨论工具的正常句子保留。
+
+  // 3) 只拦整段都是「调用工具 xxx(参数)」的输出，讨论工具的正常句子保留。
   const invocation = stripMarkdown(raw)
     .replace(/<\/?(?:voice|reply|at)\b[^>]*>/gi, '').replace(/\|\|\|/g, '').trim()
     .replace(/^[「“"']+|[」”"']+$/g, '')
@@ -124,16 +212,26 @@ function toolTextRanges(raw) {
       } else if (c === '"' || c === "'") quote = c
       else if (c === '(') depth++
       else if (c === ')' && --depth === 0) {
-        if (/^[。.!！]?$/.test(invocation.slice(i + 1).trim())) ranges.push({ start: 0, end: raw.length })
+        if (/^[。.!！]?$/.test(invocation.slice(i + 1).trim())) found.push({ start: 0, end: raw.length, kind: 'natural', paired: true })
         break
       }
     }
   }
-  for (const pattern of [
-    /[<＜]\s*[\/／]?\s*[a-z][a-z0-9]*_[a-z0-9_]+["＂]?\s*[>＞]/gi,
-  ]) {
-    for (const match of raw.matchAll(pattern)) ranges.push({ start: match.index, end: match.index + match[0].length })
+
+  // 4) 通用下划线标签：只认 tool/param/invoke 类名（<x_1>、<snake_case> 这类正常文字不删）
+  // 只认协议类名和本插件已知的工具名前缀（qq_/bili_/...），避免 <x_1>、<snake_case> 这类正常文字被误删。
+  for (const match of raw.matchAll(/[<＜]\s*[\/／]?\s*(?:tool|function|invoke|param(?:eter)?|antml|dsml|arguments?|call|qq|bili|qzone|song|pet|memory|mood|sticker|diary|video|voice|contact|profile|purpose|speak|draw|image|send|get|set)[_:\s]+[a-z0-9_]+["＂]?\s*[>＞]/gi)) {
+    if (toolTag(match[0])) continue // 已知协议标签已单独处理，这里只补通用下划线形式
+    found.push({ start: match.index, end: match.index + match[0].length, kind: 'generic', paired: false })
   }
+
+  // 5) 解释/示例语境豁免
+  const explain = EXPLAIN_CONTEXT.test(raw)
+  const code = codeRanges(raw)
+  const ranges = found
+    .filter((range) => !rangeExempt(range, { explain, code, ownerPrivate, raw }))
+    .map(({ start, end }) => ({ start, end }))
+
   // 删除只包着调用的代码围栏，避免 JSON 被删后留下 ```json 发出去。
   for (const m of raw.matchAll(/```[a-z0-9_-]*\s*\n?([\s\S]*?)```/gi)) {
     const start = m.index + m[0].indexOf(m[1])
@@ -172,7 +270,7 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const active = currentPromptSources()
   const sources = promptSources ?? [...(active?.system.values() || []), active?.context || '', ...(active?.memory || [])]
   const raw = String(text || '')
-  const tools = toolTextRanges(raw)
+  const tools = toolTextRanges(raw, { ownerPrivate })
   const toolClean = withoutToolRanges(raw, tools)
   const prompts = (allowPromptEcho ? [] : promptTextRanges(toolClean, fingerprint || promptFingerprint(sources, userText ?? active?.userText ?? '')))
     .sort((a, b) => a.start - b.start || b.end - a.end)

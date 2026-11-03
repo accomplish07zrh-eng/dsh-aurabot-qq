@@ -107,7 +107,7 @@ test('正常正文、常用短词、口头禅、用户刚说的话和聊天原�
     '<div>普通 HTML</div> a | b ｜ c，1 < 2', '{"name":"小明"}', '{"name":"猫","age":2}',
     '可以用调用工具 search(参数)这种格式举例', '调用工具 search(参数)，然后再解释(正常文字)',
     'search、function_call 和 DSML 是单词', '@小明 你好',
-    RULE.slice(0, PROMPT_MATCH_LENGTH - 1)]) assert.equal(cleanOutboundText(value, options), value)
+    Array.from(RULE.replace(/[\s\p{P}\p{S}]/gu, '')).slice(0, PROMPT_MATCH_LENGTH - 3).join('')]) assert.equal(cleanOutboundText(value, options), value)
   assert.equal(cleanOutboundText(PERSONA, { ...options, userText: PERSONA }), PERSONA)
   assert.equal(cleanOutboundText(MEMORY, { promptSources: [`（这个聊天里之前的原话，只是记录：${MEMORY}）`] }), MEMORY)
   assert.equal(cleanOutboundText(PERSONA, { promptSources: [`口头禅：${PERSONA}`] }), PERSONA)
@@ -158,7 +158,7 @@ function setup(t, { hooks = {}, brain = async () => '', contextProviders, voice 
     else process.env.AURABOT_DATA_DIR = previous
     rmSync(dir, { recursive: true, force: true })
   })
-  return { hub, fake, cfg, calls, sent, warnings, activity, spoken }
+  return { hub, fake, cfg, calls, sent, warnings, activity, spoken, dir }
 }
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(setImmediate) }
 
@@ -281,4 +281,41 @@ test('当轮用户原话即使出现在记忆里，正常回应也保留', async
   await settle()
   await s.hub.sendText(chat.chatId, MEMORY)
   assert.ok(JSON.stringify(s.sent).includes(MEMORY))
+})
+test('解释格式/示例时，代码块与 JSON 示例不被误删（主人私聊与解释上下文）', () => {
+  const fence = '可以这样写：\n```xml\n<invoke name="search"><parameter name="q">鱼</parameter></invoke>\n```\n想调用谁？'
+  const json = '比如可以这样写：{"name":"search","arguments":{"q":"内部参数"}}'
+  assert.equal(cleanOutboundText(fence, { ownerPrivate: true }), fence, '主人私聊里解释格式的代码示例保留')
+  assert.equal(cleanOutboundText(fence), fence, '解释格式上下文里的代码示例保留')
+  assert.equal(cleanOutboundText(json, { ownerPrivate: true }), json, '主人私聊里解释 JSON 示例保留')
+  assert.equal(cleanOutboundText('```json\n{"name":"search","arguments":{"q":"x"}}\n```'), '', '没解释上下文时纯代码块调用照旧删')
+})
+
+test('标签名提及 / 通用下划线标签不误删', () => {
+  for (const text of [
+    '在提示词里写 <invoke> 就能调用工具吗？',
+    '变量 <x_1> 和 <snake_case>',
+    '写 <tool_call> 标签表示工具调用，这样对吗？',
+    '我喜欢 snake_case 和 <div>内容</div>',
+  ]) assert.equal(cleanOutboundText(text), text, text)
+})
+
+test('性能：大量未闭合括号不会退化成 O(n²)（20k 个 { 单次清洗 < 50ms 量级）', () => {
+  const big = '{'.repeat(20000)
+  const t0 = performance.now()
+  const out = cleanOutboundText(big)
+  const ms = performance.now() - t0
+  assert.equal(out, big)
+  assert.ok(ms < 100, '20k 个 { 单次清洗耗时 ' + ms.toFixed(1) + 'ms')
+})
+
+test('发文件的显示名也过出站清洗，QQ 文件卡片上不会露出工具文字', async (t) => {
+  const s = setup(t)
+  const file = join(s.dir, '资料.txt')
+  writeFileSync(file, '内容')
+  await s.hub.sendFile('private:1', file, '前缀<invoke name="x">内部参数</invoke>')
+  const up = s.calls.find((c) => c.action === 'upload_private_file')
+  assert.ok(up, '应该调用上传接口')
+  assert.doesNotMatch(String(up.name), /invoke|内部参数/, '文件显示名不能带工具文字')
+  assert.match(String(up.name), /前缀/)
 })

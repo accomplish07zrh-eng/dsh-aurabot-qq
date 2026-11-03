@@ -217,3 +217,46 @@ test('空间和桌宠的独立路径复用同一清洗，截断及去 HTML 前�
   assert.equal(cleanReply(`大肥鱼：${block}`), '')
   assert.equal(cleanReply(`前${block}后`), '前后')
 })
+
+test('零宽字符 / 全角空格 / 换行混入标签名也能识别并删参数', () => {
+  const variants = [
+    '<tool\u200b_call>内部参数</tool\u200b_call>',
+    '<\u200binvoke name="x">内部参数</in\u200bvoke>',
+    '<|DS\u200bML|invoke>内部参数</|DSML|invoke>',
+    '<in\u3000voke>内部参数</in\u3000voke>',
+    '<in\nvoke>内部参数</in\nvoke>',
+  ]
+  for (const input of variants) assert.equal(stripToolText(`前文${input}后文`), '前文后文', JSON.stringify(input))
+})
+
+test('DSML begin/end 带前缀成对删内容；开闭不配对只删标记', () => {
+  const paired = '<|DSML|tool_calls_begin|>内部参数<|DSML|tool_calls_end|>'
+  assert.equal(cleanOutboundText(paired), '')
+  assert.equal(stripToolText(`前${paired}后`), '前后')
+  assert.equal(stripToolText('前<|DSML|invoke name="x">内部参数<|DSML|/invoke>后'), '前后')
+  assert.equal(stripToolText('前<|DSML|tool_calls_begin|>内部参数'), '前内部参数')
+  assert.equal(stripToolText('前内部参数<|DSML|tool_calls_end|>后'), '前内部参数后')
+})
+
+test('单引号 / 非严格 JSON 调用文本也删，普通 JSON 保留', () => {
+  for (const input of [
+    "{'name':'search','arguments':{'q':'内部参数'}}",
+    "{'tool_calls':[{'name':'search','arguments':{'q':'内部参数'}}]}",
+    "{name:'search',arguments:{q:'内部参数'}}",
+    "{'type':'tool_use','name':'search','input':{'q':'内部参数'}}",
+  ]) assert.equal(cleanOutboundText(input), '', input)
+  assert.equal(cleanOutboundText("好呀 {'name':'小明'}"), "好呀 {'name':'小明'}")
+})
+
+test('<|thinking|> / begin_of_thought 内容按内部推理删掉', () => {
+  for (const input of [
+    '<|begin_of_thought|>内部推理内容<|end_of_thought|>你好',
+    '<|thinking|>内部推理内容<|/thinking|>你好',
+    '<|begin_of_thought|>内部推理内容<|end_of_thought|>',
+    '<|begin_of_thought|>内部推理内容<|end_of_thought|>你好',
+  ]) {
+    const out = cleanOutboundText(input)
+    assert.doesNotMatch(out, /内部推理内容/, JSON.stringify(input))
+  }
+  assert.equal(cleanOutboundText('<|thinking|>只有内部推理没有结束'), '')
+})
