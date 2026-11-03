@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { parseMessageEvent, gifFrames } from './inbound.js'
-import { parseReply, bubbleDelay, wantsVoice } from './reply.js'
+import { parseReply, bubbleDelay, wantsVoice, cleanOutboundText, cleanOutboundSegments } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, levelFor, presetFor, isOwner } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
@@ -29,7 +29,7 @@ import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
 import { isDefiniteFailure } from '../onebot/client.js'
 import { grantOwner } from '../core/workspace-move.js'
-import { createLeakGuard } from '../security/leak-guard.js'
+import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../security/leak-guard.js'
 import { noticeText } from './notices.js'
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
 
@@ -161,6 +161,27 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const groupMembers = new Map() // groupId → { at, list }  群成员（真 @ 时按名字找人，缓存 10 分钟）
   const noticesFor = new Map() // chatId → [一句话]  下次交给她时带上的群事件（撤回、禁言、进群……）
   const saidElsewhere = new Map() // chatId → [{ at, text }]  别处安排她在这里发的话，下次这个聊天交给她时补进去
+  const outputSources = new Map() // 只保存本聊天实际渲染/注入的这一轮原文
+  const outputScope = new AsyncLocalStorage() // 投递期间固定快照，下一轮渲染不能改掉它
+  function sourcesFor(chatId) {
+    if (!outputSources.has(chatId)) outputSources.set(chatId, { chatId, system: new Map(), context: '', memory: [], userText: '' })
+    return outputSources.get(chatId)
+  }
+  function cleaningFor(chatId) {
+    const active = currentPromptSources()
+    const sources = outputScope.getStore()?.chatId === chatId ? outputScope.getStore().sources : active || outputSources.get(chatId)
+    return {
+      warn: (message) => {
+        log.warn(`${chatId}：${message}`)
+        const scope = outputScope.getStore()
+        if (scope?.chatId === chatId) scope.blocked = true
+      },
+      allowPromptEcho: outputScope.getStore()?.chatId === chatId && outputScope.getStore().allowPromptEcho,
+      promptSources: [...(sources?.system.size ? sources.system.values() : hooks?.secrets?.({ chatId }) || []), sources?.context || '', ...(sources?.memory || [])],
+      userText: sources?.userText || '',
+      ownerPrivate: chatId === `private:${getConfig().ownerQQ}`,
+    }
+  }
 
   let disposed = false
   const disposedError = () => Object.assign(new Error('Aurabot 插件已卸载'), { code: 'AURABOT_DISPOSED' })
@@ -540,7 +561,12 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
               if (t) parts.push(t)
             } catch (error) {}
           }
-          return cleanText(parts.join('\n\n'))
+          const text = cleanText(parts.join('\n\n'))
+          const active = currentPromptSources()
+          const sources = active?.chatId === chat.chatId ? active : sourcesFor(chat.chatId)
+          sources.context = text
+          outputSources.set(chat.chatId, sources)
+          return text
         },
       }))
     } catch (error) {
@@ -563,6 +589,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const cfg = getConfig()
     const tgt = targetOf(chatId)
     if (!tgt) return null
+    const cleaning = cleaningFor(chatId)
+    // 转发到其他平台的 send 钩子也只能拿到清洗后的正文。
+    message = cleanOutboundSegments(message, cleaning)
+    if (!message.length) return null
     // 扩展模块最后改一次（加签名、过滤敏感词、转发到别处……）；返回 null 就不发
     if (hooks?.send) {
       try {
@@ -573,10 +603,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         log.warn('扩展模块改写发送内容出错：', error.message)
       }
     }
-    if (disposed || (isCurrent && !isCurrent())) return null
+    // 钩子可能重新写入工具标记；最终网关出口仍使用同一份清洗。
+    message = cleanOutboundSegments(message, cleaning)
+    if (!message.length || disposed || (isCurrent && !isCurrent())) return null
     const cap = captureStore.getStore()
     if (cap) {
       cap.push({ chatId, note, message })
+      if (outputScope.getStore()?.chatId === chatId) outputScope.getStore().sent++
       return { message_id: 'sim-' + cap.length }
     }
     if (force) {}
@@ -598,6 +631,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         if (sentIds.size > 500) sentIds.delete(sentIds.values().next().value)
       }
       bump('sent')
+      if (outputScope.getStore()?.chatId === chatId) outputScope.getStore().sent++
       return r
     } catch (error) {
       bump('errors')
@@ -614,6 +648,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const mention = (userId, segs = []) => (userId && !segs.some((s) => s.type === 'at' && String(s.data?.qq) === String(userId)) ? [{ type: 'at', data: { qq: String(userId) } }, { type: 'text', data: { text: ' ' } }] : [])
 
   async function sendText(chatId, text, replyId, missed, userId, opts = {}) {
+    // 先清洗，避免调用参数或提示词里的 @ / 表情变成真正的消息段。
+    text = cleanOutboundText(text, cleaningFor(chatId))
+    if (!text.trim()) return null
     // 文字里的 <face:名字> 换成 QQ 系统表情，和文字在同一条消息里；系统表情关着就去掉标签
     let segs = getConfig().stickers.faces ? textToSegments(text, faces.idOf) : [{ type: 'text', data: { text: stripFaceTags(text) } }]
     // 群里的 @名字 / <at:QQ号> 换成真 @（对方会收到提醒）
@@ -623,6 +660,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   }
 
   async function sendVoice(chatId, text, replyId, userId) {
+    text = cleanOutboundText(text, cleaningFor(chatId))
+    if (!text.trim()) return false
     let b64, engine, extras
     try {
       // 表情标签 / emoji 不念出来：TTS 只念能说的字（用户反馈：发语音时「呲牙」被读出来）
@@ -860,13 +899,29 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
   }
 
-  /** 一轮回复落地：拆条、语音、表情。 */
-  const leakGuard = createLeakGuard(() => hooks?.secrets?.() || [])
+  function silenceTurn(chatId) {
+    log.info(`${chatId}：她选择不说话`)
+    if (chatId.startsWith('group:')) {
+      const gid = chatId.slice(6)
+      groupEngaged.delete(gid)
+      groupEngagedRun.delete(gid)
+      groupInterjects.set(gid, [...(groupInterjects.get(gid) || []), Date.now()].slice(-60))
+    }
+  }
 
-  async function deliver(chatId, text, opts = {}) {
+  /** 一轮回复落地：拆条、语音、表情。 */
+  function deliver(chatId, text, opts = {}) {
+    const active = currentPromptSources()
+    const current = active || outputSources.get(chatId)
+    const sources = current && { ...current, system: new Map(current.system), memory: [...current.memory] }
+    return outputScope.run({ chatId, sources, sent: 0, blocked: false, allowPromptEcho: false }, () => deliverTurn(chatId, text, opts))
+  }
+
+  async function deliverTurn(chatId, text, opts = {}) {
     if (disposed) return
     const cfg = getConfig()
-    if (hooks?.reply) {
+    text = cleanOutboundText(text, cleaningFor(chatId))
+    if (text.trim() && hooks?.reply) {
       try {
         const next = await hooks.reply(text, { chatId, userText: opts.userText || '' })
         if (next === null) return log.info(`${chatId}：扩展模块拦下了这次回复`)
@@ -876,27 +931,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       }
     }
     if (disposed) return
-    // 主人私聊不拦：主人本来就能看提示词，调人设时让她念一段也正常
-    if (chatId !== `private:${cfg.ownerQQ}` && hooks?.secrets) {
-      const clean = leakGuard(text)
-      if (clean.dropped) {
-        log.warn(`${chatId}：回复里有 ${clean.dropped} 行在复述提示词，已拦下`)
-        if (!clean.text) return
-        text = clean.text
-      }
-    }
-    const r = parseReply(text)
-    if (r.silent) {
-      log.info(`${chatId}：她选择不说话`)
-      if (chatId.startsWith('group:')) {
-        // 她不想接，这就是群里停下来的主要原因：退出话题，这次也算一次插话，走完冷却才会再开口
-        const gid = chatId.slice(6)
-        groupEngaged.delete(gid)
-        groupEngagedRun.delete(gid)
-        groupInterjects.set(gid, [...(groupInterjects.get(gid) || []), Date.now()].slice(-60))
-      }
-      return
-    }
+    text = cleanOutboundText(text, { ...cleaningFor(chatId), onPromptDecision: (allow) => { outputScope.getStore().allowPromptEcho = allow } })
+    const r = parseReply(text, cleaningFor(chatId))
+    if (r.silent) return silenceTurn(chatId)
     let items = r.items
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
     if (opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
@@ -926,6 +963,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         log.warn('扩展模块改写回复出错：', error.message)
       }
     }
+    // 钩子改写后仍走同一个清洗，保留每条的语音/引用元数据。
+    items = cleanOutboundSegments(items.map((item) => ({
+      type: ['text', 'voice'].includes(item.kind) ? 'text' : item.kind,
+      data: { text: item.value }, item,
+    })), { ...cleaningFor(chatId), allowPromptEcho: false, onPromptDecision: (allow) => { outputScope.getStore().allowPromptEcho = allow } })
+      .map((seg) => seg.type === 'text' ? { ...seg.item, value: seg.data.text } : seg.item)
+    if (!items.length) return silenceTurn(chatId)
     // 一段只有一个人明确 @ / 引用她时，第一条回复引用并 @ 那个人；多人同时叫她不猜。
     // 模型明确选了引用编号时尊重它，不再自动引用另一条。
     const refs = inGroup ? groupRefs.get(chatId.slice(6)) || {} : {}
@@ -956,6 +1000,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       }
     })
     if (disposed) return
+    if (outputScope.getStore().blocked && !outputScope.getStore().sent) return silenceTurn(chatId)
     if (opts.simulate) return items
     // 一条都没发出去：不记流水，她没说出口的话不能算说过
     if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) return { missedAt, failed: failures.length, errors: failures }
@@ -1849,6 +1894,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const st = turnState.get(key) || { lastTurn: -1, text: '', senders: new Set() }
     // 上一句也带上：相关记忆检索遇到「嗯嗯」这种短句时，用上一句一起找（#79 之后由模块在提示词里加）
     const prevText = st.lastText || st.prevText || ''
+    const previousSources = sourcesFor(chat.chatId)
+    const sources = opts.steer ? previousSources : { chatId: chat.chatId, system: new Map(previousSources.system), context: previousSources.context, memory: [], userText: '' }
+    // 只把注入块加入指纹；不能把用户正文当作系统提示。排队的轮次各持一份。
+    const userText = String(opts.queryText ?? content.filter((c) => c.type === 'text').map((c) => c.text).join('\n'))
+    sources.userText += '\n' + userText
     if (hooks?.prompt) {
       try {
         const next = await hooks.prompt(content, { chat, sessionId, senderId, prevText, ...opts })
@@ -1898,6 +1948,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     turnState.set(key, st)
     content = await seedHistoryOnce(sessionId, chat, content)
     const admitted = await admit(agent, content)
+    for (const block of admitted.filter((c) => c.type === 'text')) {
+      for (const r of memoryPromptRanges(block.text)) sources.memory.push(block.text.slice(r.start, r.end))
+    }
     assertActive()
     startTyping(key, chat)
     // 告诉同一会话里的其他插件是谁在说（#145）：说话的全是主人才标 owner，混着别人或不知道是谁都是 guest。
@@ -1906,12 +1959,13 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const speakerRole = speakers.length && speakers.every((u) => isOwner(getConfig(), u)) ? 'owner' : 'guest'
     const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND, speaker: { role: speakerRole, chat: chat.kind } } }
     // 正在跑的这一轮：steer = 下一步就看到这句（DSH 界面插话走的也是它）；空闲时照旧 followup 开新一轮
+    outputSources.set(chat.chatId, sources)
     if (opts.steer && typeof agent.steer === 'function') {
       log.info(`${chat.chatId}：她还在忙，这句直接插进当前这一轮（steer）`)
-      await agent.steer(message)
+      await withPromptCapture(sources, () => agent.steer(message))
     } else {
       running.add(chat.chatId)
-      await agent.followup(message)
+      await withPromptCapture(sources, () => agent.followup(message))
     }
     try {
       if (dsh.sessions && typeof dsh.sessions.flush === 'function') await dsh.sessions.flush(agent.session)
@@ -2015,7 +2069,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       wait.result.catch(() => {})
       result = wait.result
       // followup 可能等整轮结束才返回；超时后保留标记，直到收到 turn/end 或取消并归档。
-      Promise.resolve().then(() => { assertActive(); return agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: cleanText(prompt) }], source: { kind: SOURCE_KIND, speaker: { role: 'none' } } }) }).catch((error) => {
+      Promise.resolve().then(() => {
+        assertActive()
+        const sources = sourcesFor(chat.chatId)
+        return withPromptCapture(sources, () => agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: cleanText(prompt) }], source: { kind: SOURCE_KIND, speaker: { role: 'none' } } }))
+      }).catch((error) => {
         if (st.system === system && system.timedOutAt == null) { st.system = null; system.reject(error) }
       })
     } finally {
@@ -2087,6 +2145,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     Promise.resolve(reg?.archiveSession?.(e.sessionId)).catch((error) => log.debug('归档会话失败：', error.message))
     sessionToChat.delete(sessionKey(e.sessionId))
     turnState.delete(sessionKey(e.sessionId))
+    outputSources.delete(chatId)
     delete m.chats[chatId]
     saveMap(m)
     log.info(`${chatId} 重新开始`)
@@ -2107,6 +2166,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       }
       sessionToChat.delete(sessionKey(e.sessionId))
       turnState.delete(sessionKey(e.sessionId))
+      outputSources.delete(chatId)
       delete m.chats[chatId]
       n++
     }
@@ -2263,6 +2323,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     toolDisposers.clear()
     sessionToChat.clear()
     turnState.clear()
+    outputSources.clear()
     systemTurns.clear()
     systemStarting.clear()
     systemFailures.clear()

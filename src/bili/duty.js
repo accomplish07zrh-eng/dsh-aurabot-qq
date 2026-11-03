@@ -9,7 +9,7 @@ import { createShotStore, shotPath, clockOf } from './shots.js'
 
 // 这些错误说明今天别再发了：没登录 / Cookie 过期、csrf 不对、风控、要验证码、太频繁
 const PAUSE_CODES = { '-101': 'B 站没登录或 Cookie 过期了', '-111': 'Cookie 里的 bili_jct 不对', '-352': '被 B 站风控了', '-509': '发得太频繁', '12015': 'B 站要求验证码' }
-import { isSilence } from '../chat/reply.js'
+import { isSilence, cleanOutboundText } from '../chat/reply.js'
 
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 const link = (bvid) => `https://www.bilibili.com/video/${bvid}`
@@ -232,7 +232,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
         if (feeling) felt.set(v.bvid, feeling)
         memory?.addEvent?.({ text: `在B站看了《${v.title}》（UP主 ${v.author}）${feeling ? '：' + feeling.slice(0, 60) : ''}`, tags: ['B站'], importance: 0.4 })
         if (d.remember && !isSilence(d.remember)) memory?.add?.({ text: String(d.remember).slice(0, 200), tags: ['B站'], importance: 0.5, source: 'event' })
-        const comment = String(d.comment || '').trim()
+        const comment = cleanOutboundText(d.comment, { warn: (message) => log.warn(`B 站评论：${message}`) }).trim()
         if (comment && !isSilence(comment) && commented < commentLeft && canPost(s)) {
           try {
             if (getConfig().dryRun) log.info(`试运行：本来要在 B 站《${v.title}》下评论：${comment}`)
@@ -311,7 +311,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
         hub.logChat?.('bili', x.name, `在 B 站《${x.title}》下回复你：${x.text}`, '')
         if (s.replies >= c.maxRepliesPerDay || !canPost(s)) continue
         const out = await think(`你在 B 站视频《${x.title}》下发过评论：「${x.myText}」\n${x.name} 回复你：「${x.text}」\n想回就用你的口气回一句（像普通网友聊天，别太长），不想回就只输出 [沉默]。只输出回复正文。`)
-        const reply = String(out || '').trim().split(/\n+/)[0]
+        const reply = cleanOutboundText(out, { warn: (message) => log.warn(`B 站回复：${message}`) }).trim().split(/\n+/)[0]
         if (!reply || isSilence(reply)) continue
         try {
           if (getConfig().dryRun) log.info(`试运行：本来要在 B 站回复 ${x.name}：${reply}`)
@@ -350,7 +350,9 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
 
   /** 在某个视频下发评论（主人让她发的）。 */
   async function comment(text, rawMessage) {
-    const message = atOwner(rawMessage)
+    const clean = cleanOutboundText(rawMessage, { warn: (message) => log.warn(`B 站评论：${message}`) })
+    if (!clean.trim()) return { ok: true, silent: true, message: '本轮保持沉默，未发送评论' }
+    const message = atOwner(clean)
     const w = await watch(text)
     if (!w.ok) return w
     if (getConfig().dryRun) return { ok: true, message: `试运行：本来要在《${w.title}》下评论：${message}` }
@@ -362,7 +364,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
 
   /** 改自己的 B 站签名（权限在模块里查）。 */
   async function setSign(text) {
-    const sign = String(text || '').trim()
+    const sign = cleanOutboundText(text, { warn: (message) => log.warn(`B 站签名：${message}`) }).trim()
     if (!sign) return { ok: false, message: '签名不能是空的' }
     if ([...sign].length > 70) return { ok: false, message: 'B 站签名最多 70 个字' }
     if (getConfig().dryRun) return { ok: true, message: `试运行：本来要把 B 站签名改成：${sign}` }

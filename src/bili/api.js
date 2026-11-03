@@ -3,6 +3,7 @@
 // 登录凭证由配置提供，接口不刷新或保存账号。
 
 import { createHash } from 'node:crypto'
+import { cleanOutboundText } from '../chat/reply.js'
 import { bangumiEpisode, videoPart, danmakuParams, danmakuResponse } from './danmaku.js'
 
 export const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36'
@@ -205,9 +206,10 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
 
   /** 发评论；root/parent 不传就是一级评论。要登录。 */
   async function postComment(aid, rawMessage, { root, parent } = {}) {
+    const message = cleanOutboundText(rawMessage, { warn: (message) => log?.warn?.(`B 站评论：${message}`) }).replace(/＠/g, '@')
+    if (!message.trim()) return { silent: true, rpid: '', at: [], missed: [] }
     const csrf = parseCookie(getCookie()).bili_jct
     if (!csrf) throw new Error('没登录 B 站（Cookie 里要有 bili_jct）')
-    const message = String(rawMessage).replace(/＠/g, '@')
     const { map, missed } = await resolveAts(message)
     const at = Object.keys(map)
     const d = await req('https://api.bilibili.com/x/v2/reply/add', { method: 'POST', form: { type: 1, oid: aid, message, plat: 1, csrf, ...(root ? { root, parent: parent || root } : {}), ...(at.length ? { at_name_to_mid: JSON.stringify(map) } : {}) } })
@@ -223,6 +225,8 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
 
   /** 改自己的个性签名（B 站上限 70 字）。要登录。 */
   async function setSign(sign) {
+    sign = cleanOutboundText(sign, { warn: (message) => log?.warn?.(`B 站签名：${message}`) })
+    if (!sign.trim()) return
     const csrf = parseCookie(getCookie()).bili_jct
     if (!csrf) throw new Error('没登录 B 站（Cookie 里要有 bili_jct）')
     await req('https://api.bilibili.com/x/member/web/sign/update', { method: 'POST', form: { user_sign: sign, csrf } })
@@ -278,6 +282,8 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
 
   let dmSequence = Date.now()
   async function postDanmaku(info, text, progress, mode, { beforePost, signal } = {}) {
+    text = cleanOutboundText(text, { warn: (message) => log?.warn?.(`B 站弹幕：${message}`) })
+    if (!text.trim()) return { silent: true }
     const csrf = parseCookie(getCookie()).bili_jct
     if (!csrf) throw Object.assign(new Error('Cookie 里缺少 bili_jct'), { code: -111 })
     const url = await signed('https://api.bilibili.com/x/v2/dm/post', {

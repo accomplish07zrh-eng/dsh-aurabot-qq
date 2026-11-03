@@ -31,6 +31,7 @@ import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaTe
 import { createModules, API_VERSION } from './core/modules.js'
 import { createCommunity } from './core/community.js'
 import { createApprovalRelay } from './security/approval.js'
+import { captureSystemPrompt } from './security/leak-guard.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
@@ -88,7 +89,7 @@ export function apply(ctx) {
   seedPersonas()
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
-  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => cleanText(fn(...args))), `aurabot: 变量 ${n}`)
+  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => captureSystemPrompt(n, cleanText(fn(...args)))), `aurabot: 变量 ${n}`)
   const rulesOpts = (kind) => (mods ? { off: mods.builtinOff(), extra: mods.rules(kind) } : {})
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
@@ -291,7 +292,8 @@ export function apply(ctx) {
     hooks: {
       message: (msg) => mods.claim('message', msg),
       reply: (text, info) => mods.filter('reply', text, info),
-      secrets: () => [rulesText('private', cfg, rulesOpts('private')), rulesText('social', cfg, rulesOpts('social')), currentPersonaText(cfg.persona.current)],
+      // 人格和规则的最终渲染值由 variable 在当前回合记录，发送时不重新生成。
+      secrets: () => [],
       deniedTools: () => bridge?.deniedTools() || [],
       groupDecide: (decision, info) => mods.filter('group/decide', decision, info),
       prompt: (content, info) => mods.filter('prompt', content, info),

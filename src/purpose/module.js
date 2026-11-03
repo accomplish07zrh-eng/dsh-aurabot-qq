@@ -10,6 +10,7 @@
 // 想换引擎的主人自己开关，迁移说明见 docs/PURPOSE_MODULE_API.md。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { cleanOutboundText } from '../chat/reply.js'
 import {
   DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS,
   normalizePurposeConfig, createPurposeState, normalizePurposeState,
@@ -67,13 +68,13 @@ export function purposeConfig(cfg = {}) {
 }
 
 /** 模型回包清洗：去掉备忘段、引号、「大肥鱼：」前缀；空/沉默返回 ''。 */
-export function cleanReply(raw) {
+export function cleanReply(raw, options) {
   let s = String(raw ?? '')
   const cut = /(^|\n)\s*(?:[【\[]\s*(?:目的|需求|情绪|类型|状态|待续)\s*[】\]]|[【\[]?\s*内部备忘)/.exec(s)
   if (cut) s = s.slice(0, cut.index) // 内部备忘不发到 QQ
   s = s.replace(/^[「“"'']+/, '').replace(/[」”"'']+$/, '')
   s = s.replace(new RegExp(`^${ROLE}\\s*[:：]\\s*`), '')
-  s = s.trim()
+  s = cleanOutboundText(s, options).trim()
   if (!s || s.replace(/\s/g, '').startsWith(SILENCE)) return ''
   return s
 }
@@ -306,7 +307,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       log.warn?.('目的：生成出错：', error?.message)
     }
     const memo = parsePurposeMemo(raw)
-    const text = cleanReply(raw)
+    const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
     let outcome
     if (!text) {
       outcome = genError ? 'failed' : 'silent' // 模型有权跳过（【状态】跳过 / [沉默]），silent 不硬发
@@ -362,7 +363,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const prompt = `【系统提醒，不是${owner}说的话】你刚才跟${owner}说「${String(lb.text || '').slice(-60)}」，${owner}已经 ${idle} 分钟没回了。可以轻轻追一句（比如「人呢」「睡着啦？」，或者换个话题），别催、别抱怨；觉得${owner}在忙就只回 ${SILENCE}。这一轮不能用工具，直接输出那句话。`
     try {
       const raw = await hub.runSystemTurn('purpose-nudge', 'QQ · 主动搭话（追问）', prompt, { timeoutMs: 120000, noTools: true })
-      const text = cleanReply(raw)
+      const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
       if (text) await hub.deliver(chatIdOf(cfg), text, { own: true, userText: MOOD_PREFIX })
     } catch (error) {
       log.warn?.('目的：追问出错：', error?.message)
