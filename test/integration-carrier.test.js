@@ -26,7 +26,7 @@ beforeEach(() => {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-carrier-'))
 })
 
-// 假 hub：deliver 记录投递（成功返回 {missedAt:[]}，同 hub.deliver 契约）
+// 假 hub：deliver 记录投递（成功返回 {missedAt:[], sent}，同 hub.deliver 真契约）
 function makeHub() {
   return {
     lastOwnerChatAt: 0,
@@ -38,7 +38,8 @@ function makeHub() {
     noted: [],
     noteSaid(chatId, text) { this.noted.push({ chatId, text }) },
     async runSystemTurn() { return '主人，想到一件事想跟你说' },
-    async deliver(chatId, text, options) { this.delivered.push({ chatId, text }); this.deliveryOptions.push(options); return { missedAt: [] } },
+    // options 记下来给 carrier 回落用例断言；sent/failed/errors 是同 hub.deliver 的真契约（本 PR 桥接按它结算）
+    async deliver(chatId, text, options) { this.delivered.push({ chatId, text }); this.deliveryOptions.push(options); return { missedAt: [], failed: 0, errors: [], sent: text } },
   }
 }
 

@@ -325,10 +325,11 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
         outcome = 'delivery-failed' // dispatch 结果不确定：不补发，避免重复
       } else {
         try {
-          // 不带 own:true：这条是别处（目的回合）发的，hub 会记进 saidElsewhere，
-          // 主人在 QQ 私聊回复时补进她的上下文，她才知道自己刚发过什么（#133 同款桥接）。
+          // 不带 own:true：这条是别处（目的回合）发的，hub 只把「实际成功发出」的文本记进 saidElsewhere，
+          // 主人在 QQ 私聊回复时补进她的上下文，她才知道自己刚发过什么（#133 同款桥接；#211 review 后改为按真发出结果记）。
           const r = await hub.deliver(chatIdOf(cfg, friend), text, { userText: MOOD_PREFIX })
-          outcome = r && typeof r === 'object' ? 'sent' : 'silent' // deliver 吞错只返回 undefined / {missedAt}
+          // 真发出去过才算 sent：deliver 返回 {sent, failed}，sent 空 = 一条都没发出去（吞错/拦截/dry-run）
+          outcome = r && typeof r === 'object' && String(r.sent || '').trim() ? 'sent' : 'silent'
         } catch (error) {
           outcome = 'delivery-failed'
           log.warn?.('目的：投递失败：', error?.message)
