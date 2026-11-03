@@ -143,7 +143,7 @@ export function createFakeDsh({ brain }) {
     },
   }
 
-  async function call(path, body, headers = {}, socket) {
+  async function call(path, body, headers = {}, socket, method) {
     const full = '/aurabot/api' + path.split('?')[0]
     // 先精确匹配，再找最长的前缀路由（和 DSH 的网页服务一样）
     const r = routes.get(full) || [...routes.values()].filter((x) => x.kind === 'prefix' && (full === x.path || full.startsWith(x.path + '/'))).sort((a, b) => b.path.length - a.path.length)[0]
@@ -152,6 +152,8 @@ export function createFakeDsh({ brain }) {
     let status = 200
     const req = {
       url: '/aurabot/api' + path,
+      // 默认带 body 的调用按 POST 处理；要测别的写方法（PUT/DELETE…）用第五个参数显式给
+      method: method || (body != null ? 'POST' : 'GET'),
       headers,
       async *[Symbol.asyncIterator]() { if (body) yield JSON.stringify(body) },
     }

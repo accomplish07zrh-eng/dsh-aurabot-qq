@@ -4738,6 +4738,13 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
               placeholder: '127.0.0.1',
               onChange: (e) => setDraft(setPath(draft, 'security.trustedProxy', e.target.value)),
             })),
+          h(Row, { label: '面板对外域名（反代部署）', hint: '面板经反代对外时填域名（如 panel.example.com）。跨站防护把这个域名发来的请求也算「同源」，不然从远端打开面板一保存就会被 403' },
+            h('input', {
+              className: 'ab-input',
+              value: (draft.security && draft.security.publicHostname) || '',
+              placeholder: 'panel.example.com',
+              onChange: (e) => setDraft(setPath(draft, 'security.publicHostname', e.target.value)),
+            })),
           h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } },
             '插件判断「请求从哪来」只看 TCP 连接的对端地址——X-Forwarded-For 是客户端自己就能写的头，不能信。'
             + '放在反代后面时连接对端永远是反代自己，所以要把反代地址填进上面，插件才会采信 X-Forwarded-For 的最后一跳。'
