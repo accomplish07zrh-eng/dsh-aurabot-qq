@@ -28,6 +28,7 @@ import { cleanContent, cleanText } from '../core/text.js'
 import { createRecentMedia } from './recent-media.js'
 import { createTitleFilter } from './title-filter.js'
 import { isDefiniteFailure } from '../onebot/client.js'
+import { takeInterim, reasoningOf, rescueFromThinking } from './steps.js'
 import { grantOwner } from '../core/workspace-move.js'
 import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../security/leak-guard.js'
 import { noticeText } from './notices.js'
@@ -953,14 +954,17 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const r = parseReply(text, cleaningFor(chatId))
     if (r.silent) return silenceTurn(chatId)
     let items = r.items
+    // 分条发出的中间段（chat.everyStep）：只发她当时说的原话，不做语音转换、不补表情、不按概率改形态，
+    // 免得一段闲聊被拆成语音条和表情乱入。标签、markdown 图片照旧解析。
+    const interim = Boolean(opts.interim)
     // 对方明确要语音、她却只打了字：整段改成语音发（模型偶尔会忘，这里兜底）
-    if (opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
+    if (!interim && opts.wantVoice && cfg.voice.enabled && !items.some((i) => i.kind === 'voice')) {
       const spoken = items.filter((i) => i.kind === 'text').map((i) => i.value).join('，')
       if (spoken && spoken.length <= 300) items = [{ kind: 'voice', value: spoken }, ...items.filter((i) => i.kind !== 'text')]
     }
     // 短回复按概率整条变语音
     const texts = items.filter((i) => i.kind === 'text')
-    if (cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
+    if (!interim && cfg.voice.enabled && items.length === texts.length && texts.length > 0) {
       const all = texts.map((t) => t.value).join('，')
       if (all.length <= cfg.voice.autoMaxChars && Math.random() < cfg.voice.autoChance * mood().voice) items = [{ kind: 'voice', value: all }]
     }
@@ -968,7 +972,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     // 群里别刷屏：一段最多 3 条
     if (inGroup && items.length > 3) items = items.slice(0, 3)
     // 按概率补一张表情（群里已经有两条以上就不补了）
-    if (cfg.stickers.enabled && !items.some((i) => i.kind === 'sticker') && !(inGroup && items.length >= 2) && Math.random() < cfg.stickers.autoChance * mood().sticker) {
+    if (!interim && cfg.stickers.enabled && !items.some((i) => i.kind === 'sticker') && !(inGroup && items.length >= 2) && Math.random() < cfg.stickers.autoChance * mood().sticker) {
       const pick = stickers.pickForReply(texts.map((t) => t.value).join(' '))
       if (pick) items.push({ kind: 'sticker', value: pick })
     }
@@ -1063,10 +1067,26 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (event.type === 'assistant/message') {
       const d = event.data || {}
       if (d.interrupted) return
+      // 顺手记下思考：万一这一轮她一个字正文都没写，turn/end 时还有机会把定稿捞回来
+      const th = reasoningOf(d.message)
+      if (th) st.thinking = { turn: d.turn, text: th }
+      const raw = assistantReplyText(d.message)
       // 最后一条 assistant 消息才是本轮回复；总是覆盖（空也覆盖），
       // 否则最后一条是空的（或只有工具调用）时会拿上一条过程性文字补发，把思考发出去。
+      // 例外是开了 chat.everyStep：那时中间段已经陆续发过，这一步没说话就别把上一段盖掉，
+      // 否则「说完一段又去调工具」的那段话会永远发不出去。
       st.lastTurn = d.turn
-      st.text = assistantReplyText(d.message)
+      st.text = getConfig().chat?.everyStep ? raw || st.text : raw
+      // chat.everyStep：一轮里分几段说就发几条（默认关，只发最后一段）。发的是「上一段」——
+      // 此刻还不知道后面有没有话，把当前段提前发掉会让最后一段变成重复。最后一段仍由 turn/end 发。
+      if (raw && getConfig().chat?.everyStep) {
+        const prev = takeInterim(st, { turn: d.turn, step: d.step, text: raw })
+        if (prev) {
+          logChat(chatId, 'bot', prev)
+          log.debug(`${chatId}：分条发出上一段（${prev.length} 字）`)
+          deliver(chatId, prev, { own: true, interim: true }).catch((error) => log.warn('分条发送出错：', error.message))
+        }
+      }
       return
     }
     if (event.type === 'turn/end') {
@@ -1076,7 +1096,17 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       stopTyping(key)
       const d = event.data || {}
       const completed = d.reason && d.reason.kind === 'completed'
-      const text = st.lastTurn === d.turn ? st.text : ''
+      let text = st.lastTurn === d.turn ? st.text : ''
+      // 整轮一段正文都没有：她可能把话全写在思考里了（Reply: 起草 → Careful: 自检 → N lines: 定稿），
+      // 正文块是空的。chat.rescueFromThinking 打开时从最后一步的思考里捞回定稿；捞不到就照旧不发。
+      if (!text && completed && getConfig().chat?.rescueFromThinking && st.thinking && st.thinking.turn === d.turn) {
+        const rescued = rescueFromThinking(st.thinking.text)
+        if (rescued) {
+          text = rescued
+          log.info(`${chatId}：整轮没有正文，从思考里捞回一段（${rescued.length} 字）`)
+        }
+      }
+      st.thinking = null
       const sys = st.system
       const wantVoice = Boolean(st.wantVoice)
       const autoReply = st.autoReply
