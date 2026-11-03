@@ -325,7 +325,9 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
         outcome = 'delivery-failed' // dispatch 结果不确定：不补发，避免重复
       } else {
         try {
-          const r = await hub.deliver(chatIdOf(cfg, friend), text, { own: true, userText: MOOD_PREFIX })
+          // 不带 own:true：这条是别处（目的回合）发的，hub 会记进 saidElsewhere，
+          // 主人在 QQ 私聊回复时补进她的上下文，她才知道自己刚发过什么（#133 同款桥接）。
+          const r = await hub.deliver(chatIdOf(cfg, friend), text, { userText: MOOD_PREFIX })
           outcome = r && typeof r === 'object' ? 'sent' : 'silent' // deliver 吞错只返回 undefined / {missedAt}
         } catch (error) {
           outcome = 'delivery-failed'
@@ -370,7 +372,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     try {
       const raw = await hub.runSystemTurn('purpose-nudge', 'QQ · 主动搭话（追问）', prompt, { timeoutMs: 120000, noTools: true })
       const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
-      if (text) await hub.deliver(chatIdOf(cfg), text, { own: true, userText: MOOD_PREFIX })
+      if (text) await hub.deliver(chatIdOf(cfg), text, { userText: MOOD_PREFIX }) // 不带 own:true，同上：hub 桥接进下次对话
     } catch (error) {
       log.warn?.('目的：追问出错：', error?.message)
     }

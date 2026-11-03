@@ -49,7 +49,7 @@ function makeHub({ reply = '主人，今天想到一件事想跟你说', lastOwn
     delivered: [],
     turns: log,
     async runSystemTurn(name, title, prompt) { this.turns.push({ name, title, prompt }); return typeof reply === 'function' ? reply(prompt) : reply },
-    async deliver(chatId, text) { this.delivered.push({ chatId, text }); return { missedAt: [] } },
+    async deliver(chatId, text, opts = {}) { this.delivered.push({ chatId, text, opts }); return { missedAt: [] } },
   }
 }
 
@@ -98,6 +98,10 @@ test('排程：tick 到点才出发，跑完后 nextFireAt 重新落盘到未来
   await p.tick() // 到点：真跑一轮
   assert.equal(hub.delivered.length, 1)
   assert.equal(hub.delivered[0].chatId, `private:${OWNER}`)
+  // 不带 own:true：这条是别处发的，hub 要把她说的话记进 saidElsewhere，
+  // 主人在私聊回复时才补得回她的上下文（她得知道自己刚发过什么）。
+  assert.ok(!hub.delivered[0].opts.own, '目的引擎 QQ 投递不能带 own:true，否则 hub 不做「别处说过」桥接')
+  assert.equal(hub.delivered[0].opts.userText, '【系统提醒，不是主人说的话】（她主动找你）')
   const s2 = JSON.parse(readFileSync(stateFile(), 'utf8'))
   assert.equal(s2.lastOutcome, 'sent')
   assert.equal(s2.countToday, 1)
@@ -401,7 +405,7 @@ test('白名单：朋友单独排程，提示词里没有主人的记忆和群�
   const { prompt } = hub.turns[0]
   assert.match(prompt, /游泳/)
   assert.doesNotMatch(prompt, /辞职|八卦|日记|主人/)
-  assert.deepEqual(hub.delivered, [{ chatId: `private:${FRIEND}`, text: '游泳学得怎么样啦' }])
+  assert.deepEqual(hub.delivered, [{ chatId: `private:${FRIEND}`, text: '游泳学得怎么样啦', opts: { userText: '【系统提醒，不是主人说的话】（她主动找你）' } }])
 })
 
 test('白名单：没聊过的朋友不找，人设再完整也不凭空开口', async () => {
