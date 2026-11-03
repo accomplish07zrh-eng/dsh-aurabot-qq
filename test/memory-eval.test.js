@@ -51,10 +51,7 @@ test('过时的记忆想不起来', () => {
   assert.deepEqual(search(old, '小明住在哪里', { now: NOW }), [])
 })
 
-// 关键词检索做不到的语义联想，等要上向量时看这两条。
-test('同义词：宠物想起猫', { todo: '纯关键词检索不支持' }, () => assert.ok(ids('他有宠物吗').includes('cat')))
-test('单字关键词：太辣想起不吃辣', { todo: '二元字组切词不支持' }, () => assert.ok(ids('这个火锅太辣了吧').includes('spicy')))
-test('同义词：医院上班想起护士', { todo: '纯关键词检索不支持' }, () => assert.ok(ids('谁在医院上班').includes('hua-job')))
+// 语义联想（宠物 / 辣 / 医院）见 memory-vector.test.js；这里只保留纯关键词基线。
 
 for (const [a, b] of [
   ['小明喜欢吃辣的东西和火锅', '小明不喜欢吃辣的东西和火锅'],
