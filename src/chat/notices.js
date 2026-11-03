@@ -1,7 +1,7 @@
 // QQ 通知事件翻成她能看懂的一句话。字段按 SnowLuma 的事件来；这里只管翻译，要不要记由中枢决定。
 
 /** @returns {{chatId:string, text:string}|null} 不用让她知道的事件返回 null。name(qq) 把 QQ 号换成称呼。 */
-export function noticeText(ev, { botQQ, name = (qq) => String(qq), ownMessage = () => false } = {}) {
+export function noticeText(ev, { botQQ, name = (qq) => String(qq), ownMessage = () => false, faceName = () => undefined } = {}) {
   if (ev?.post_type !== 'notice') return null
   const type = ev.notice_type
   const sub = ev.sub_type
@@ -28,8 +28,15 @@ export function noticeText(ev, { botQQ, name = (qq) => String(qq), ownMessage = 
       return group(`${who(ev.operator_id)}把${who(ev.sender_id ?? ev.user_id)}的消息${sub === 'add' ? '设为精华' : '移出了精华'}`)
     case 'group_card':
       return group(`${who(ev.user_id)}把群名片改成了「${String(ev.card_new || '').slice(0, 30)}」`)
-    case 'group_msg_emoji_like':
-      return sub === 'add' && ownMessage(ev.message_id) ? group(`${who(ev.user_id)}给你的消息点了表情回应`) : null
+    case 'group_msg_emoji_like': {
+      // NapCat 直连时没有 sub_type，只有 is_add；SnowLuma 网关则是 sub_type=add/remove。
+      const isAdd = typeof ev.is_add === 'boolean' ? ev.is_add : sub === 'add'
+      if (!isAdd || !ownMessage(ev.message_id)) return null
+      const list = (Array.isArray(ev.likes) ? ev.likes : [])
+        .map((x) => faceName(x?.emoji_id) || (x?.emoji_id ? `表情${x.emoji_id}` : ''))
+        .filter(Boolean)
+      return group(`${who(ev.user_id)}给你的消息点了表情回应${list.length ? `（${list.join('、')}）` : ''}`)
+    }
     case 'friend_add':
       return { chatId: `private:${ev.user_id}`, text: '你们刚加上好友' }
     case 'notify':

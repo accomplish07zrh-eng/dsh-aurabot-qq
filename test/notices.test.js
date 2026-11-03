@@ -26,3 +26,20 @@ test('不用告诉她的不翻', () => {
   assert.equal(n({ notice_type: 'notify', sub_type: 'input_status', user_id: 2 }), null)
   assert.equal(noticeText({ post_type: 'message' }), null)
 })
+
+test('NapCat 直连的表情回应：只带 is_add、没有 sub_type，也要认得出贴的是哪个', () => {
+  const nf = (e) => noticeText({ post_type: 'notice', group_id: 9, ...e }, {
+    botQQ: '1',
+    name: (q) => `U${q}`,
+    ownMessage: (id) => id === 7,
+    faceName: (id) => ({ 124: 'OK', 13: '呲牙' })[String(id)],
+  })
+  const base = { notice_type: 'group_msg_emoji_like', user_id: 2, message_id: 7 }
+  assert.equal(nf({ ...base, is_add: true, likes: [{ emoji_id: '124', count: 1 }] }).text, 'U2给你的消息点了表情回应（OK）')
+  assert.equal(nf({ ...base, is_add: true, likes: [{ emoji_id: '124' }, { emoji_id: '13' }] }).text, 'U2给你的消息点了表情回应（OK、呲牙）')
+  assert.equal(nf({ ...base, is_add: true, likes: [{ emoji_id: '999' }] }).text, 'U2给你的消息点了表情回应（表情999）', '认不出来的编号原样带上，别吞掉')
+  assert.equal(nf({ ...base, is_add: false, likes: [{ emoji_id: '124' }] }), null, '取消回应不用告诉她')
+  assert.equal(nf({ ...base, is_add: true, message_id: 8 }), null, '别人消息上的表情')
+  // 网关老格式（只有 sub_type）还照旧能用
+  assert.equal(nf({ ...base, sub_type: 'add', likes: [{ emoji_id: '124' }] }).text, 'U2给你的消息点了表情回应（OK）')
+})
