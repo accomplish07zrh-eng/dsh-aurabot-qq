@@ -40,7 +40,9 @@ export function isSilence(text) {
  * @returns {{silent: boolean, items: Array<{kind:'text'|'voice'|'sticker'|'image', value:string, replyTo?:string}>}}
  */
 export function parseReply(text) {
-  const raw = String(text || '').trim()
+  // 模型偶尔把换行写成 HTML 的 <br>（比如想在一个气泡里既 @ 人又说两句），
+  // 原样发到 QQ 对方就会看到字面的标签；在分条 / 引用 / 表情解析之前统一转成真换行。
+  const raw = String(text || '').trim().replace(/<br\s*\/?>/gi, '\n').trim()
   if (isSilence(raw)) return { silent: true, items: [] }
   const items = []
   let replyTo = '' // 等着挂到下一条气泡上的「引用回复」编号
