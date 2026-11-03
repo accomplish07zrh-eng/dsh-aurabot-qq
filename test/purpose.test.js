@@ -445,3 +445,138 @@ test('内部备忘的标题不发到 QQ（#172）', () => {
   assert.equal(cleanReply('内部备忘\n【状态】跳过'), '')
   assert.equal(cleanReply('这是我的内部备忘录哦'), '这是我的内部备忘录哦', '句子中间提到不算')
 })
+
+// ── 稳健性调优（否定守卫 / 按权重截断 / memo 兜底 / 选择层配置化）─────────────
+
+test('否定守卫：「不想玩」不算玩欲，「不喜欢」不算正反馈', () => {
+  const aff = engine.needAffinity('我今天不想玩游戏，别推荐了')
+  assert.equal(aff.play > 0, false, '「不想玩」不该推高 play 亲和')
+  const want = engine.needAffinity('好想试试那个新插件')
+  assert.equal(want.install > 0, true, '正常「想试试」仍然命中')
+  // classifyOwnerReply：负面优先 + 正面词否定守卫
+  const goals = [{
+    id: 'g1', owner: 'self', domain: 'play',
+    object: { type: 'game', name: '星穹列车' },
+    intent: '想拉主人一起玩', evidence: [], confidence: 0.5, value: 0.5,
+    urgency: 0.3, risk: 0.1, action: 'invite', nextStep: '', status: 'active',
+    emotion: '', createdAt: 0, lastSeenAt: 0, expiresAt: 0,
+    attempts: 1, lastActionAt: Date.now() - 1000, lastFeedbackAt: 0, sightings: 1, source: 'self',
+  }]
+  const mats = [{ kind: 'owner', at: Date.now(), text: '不喜欢这个，下次别提了' }]
+  const out = engine.applyGoalFeedback(goals, mats, Date.now())
+  assert.equal(out[0].status, 'rejected', '「不喜欢」必须判负反馈')
+})
+
+test('提示词截断：超长先丢低权重素材，主人私聊保留', () => {
+  const now = Date.now()
+  const ownerMats = Array.from({ length: 5 }, (_, i) => ({
+    id: `own-${i}`, source: 'qq', kind: 'owner', at: now - i * MIN, who: '主人',
+    text: `主人的重要私聊第 ${i} 条，提到明天要一起出去玩`,
+  }))
+  const memberMats = Array.from({ length: 24 }, (_, i) => ({
+    id: `mem-${i}`, source: 'qq', kind: 'member', at: now - 60 * MIN - i * MIN, who: '群友',
+    text: `群友闲聊填充内容第 ${i} 条，聊一些不重要的日常话题凑字数：今天的天气真好啊，午饭吃了什么，下午要不要一起出去走走看看电影什么的，晚上再说吧，反正也没什么正经事，就是随便聊聊打发时间而已`,
+  }))
+  const prompt = engine.buildPurposePrompt({
+    now, config: { ...engine.DEFAULT_PURPOSE_CONFIG, promptMaxChars: 4000 },
+    ownerUin: OWNER, materials: [...ownerMats, ...memberMats], candidates: [], drives: engine.DEFAULT_DRIVES,
+  })
+  assert.ok(prompt.length <= 4000, `截断后应不超过上限（实际 ${prompt.length}）`)
+  assert.ok(prompt.includes('主人的重要私聊第 0 条'), '最高权重素材必须保留')
+  assert.ok(!prompt.includes('填充内容第 23 条'), '列表末尾（最低权重）的素材先被丢弃')
+})
+
+test('memo 兜底：裸标签行和 JSON 回执都能解析', () => {
+  const loose = engine.parsePurposeMemo('目的：想知道主人后来怎么样\n状态：待续\n待续：明天再问一次')
+  assert.equal(loose.purpose, '想知道主人后来怎么样')
+  assert.equal(loose.status, '待续')
+  assert.equal(loose.followUp, '明天再问一次')
+  assert.equal(loose.memoLoose, true)
+  const json = engine.parsePurposeMemo('正文\n{"目的":"想问主人晚饭吃了没","status":"完成","need":"care"}')
+  assert.equal(json.purpose, '想问主人晚饭吃了没')
+  assert.equal(json.status, '完成')
+  assert.equal(json.need, 'care')
+  assert.equal(json.memoLoose, true)
+  // 带格式标注的正常回执不算 loose
+  const strict = engine.parsePurposeMemo('【目的】问问晚饭\n【状态】完成')
+  assert.equal(strict.memoLoose, false)
+  // 都没有就还是 null
+  assert.equal(engine.parsePurposeMemo('今天天气不错'), null)
+})
+
+test('选择层配置化：pending 优先概率与情绪权重走 config', () => {
+  const cfg = { ...engine.DEFAULT_PURPOSE_CONFIG, pendingShareProbability: 1, lonelyEmotionWeight: 2, needRepeatPenalty: 0.5 }
+  const norm = engine.normalizePurposeConfig(cfg)
+  assert.equal(norm.pendingShareProbability, 1)
+  assert.equal(norm.lonelyEmotionWeight, 2)
+  assert.equal(norm.needRepeatPenalty, 0.5)
+  // 越界值被钳制
+  const clamped = engine.normalizePurposeConfig({ pendingShareProbability: 3, lonelyEmotionWeight: 9, needRepeatPenalty: 0.1, driveHalfLifeHours: 999 })
+  assert.equal(clamped.pendingShareProbability, 1)
+  assert.equal(clamped.lonelyEmotionWeight, 2)
+  assert.equal(clamped.needRepeatPenalty, 0.3)
+  assert.equal(clamped.driveHalfLifeHours, 72)
+})
+
+// ── 显式感受（喜 / 欲 / 意）结算 ─────────────────────────────────────────────
+
+test('感受：备忘【感受】解析成驱动增量与心情增量', () => {
+  const memo = engine.parsePurposeMemo('【目的】分享一件事\n【状态】完成\n【感受】玩+0.10 喜-0.05')
+  assert.ok(memo.feelings, 'feelings 必须解析出来')
+  assert.equal(memo.feelings.drives.play, 0.1)
+  assert.equal(memo.feelings.moodDelta, -0.5, '喜-0.05 → moodDelta -0.5')
+  // 欲/意 按本次目的的需要维度结算；写不出需要维度就丢弃
+  const memo2 = engine.parsePurposeMemo('【目的】想学点东西\n【需求】学\n【状态】完成\n【感受】欲+0.2')
+  assert.equal(memo2.feelings.drives.learn, 0.2)
+  const memo3 = engine.parsePurposeMemo('【目的】随便说说\n【状态】完成\n【感受】欲+0.2')
+  assert.equal(memo3.feelings.drives.learn, undefined, '没有需要维度时欲/意不瞎猜')
+  // 非法/缺失 → null
+  const none = engine.parsePurposeMemo('【目的】x\n【状态】完成')
+  assert.equal(none.feelings, null)
+})
+
+test('感受结算：applyPurposeOutcome 把感受增量叠加进驱动（满足衰减之后）', () => {
+  const state = engine.createPurposeState()
+  state.drives.play = 0.3
+  const memo = { purpose: '想玩', kind: 'share', need: 'play', status: '完成', feelings: { drives: { play: 0.2 }, moodDelta: 5 } }
+  engine.applyPurposeOutcome(state, { now: Date.now(), outcome: 'sent', text: '陪你玩', memo })
+  // sent 先 ×0.45（0.3→0.135），再 +0.2
+  assert.ok(Math.abs(state.drives.play - 0.335) < 1e-9, `实际 ${state.drives.play}`)
+})
+
+// ── 行为学习（回复时段直方图 / need 反馈率）──────────────────────────────────
+
+test('回复时段直方图：记主人私聊时刻，排程向高频小时轻推', () => {
+  const state = engine.createPurposeState()
+  const now = new Date(); now.setHours(21, 30, 0, 0)
+  const mats = [
+    { kind: 'owner', at: now.getTime() - MIN, text: '在的' },
+    { kind: 'owner', at: now.getTime() - 2 * MIN, text: '好呀' },
+    { kind: 'member', at: now.getTime(), text: '群里的话不记' },
+  ]
+  engine.recordOwnerReplyHours(state, mats, now.getTime())
+  assert.equal(state.replyHours[21], 2, '21 点记 2 次')
+  assert.equal(state.replyHours[now.getHours() === 21 ? 20 : 21] >= 0, true)
+  // 不重复计数
+  engine.recordOwnerReplyHours(state, mats, now.getTime())
+  assert.equal(state.replyHours[21], 2, '同一批素材不重复计数')
+  // 样本足够时向高频小时偏移
+  for (let i = 0; i < 6; i += 1) state.replyHours[21] += 1
+  const base = new Date(now.getTime()); base.setHours(12, 0, 0, 0)
+  const shift = engine.bestReplyHourShift(base.getTime(), state.replyHours, { maxShiftMs: 12 * 60 * MIN })
+  assert.ok(shift > 0, '中午发车应被推向 21 点')
+  // 样本太少不偏置
+  const sparse = new Array(24).fill(0); sparse[9] = 2
+  assert.equal(engine.bestReplyHourShift(base.getTime(), sparse), 0)
+})
+
+test('need 反馈学习：正反馈多的维度抬驱动地板，少的加速回落', () => {
+  const learned = { play: { positive: 8, negative: 1, neutral: 2 }, consume: { positive: 1, negative: 6, neutral: 1 } }
+  const { drives } = engine.deriveDrives({ drives: engine.DEFAULT_DRIVES, now: Date.now(), needFeedback: learned })
+  assert.ok(drives.play >= engine.DEFAULT_DRIVES.play + 0.08 - 1e-9, `play 应抬地板（实际 ${drives.play}）`)
+  assert.ok(drives.consume < engine.DEFAULT_DRIVES.consume + 1e-9, 'consume 应向默认回落')
+  // 样本不足不动
+  const sparse = { learn: { positive: 2, negative: 0, neutral: 0 } }
+  const { drives: d2 } = engine.deriveDrives({ drives: engine.DEFAULT_DRIVES, now: Date.now(), needFeedback: sparse })
+  assert.ok(Math.abs(d2.learn - engine.DEFAULT_DRIVES.learn) < 1e-9, '样本 <5 不偏置')
+})

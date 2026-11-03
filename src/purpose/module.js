@@ -21,7 +21,7 @@ import {
   markPurposeDelivered, markPurposeSkip, applyPurposeOutcome,
   collectMaterials, analyzePersona, deriveDrives, formGoalHypotheses,
   minePurposeSeeds, selectPurpose, buildPurposePrompt, parsePurposeMemo,
-  summarizePurposeState,
+  summarizePurposeState, recordOwnerReplyHours,
 } from './engine.js'
 
 const MINUTE = 60_000
@@ -186,6 +186,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const { drives } = deriveDrives({
       drives: state.drives, drivesAt: state.drivesAt,
       materials: materials.items, now, lastMasterAt, personaBias: persona.bias,
+      needFeedback: state.needFeedback, halfLifeHours: config.driveHalfLifeHours,
     })
     const { goals, observations } = formGoalHypotheses({
       // 跟进的排程和次数只属于事实，不再生成另一份目标或观察账本。
@@ -283,13 +284,16 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     state.drivesAt = now
     state.goals = ctx.goals
     state.observations = ctx.observations
+    // 行为学习账本：回复时段直方图 + 需要维度正反馈率（都在真回合里落盘；preview 不走这里）。
+    recordOwnerReplyHours(state, ctx.materials.items, now)
+    mergeNeedFeedback(state, ctx.needFeedback)
 
     // 朋友没聊过就别凭人设硬找：没有素材时她只能瞎编由头
     const hasEnough = Boolean(ctx.followUp) || (friend
       ? ctx.materials.items.length >= Math.max(1, config.minMaterials)
       : ctx.materials.items.length >= config.minMaterials || state.pending.length > 0 || ctx.persona.hasText)
     if (!hasEnough) {
-      markPurposeSkip(state, { now, reason: 'materials', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday }) })
+      markPurposeSkip(state, { now, reason: 'materials', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday, replyHours: state.replyHours }) })
       saveState(state, friend)
       log.info?.(`目的（${reason}）：素材太少，改约下一次`)
       return { outcome: 'skipped-materials' }
@@ -302,7 +306,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     state.lastMaterialCount = ctx.materials.items.length
     state.lastCandidateCount = picked.candidates.length
     if (!picked.purpose) {
-      markPurposeSkip(state, { now, reason: 'no-candidate', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday }) })
+      markPurposeSkip(state, { now, reason: 'no-candidate', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday, replyHours: state.replyHours }) })
       saveState(state, friend)
       log.info?.(`目的（${reason}）：这轮没选出目的，改约下一次`)
       return { outcome: 'skipped-no-candidate' }
@@ -359,21 +363,39 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     if (following && outcome === 'sent') memoryOf()?.markFollowUpAsked?.(ctx.followUp.id)
     // 模型的「待续」不能把事实跟进再复制进 purpose.pending。
     applyPurposeOutcome(state, { now: Date.now(), config, outcome, text, memo: following ? null : memo, planned: picked.purpose })
-    if (!friend) nudgeMood(picked.purpose, outcome)
+    if (!friend) nudgeMood(picked.purpose, outcome, memo)
     saveState(state, friend)
     log.info?.(`目的：回合结束 ${outcome}（今天第 ${state.countToday} 次）`)
     return { outcome, text, memo }
   }
 
+  // 把 formGoalHypotheses 刚结算的反馈计数并进长期账本（状态文件按 normalize 洗字段）。
+  function mergeNeedFeedback(state, stats) {
+    if (!stats || typeof stats !== 'object') return
+    const cur = state.needFeedback && typeof state.needFeedback === 'object' ? state.needFeedback : {}
+    for (const need of PURPOSE_NEEDS) {
+      const s = stats[need]
+      if (!s || typeof s !== 'object') continue
+      const slot = cur[need] || (cur[need] = { positive: 0, negative: 0, neutral: 0 })
+      slot.positive = clampInt((Number(slot.positive) || 0) + (Number(s.positive) || 0), 0, 0, 9999)
+      slot.negative = clampInt((Number(slot.negative) || 0) + (Number(s.negative) || 0), 0, 0, 9999)
+      slot.neutral = clampInt((Number(slot.neutral) || 0) + (Number(s.neutral) || 0), 0, 0, 9999)
+    }
+    state.needFeedback = cur
+  }
+
   // 9 维驱动 → mood 单标量。mood 关闭时 nudge 自静默。
-  function nudgeMood(purpose, outcome) {
+  // memo 里的【感受】喜/−喜（feelings.moodDelta ±10）会叠加在情绪表之上。
+  function nudgeMood(purpose, outcome, memo = null) {
     if (outcome !== 'sent') return
     const m = moodOf()
     if (!m?.nudge) return
     const table = { affectionate: 5, excited: 5, proud: 4, amused: 4, lonely: -3, bored: -2, worried: -2, envious: -2, content: 0 }
-    const delta = table[purpose?.emotion]
-    if (!delta) return
-    try { m.nudge(delta, `主动搭话：${String(purpose?.text || '').slice(0, 20)}`) } catch {}
+    const delta = table[purpose?.emotion] || 0
+    const feel = Math.max(-10, Math.min(10, Number(memo?.feelings?.moodDelta) || 0))
+    const total = delta + feel
+    if (!total) return
+    try { m.nudge(total, `主动搭话：${String(purpose?.text || '').slice(0, 20)}`) } catch {}
   }
 
   // ---------- 追问（沿用旧 speakup 的「轻轻追一句」，不占今日次数） ----------
