@@ -4,7 +4,9 @@ import { fetchImage } from '../core/net.js'
 import { pickShape } from './image-shape.js'
 
 export function createCodexImage({ auth, fetchImpl, log }) {
-  return async function generate(config, prompt, { shape } = {}) {
+  return async function generate(config, prompt, { shape, image } = {}) {
+    // 现有订阅端点只有 JSON 文生图约定，没有已知的参考图字段；不能带图时偷跑文生图。
+    if (image) throw new Error('这个生图服务不支持参考图')
     const revision = auth.revision?.()
     const check = () => auth.assertCurrent?.(revision)
     check()

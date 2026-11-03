@@ -2782,7 +2782,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
     }
     const gistSource = (id) => String(id || '').startsWith('group:') ? '群 ' + String(id).slice(6)
       : String(id || '').startsWith('private:') ? '私聊 ' + String(id).slice(8) : (id || '来源未知')
-    const gistLevel = (g) => g.level === 1 ? '梗概' : g.level === 2 ? '印象' : '其他'
+    const gistLevel = (g) => g.kind === 'seen' ? '看过的内容' : g.level === 1 ? '梗概' : g.level === 2 ? '印象' : '其他'
+    const memoryEnded = (m) => Boolean(m.invalidAt || (m.validUntil && m.validUntil <= Date.now()))
 
     const FACES = ['#4d7fc4', '#3e9c8f', '#8a6fc0', '#c07a4d', '#c05f7e', '#5f8f4e']
     const faceColor = (qq) => FACES[[...String(qq)].reduce((n, c) => n + c.charCodeAt(0), 0) % FACES.length]
@@ -2874,8 +2875,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         await load(!r.ok)
       }
       const traits = [['style', '说话方式'], ['persona', '性格'], ['handle', '怎么相处']]
-      const live = data.notes.filter((m) => !m.invalidAt)
-      const old = data.notes.filter((m) => m.invalidAt)
+      const live = data.notes.filter((m) => !memoryEnded(m))
+      const old = data.notes.filter(memoryEnded)
       return h('div', { className: 'ab-pm-detail' },
         h('div', { className: 'ab-pm-back' }, h(Btn, { small: true, kind: 'ghost', onClick: back }, '← 返回名单')),
         h('div', { className: 'ab-pm-hero' },
@@ -2939,7 +2940,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const restore = async () => { const r = await post('/memory/restore', { id: m.id }); toast(r.ok ? '恢复了' : r.message, r.ok ? 'ok' : 'err'); if (r.ok) await onChanged() }
       const tier = { 0: '永久', 1: '琐碎', 3: '重要', core: '长期印象' }[m.tier]
       const status = { hearsay: '听说', guess: '可能' }[m.status]
-      return h('div', { className: cx('ab-pm-fact', m.invalidAt && 'old') },
+      return h('div', { className: cx('ab-pm-fact', memoryEnded(m) && 'old') },
         h('span', { className: cx('ab-pm-dot', m.tier !== undefined && m.tier !== 'core' && 't' + m.tier), 'aria-hidden': 'true' }),
         h('div', { className: 'main' },
           editing ? h('div', null,
@@ -2947,22 +2948,24 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
             h('div', { className: 'ab-flex', style: { marginTop: 6 } },
               h(Btn, { small: true, kind: 'primary', disabled: !text.trim(), onClick: save }, '保存'),
               h(Btn, { small: true, kind: 'ghost', onClick: () => { setText(m.text || ''); setEditing(false) } }, '取消')))
-            : h('div', { className: 'text' }, m.text),
+            : h('div', { className: 'text' }, m.displayText || m.text),
+          !editing && (m.relatedItems || []).length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 5 } },
+            m.relatedItems.map((r) => h('div', { key: r.id }, '相关：' + r.text + (r.validityText ? '（' + r.validityText + '）' : '')))) : null,
           !editing ? h('div', { className: 'sub' },
-            h('span', null, memoryDate(m.saidAt || m.at)),
+            h('span', null, m.validityText || memoryDate(m.saidAt || m.at)),
             tier ? h('span', { className: 'ab-pm-tag' }, tier) : null,
             status ? h('span', { className: 'ab-pm-tag warn' }, status) : null,
-            m.invalidAt && m.supersededText ? h('span', null, '现在是：' + m.supersededText) : null) : null),
+            memoryEnded(m) && m.supersededText ? h('span', null, '现在是：' + m.supersededText) : null) : null),
         !editing ? h('div', { className: 'ab-pm-acts' },
-          m.invalidAt ? h('button', { type: 'button', className: 'ab-pm-link', onClick: restore }, '恢复') : h('button', { type: 'button', className: 'ab-pm-link', onClick: () => setEditing(true) }, '改'),
+          memoryEnded(m) ? h('button', { type: 'button', className: 'ab-pm-link', onClick: restore }, '恢复') : h('button', { type: 'button', className: 'ab-pm-link', onClick: () => setEditing(true) }, '改'),
           h('button', { type: 'button', className: 'ab-pm-link danger', onClick: remove }, '删')) : null)
     }
 
-    /** 梗概和印象的时间线：印象是压到最后留下的感觉，字更大。 */
+    /** 聊天梗概和看过内容共用时间线。 */
     function GistLine({ list, toast, onChanged, showFrom }) {
       const remove = async (g) => {
         if (!confirm('删除这条' + gistLevel(g) + '？')) return
-        const r = await post('/memory/gists/delete', { id: g.id })
+        const r = await post(g.kind === 'seen' ? '/memory/delete' : '/memory/gists/delete', { id: g.id })
         toast(r.message, r.ok ? 'ok' : 'err')
         if (r.ok) await onChanged()
       }
@@ -2972,7 +2975,8 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
         const head = when !== day ? h('div', { key: 'd' + g.id, className: 'ab-pm-tl-day' }, when) : null
         day = when
         return [head, h('div', { key: g.id, className: cx('ab-pm-tl-item', Number(g.level) >= 2 && 'feel') },
-          h('div', { className: 'main' }, h('div', { className: 'text' }, g.text), showFrom ? h('div', { className: 'from' }, gistSource(g.chatId)) : null),
+          h('div', { className: 'main' }, h('div', { className: 'text' }, g.displayText || g.text),
+            h('div', { className: 'from' }, [g.kind === 'seen' ? '看过的内容' : '', ...(g.platforms || []), showFrom && g.chatId ? gistSource(g.chatId) : ''].filter(Boolean).join(' · '))),
           h('div', { className: 'ab-pm-acts' }, h('button', { type: 'button', className: 'ab-pm-link danger', onClick: () => remove(g) }, '删')))]
       }))
     }
@@ -3027,8 +3031,10 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const [error, setError] = useState('')
       const [chat, setChat] = useState('')
       const [level, setLevel] = useState('')
+      const [kind, setKind] = useState('')
+      const [platform, setPlatform] = useState('')
       const load = async () => {
-        const r = await get('/memory/gists')
+        const r = await get('/memory/timeline')
         if (!r.ok) { setError(r.message || '时间轴没读出来'); return }
         const next = r.list || []
         if (chat && !next.some((g) => g.chatId === chat)) setChat('')
@@ -3038,11 +3044,16 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       if (error) return h('div', { className: 'ab-note err' }, error)
       if (list === null) return h(Empty, { icon: '⏳', text: '加载中…' })
       const chats = [...new Set(list.map((g) => g.chatId).filter(Boolean))]
-      const shown = list.filter((g) => (!chat || g.chatId === chat) && (!level || String(g.level) === level))
-      return h(Card, { title: '时间轴', desc: '聊过的日子会慢慢压成一句话，再久一点，只留下感觉。', right: h('div', { className: 'ab-pm-filters' },
+      const platforms = [...new Set(list.flatMap((g) => g.platforms || []))].sort()
+      const shown = list.filter((g) => (!chat || g.chatId === chat) && (!level || String(g.level) === level) && (!kind || g.kind === kind) && (!platform || (g.platforms || []).includes(platform)))
+      return h(Card, { title: '时间轴', desc: '聊过的梗概和看过的内容，都能在这里翻一翻。', right: h('div', { className: 'ab-pm-filters' },
+        h('select', { className: 'ab-select', 'aria-label': '筛选经历类型', value: kind, onChange: (e) => { setKind(e.target.value); setLevel('') } },
+          h('option', { value: '' }, '全部经历'), h('option', { value: 'gist' }, '聊天的梗概'), h('option', { value: 'seen' }, '看过的内容')),
+        h('select', { className: 'ab-select', 'aria-label': '筛选平台', value: platform, onChange: (e) => setPlatform(e.target.value) },
+          h('option', { value: '' }, '全部平台'), platforms.map((id) => h('option', { key: id, value: id }, id))),
         h('select', { className: 'ab-select', 'aria-label': '筛选聊天', value: chat, onChange: (e) => setChat(e.target.value) },
           h('option', { value: '' }, '全部聊天'), chats.map((id) => h('option', { key: id, value: id }, gistSource(id)))),
-        h('select', { className: 'ab-select', 'aria-label': '筛选层级', value: level, onChange: (e) => setLevel(e.target.value) },
+        h('select', { className: 'ab-select', 'aria-label': '筛选层级', value: level, disabled: kind === 'seen', onChange: (e) => setLevel(e.target.value) },
           h('option', { value: '' }, '全部'), h('option', { value: '1' }, '梗概'), h('option', { value: '2' }, '印象'))) },
       shown.length ? h(GistLine, { list: shown, toast, onChanged: load, showFrom: !chat }) : h(Empty, { text: list.length ? '没有符合条件的记录。' : '还没有压缩过的记忆，流水到期后会慢慢出现。' }))
     }
@@ -3127,9 +3138,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
     function MemoryRow({ m, onChanged, toast }) {
       const [edit, setEdit] = useState(false)
       const [text, setText] = useState(m.text)
-      if (m.invalidAt) {
+      if (memoryEnded(m)) {
         return h('div', { className: 'ab-li', style: { opacity: 0.6 } },
-          h('div', { className: 'meta' }, timeAgo(m.invalidAt), h('br'), h('span', { className: 'ab-pill', style: { padding: '0 6px', fontSize: 11 } }, '已过时')),
+          h('div', { className: 'meta' }, m.validityText || timeAgo(m.invalidAt || m.validUntil), h('br'), h('span', { className: 'ab-pill', style: { padding: '0 6px', fontSize: 11 } }, '已过时')),
           h('div', { className: 'body' }, h('s', null, (m.aboutName ? '[' + m.aboutName + '] ' : '') + m.text), m.supersededText ? h('div', { className: 'ab-muted ab-small' }, '→ 现在是：' + m.supersededText) : null),
           h(Btn, { small: true, kind: 'ghost', onClick: async () => { await post('/memory/restore', { id: m.id }); toast('恢复了', 'ok'); onChanged() } }, '恢复'),
           h(Btn, { small: true, kind: 'ghost', onClick: async () => { await post('/memory/delete', { id: m.id }); onChanged() } }, '删掉'))
@@ -3137,7 +3148,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       return h('div', { className: 'ab-li' },
         h('div', { className: 'meta' }, timeAgo(m.at), h('br'), h('span', { className: 'ab-pill', style: { padding: '0 6px', fontSize: 11 } }, SOURCE[m.source] || '记忆')),
         edit ? h('input', { className: 'ab-input wide', value: text, onChange: (e) => setText(e.target.value), onKeyDown: async (e) => { if (e.key === 'Enter') { await post('/memory/update', { id: m.id, text }); setEdit(false); toast('改好了', 'ok'); onChanged() } if (e.key === 'Escape') setEdit(false) } })
-          : h('div', { className: 'body' }, m.aboutName ? h('b', null, '[' + m.aboutName + '] ') : null, m.text, m.importance >= 0.8 ? h('span', { title: '很重要' }, ' ★') : null),
+          : h('div', { className: 'body' }, m.aboutName ? h('b', null, '[' + m.aboutName + '] ') : null, m.displayText || m.text, m.validityText ? h('div', { className: 'ab-muted ab-small' }, m.validityText) : null, m.importance >= 0.8 ? h('span', { title: '很重要' }, ' ★') : null),
         h(Btn, { small: true, kind: 'ghost', onClick: () => setEdit(!edit) }, edit ? '取消' : '改'),
         h(Btn, { small: true, kind: 'ghost', onClick: async () => { await post('/memory/delete', { id: m.id }); onChanged() } }, '忘掉'))
     }
@@ -4525,7 +4536,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
       const setParams = (next) => setDraft(setPath(draft, 'imageGen.custom.params', next))
       const setP = (i, k, v) => setParams(params.map((p, j) => (j === i ? { ...p, [k]: v } : p)))
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '让ta画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让ta「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口，或登录 ChatGPT 使用实验性 Codex 订阅接法。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。' },
+        h(Card, { title: '让ta画图', right: f.sw('imageGen.enabled'), desc: '接上生图服务后，让ta「画一张……」就会画好发出来。可选 OpenAI 兼容接口、自定义接口，或登录 ChatGPT 使用实验性 Codex 订阅接法。本机 SD WebUI / ComfyUI 可在「本地接口」页接「生图」。也可以让ta照着最近发的图、引用消息里的图或自己的画作来改；服务不支持参考图时会明确告诉你。' },
           h(Row, { label: '接口格式', hint: '第二个适合 pollinations 这类「GET 一个地址就出图」的服务' },
             h(Seg, {
               value: isCodex ? 'codex' : isCustom ? 'custom' : 'openai',
@@ -4539,13 +4550,13 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
                 onChange: (v) => setDraft(setPath(draft, 'imageGen.custom.method', v)),
                 options: [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }],
               })),
-            h(Row, { label: '接口地址', hint: '可以用 {prompt} {model} {size} {width} {height}' },
+            h(Row, { label: '接口地址', hint: '可以用 {prompt} {model} {size} {width} {height} {image}（参考图 base64）' },
               f.text('imageGen.custom.url', { size: 'wide', placeholder: 'https://image.pollinations.ai/prompt/{prompt}' })),
             h(Row, { label: 'API Key', hint: '会以 Authorization: Bearer 发出；不需要就留空' },
               f.text('imageGen.apiKey', { type: 'password', placeholder: c.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
             h('div', { className: 'ab-label', style: { marginTop: 12 } },
               h('b', null, isPost ? '请求体参数' : 'URL 参数'),
-              h('small', null, '参数名和值都自己填；值里可以用 {prompt}')),
+              h('small', null, '参数名和值都自己填；值里可以用 {prompt}、{image}（参考图 base64）；参考图需配置 {image} 才能使用')),
             params.length
               ? params.map((p, i) => h('div', { key: i, className: 'ab-flex', style: { gap: 6, marginBottom: 6 } },
                 h('input', { className: 'ab-input', style: { width: 170 }, value: p.key || '', placeholder: '参数名，如 model', onChange: (e) => setP(i, 'key', e.target.value) }),
@@ -4579,6 +4590,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复ta
             f.select('imageGen.size', [{ value: '1024x1024', label: '1024 × 1024', desc: '方图' }, { value: '768x1024', label: '768 × 1024', desc: '竖图' }, { value: '1024x768', label: '1024 × 768', desc: '横图' }, { value: '512x512', label: '512 × 512', desc: '小图，更快' }], { width: 200 })) : null,
           h(Row, { label: '固定风格', hint: '每次画都会加在描述前面' }, f.text('imageGen.stylePrompt', { size: 'wide', placeholder: '例如：日系二次元，柔和光线，蓝白配色' })),
           h(Row, { label: '只给主人画', hint: '关掉后群友也能让ta画（会花你的额度）' }, f.sw('imageGen.ownerOnly')),
+          h(Row, { label: '允许参考图改画', hint: '默认开启，只接受当前聊天收到的图、引用图或图库文件名；Codex 订阅暂不支持' }, f.sw('imageGen.img2img')),
           h(Row, { label: '让ta画完自己看一眼', hint: '开着才把画好的图传给ta看（模型不支持看图时自动不传）；关掉就只回一句「画好了」，不传图' }, f.sw('imageGen.seeOwn')),
           isCustom ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '例子：地址填 https://image.pollinations.ai/prompt/{prompt}，再加 model=flux-anime、width=1080、height=1920、nologo=true 四个参数，GET 就会请求 …/prompt/<提示词>?model=flux-anime&width=1080&…') : null,
           !c.enabled ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '还没开启。填好接口信息、打开右上角开关并保存后，ta就会多一个「画图」能力。') : null,

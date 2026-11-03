@@ -96,7 +96,7 @@ export default {
     api.route('/memories', async (req) => ({ ok: true, items: memory.list(http.query(req).q || '').slice(0, 300), stats: memory.stats() }))
     api.route('/memory/add', async (req) => {
       const b = await http.body(req)
-      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel' })
+      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil })
     })
     api.route('/memory/update', async (req) => {
       const b = await http.body(req)
@@ -127,6 +127,10 @@ export default {
     api.route('/memory/gists', async (req) => {
       const q = http.query(req)
       return { ok: true, list: memory.gists({ chatId: q.chatId || '', level: q.level || '', about: q.about || '' }) }
+    })
+    api.route('/memory/timeline', async (req) => {
+      const { kind, platform, chatId, level, about } = http.query(req)
+      return { ok: true, list: memory.timeline({ kind, platform, chatId, level, about }) }
     })
     api.route('/memory/gists/delete', async (req) => memory.deleteGist((await http.body(req)).id))
     api.route('/profiles', async () => ({ ok: true, list: memory.profiles() }))

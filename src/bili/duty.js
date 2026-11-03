@@ -230,8 +230,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
         const v = x.info
         const feeling = String(d.feeling || '').trim()
         if (feeling) felt.set(v.bvid, feeling)
-        memory?.addEvent?.({ text: `在B站看了《${v.title}》（UP主 ${v.author}）${feeling ? '：' + feeling.slice(0, 60) : ''}`, tags: ['B站'], importance: 0.4 })
-        if (d.remember && !isSilence(d.remember)) memory?.add?.({ text: String(d.remember).slice(0, 200), tags: ['B站'], importance: 0.5, source: 'event' })
+        memory?.addEvent?.({ kind: 'seen', meta: { title: v.title, author: v.author, url: link(v.bvid), platform: 'bili', id: v.bvid }, text: [feeling, d.remember && !isSilence(d.remember) ? String(d.remember) : ''].filter(Boolean).join('；') || v.title, tags: ['B站'], importance: 0.4 })
         const comment = String(d.comment || '').trim()
         if (comment && !isSilence(comment) && commented < commentLeft && canPost(s)) {
           try {
@@ -344,7 +343,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       if (!id || id.short) return { ok: false, message: '短链打不开' }
     }
     const x = await lookAt(id)
-    memory?.addEvent?.({ text: `看了别人发来的 B 站视频《${x.info.title}》`, tags: ['B站'], importance: 0.4 })
+    memory?.addEvent?.({ kind: 'seen', meta: { title: x.info.title, author: x.info.author, url: link(x.info.bvid), platform: 'bili', id: x.info.bvid }, text: `看了别人发来的 B 站视频《${x.info.title}》`, tags: ['B站'], importance: 0.4 })
     return { ok: true, message: x.digest, bvid: x.info.bvid, aid: x.info.aid, title: x.info.title }
   }
 

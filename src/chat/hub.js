@@ -10,7 +10,7 @@ import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dataDir, readJson, writeJson } from '../core/store.js'
-import { parseMessageEvent, gifFrames } from './inbound.js'
+import { parseMessageEvent, gifFrames, segmentsOf } from './inbound.js'
 import { parseReply, bubbleDelay, wantsVoice } from './reply.js'
 import { decideGroupReply, engagedHint, pickAutoReply, policyFor, sameNameNote, topicRelevance } from './group-policy.js'
 import { checkAllowed, levelFor, presetFor, isOwner } from './access.js'
@@ -84,7 +84,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const SYSTEM_STUCK_GRACE_MS = 5 * 60_000
   const SYSTEM_BACKOFF = [2, 5, 15, 30, 60, 120].map((minutes) => minutes * 60_000)
   const groupBuf = new Map() // groupId → [{t, uid, nick, text, at, replyId, quote}]
-  const quoteCache = new Map() // replyId → { ok, who, uid, text, images, stickers, records, isBot }  引用消息解析缓存
+  const quoteCache = new Map() // chatId|replyId → { ok, who, uid, text, images, stickers, records, isBot }  引用消息解析缓存
   const groupInterjects = new Map() // groupId → [t]  她主动开口（插话、接话）的时间
   const groupSaid = new Map() // groupId → [t]  她每次在群里说话的时间（刹车用）
   const groupRefs = new Map() // groupId → { 编号: { mid, uid } }  上一段提示词里的编号，引用回复用
@@ -1094,8 +1094,16 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   async function quotedInfo(replyId, ctx = null) {
     const id = String(replyId || '')
     if (!id) return null
-    if (quoteCache.has(id)) return quoteCache.get(id)
-    const out = { ok: false, who: '', uid: '', text: '', images: [], stickers: [], records: 0, isBot: false, at: 0 }
+    const chatId = ctx?.chatId || (ctx?.groupId ? `group:${ctx.groupId}` : ctx?.userId ? `private:${ctx.userId}` : '')
+    const key = `${chatId}|${id}`
+    if (quoteCache.has(key)) {
+      const cached = quoteCache.get(key)
+      cached.at = Date.now()
+      quoteCache.delete(key)
+      quoteCache.set(key, cached)
+      return cached
+    }
+    const out = { ok: false, who: '', uid: '', text: '', images: [], stickers: [], records: 0, isBot: false, at: 0, chatId }
     try {
       const m = await onebot.call('get_msg', { message_id: Number(id) || id }, { timeoutMs: 5000, retries: 0 })
       const sender = m?.sender || {}
@@ -1122,7 +1130,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       log.debug(`引用消息没拉到（${id}）：`, error.message)
     }
     if (quoteCache.size >= QUOTE_CACHE_MAX) quoteCache.delete(quoteCache.keys().next().value)
-    quoteCache.set(id, out)
+    quoteCache.set(key, out)
     return out
   }
 
@@ -1153,6 +1161,21 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (!segs.length) return []
     const got = await imagesOf({ stickers: [], images: segs })
     return got.map((x, i) => ({ type: 'image', data: x.data, mediaType: x.mediaType, name: `quote-${q.uid || 'x'}-${i + 1}` }))
+  }
+
+  /** 生图复用收到的媒体段和引用缓存，不接受工具传来的路径、URL 或任意消息 ID。 */
+  async function referenceImage(chat, source = 'last') {
+    if (disposed) throw disposedError()
+    let seg
+    if (source === 'quote') {
+      const now = Date.now()
+      const q = [...quoteCache.values()].findLast((item) => item.chatId === chat.chatId && item.ok && item.at <= now && now - item.at < 30 * 60_000)
+      seg = q?.images.at(-1) || q?.stickers.at(-1)
+    } else {
+      seg = recentMedia.get(chat.chatId).at(-1)?.seg
+    }
+    if (!seg) throw new Error(source === 'quote' ? '当前聊天没有可用的引用图片，请引用带图的消息再试' : '当前聊天最近半小时没有收到图片，请先发一张图')
+    return segmentBytes(seg, onebot, { maxBytes: MAX_IMAGE_BYTES, allowLocal: false })
   }
 
   async function repliedToBot(replyId, msg) {
@@ -1312,7 +1335,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     // 最近发来的图片 / 表情记几张（「把刚才那张存下来」时用）
     if (msg.stickers.length || msg.images.length) {
-      recentMedia.remember(msg.chatId, [...msg.stickers, ...msg.images].map((seg) => ({ seg, userId: msg.userId, sticker: msg.stickers.includes(seg) })))
+      // 保留同一条消息里图片 / 表情的实际顺序，last 才真的是最后一张。
+      recentMedia.remember(msg.chatId, segmentsOf(event).filter((seg) => msg.images.includes(seg) || msg.stickers.includes(seg)).map((seg) => ({ seg, userId: msg.userId, sticker: msg.stickers.includes(seg) })))
     }
     // 主人命令（/silent /active …）：总开关关着也处理，回复直接发
     if (onCommand && isOwner(cfg, msg.userId) && /^\s*[/／]/.test(msg.text)) {
@@ -2267,6 +2291,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     systemStarting.clear()
     systemFailures.clear()
     privateSources.clear()
+    quoteCache.clear()
     busy.clear()
     running.clear()
     recentMedia.dispose()
@@ -2279,6 +2304,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     modelFor: targetModel,
     /** 这个聊天最近发来的图片 / 表情（新的在后面），可选只要某人发的 */
     recentMedia: (chatId, userId) => recentMedia.get(chatId, userId),
+    referenceImage,
     recentFiles: (chatId) => recentFiles.get(chatId) || [],
     stickerOf,
     capture,
