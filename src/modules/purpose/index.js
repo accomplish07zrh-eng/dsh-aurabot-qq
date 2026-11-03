@@ -41,6 +41,8 @@ export default {
       memory: () => api.use('memory'),
       // 载体分发用（面板里 carrier=pet 时推桌宠气泡；桌宠没开是 null，按离线回落处理）
       pet: () => api.use('pet'),
+      // 素材口：浏览型模块（rss-reader「自主上网」等）的素材按需取用；没装/没开是 null。
+      use: (id) => api.use(id),
       personaText: () => { try { return api.core.personas?.current?.() || '' } catch { return '' } },
     })
     api.every(60_000, () => purpose.tick(), '目的引擎')

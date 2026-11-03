@@ -32,6 +32,11 @@ const MOOD_PREFIX = '【系统提醒，不是主人说的话】（她主动找�
 const SILENCE = '[沉默]'
 
 const pad2 = (n) => String(n).padStart(2, '0')
+// 文本截断：模块内随手用（引擎侧有同名工具，这里不跨文件依赖）。
+const clip = (text, max = 120) => {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
 const clampInt = (v, d, lo, hi) => {
   const n = Number(v)
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d
@@ -90,7 +95,7 @@ export function cleanReply(raw, options, cfg) {
   return s
 }
 
-export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, memory, personaText, pet: petOf }) {
+export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, memory, personaText, pet: petOf, use }) {
   const moodOf = () => { try { return mood?.() || null } catch { return null } }
   const memoryOf = () => { try { return memory?.() || null } catch { return null } }
   // 下面的 friend 是主动搭话白名单里的 QQ 号，不传就是主人。朋友各有各的状态，素材只看和这个人的私聊、关于这个人的记忆。
@@ -225,6 +230,28 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     try { return JSON.parse(s.slice(start, end + 1)) } catch { return null }
   }
 
+  // 「自主上网」等浏览型模块的素材口（可选）：模块没装/没开就返回空，行为与从前一致。
+  // 取 use('rss-reader').materials() —— 那些是模块已经筛过、交给决策层的条目（纯文本、已截断）。
+  function rssEntries(friend = '') {
+    if (friend) return [] // 朋友的线不喂全站浏览素材：那是主人自己的阅读兴趣
+    try {
+      const mod = typeof use === 'function' ? use('rss-reader') : null
+      const list = typeof mod?.materials === 'function' ? mod.materials() : null
+      if (!Array.isArray(list)) return []
+      return list.slice(0, 10).map((m) => ({
+        id: String(m?.id || ''),
+        // 引擎素材分类里「外部看到的东西」走 video 这一支（权重低于主人私聊、高于群聊）
+        type: 'video',
+        title: clip(String(m?.title || ''), 90),
+        text: clip(String(m?.text || ''), 200),
+        url: String(m?.url || ''),
+        at: Number(m?.at) || Date.now(),
+      }))
+    } catch {
+      return []
+    }
+  }
+
   // ①~④ 收素材 → 驱动 → 目标假设 → 候选（不落盘；打分配了模型才有一次额外回合）
   async function prepare(cfg, config, state, now = Date.now(), friend = '') {
     const followUp = memoryOf()?.dueFollowUp?.(friend || cfg.ownerQQ, now) || null
@@ -234,7 +261,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       roleName: selfName(cfg),
       roleAliases: selfNames(cfg),
       conversations: conversations(cfg, now, friend),
-      biliEntries: [], // 首期不接 B站/Qzone 素材，字段留扩展
+      biliEntries: rssEntries(friend), // 浏览型模块的素材口（rss-reader「自主上网」等）；空数组=与从前一致
       memoryRecords: memoryRecords(friend),
       followUpRecords: followUp ? [followUp] : [],
     })

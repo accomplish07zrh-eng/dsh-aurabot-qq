@@ -97,7 +97,10 @@ ext.purpose 同名键可覆写。
 
 ## 6. 其它接线事实
 
-- 素材：聊天流水（hub.chatLogOf 最近 2 天，主人私聊 + 群）+ 记忆（`api.use('memory').list('')`，importance×100 适配）+ 人格（`api.core.personas.current()`）+ pending；B站留空扩展。
+- 素材：聊天流水（hub.chatLogOf 最近 2 天，主人私聊 + 群）+ 记忆（`api.use('memory').list('')`，importance×100 适配）+ 人格（`api.core.personas.current()`）+ pending；
+  **浏览型模块素材口**：装了「自主上网」（`rss-reader`）且已挑出条目时，经 `api.use('rss-reader').materials()`
+  取最多 10 条纯文本条目，按引擎「外部看到的东西」分支并入素材——只喂主人线（朋友线不吃），
+  模块没装/没开/取用出错一律静默跳过，行为与从前完全一致。B站素材仍留空扩展。
 - 生成：`hub.runSystemTurn('purpose', …, { noTools:true })`，提示词无 QQ 发送工具指令；回包清洗：去内部备忘段/引号/「大肥鱼：」前缀，`[沉默]`/空 → `silent` 不硬发。
 - 投递：`hub.deliver('private:'+ownerQQ)`；deliver 内部吞错，`sent` = deliver 返回 `{missedAt}` 对象，`undefined`（钩子拦截）记 silent，抛错记 `delivery-failed`。
 - 闸门：`evaluatePurposeTick`（enabled/quiet/dailyMax/nextFireAt/ownerIdleMs）；`nextFireAt` 落盘 tick 重算，重启时在途 `pending` 改判 `interrupted` 不补发。

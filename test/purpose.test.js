@@ -61,6 +61,8 @@ function makePurpose(hub, overrides = {}) {
     ...overrides,
   }
   const nudges = []
+  // use(id)：默认没有浏览型模块（与老环境一致）；用例可注入 overrides.modules
+  const use = (id) => (overrides.modules && overrides.modules[id]) || null
   const p = createPurpose({
     getConfig: () => cfg,
     hub,
@@ -69,6 +71,7 @@ function makePurpose(hub, overrides = {}) {
     mood: () => ({ nudge: (d, r) => nudges.push({ d, r }) }),
     memory: () => ({ list: () => (overrides.memories ?? DEFAULT_MEMORIES).map((m) => ({ id: m.id || 'm1', text: m.text, importance: m.importance ?? 0.8, at: Date.now() })) }),
     personaText: () => overrides.persona || '',
+    use,
   })
   return { p, cfg, nudges }
 }
@@ -821,4 +824,30 @@ test('朋友分账：朋友线的直方图与反馈账本落在朋友自己的�
   assert.ok(!ownerFile.replyHoursSeen?.length || ownerFile.replyHoursSeen.length === 0, '朋友的素材不进主人直方图')
   assert.ok(Array.isArray(s.replyHours) && Array.isArray(s.replyWeekday), '朋友状态带自己的分桶字段')
   assert.ok(!ownerFile.needFeedback || Object.keys(ownerFile.needFeedback).length === 0, '主人的 needFeedback 不被朋友线污染')
+})
+
+// ── 浏览型模块素材口（rss-reader「自主上网」）────────────────────────────────
+
+test('素材口：rss-reader 的条目进素材池，朋友线不吃', async () => {
+  const now = Date.now()
+  const rssModule = {
+    materials: () => [
+      { id: 'rss:https://f|k1', title: 'DeepSeek 发布新模型', text: '在「某周刊」看到《DeepSeek 发布新模型》。大模型推理提升', url: 'https://e/1', at: now },
+      { id: 'rss:https://f|k2', title: '新的开源插件', text: '在「某周刊」看到《新的开源插件》。装在自己身上会很好用', url: 'https://e/2', at: now - MIN },
+    ],
+  }
+  const hub = makeHub({ reply: '我看到一个挺有意思的东西\n【目的】想跟你说说\n【需求】分享\n【状态】完成' })
+  const { p } = makePurpose(hub, { modules: { 'rss-reader': rssModule } })
+  const pv = await p.preview()
+  const rss = pv.materials.filter((m) => String(m.text || '').includes('某周刊'))
+  assert.ok(rss.length >= 1, `自主上网的条目应进素材池（实际 ${pv.materials.length} 条素材）`)
+  assert.equal(rss[0].source, 'bili', '走引擎的外部素材分支')
+  assert.ok(/DeepSeek|插件/.test(rss[0].text))
+  // 素材口异常/返回坏值时静默跳过，不影响既有链路
+  const broken = makePurpose(hub, { modules: { 'rss-reader': { materials: () => { throw new Error('炸了') } } } })
+  const pv2 = await broken.p.preview()
+  assert.ok(pv2.materials.length >= 1, '素材口炸了也照常出提示词')
+  // 没装模块：行为与从前一致
+  const plain = await makePurpose(hub).p.preview()
+  assert.ok(plain.materials.length >= 1)
 })
