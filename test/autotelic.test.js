@@ -146,11 +146,14 @@ test('模块壳：默认全关、状态路由返回审计链校验，enabled=fal
     dataDir: (...parts) => join(root, 'modules-data', 'autotelic', ...parts),
     settings: () => settingsStore,
     route: (path, fn) => { routes[path] = fn },
+    every: () => {}, // 心跳注册（P1）；测试里不需要真跑
+    config: () => ({ ownerQQ: '' }),
     log: { debug: () => {}, info: () => {}, warn: () => {} },
     core: {}, // host 没接线 → audit.wired = false
   }
   const exported = module.setup(api)
   assert.equal(typeof exported.auditDir, 'function')
+  assert.equal(typeof exported.runtime.tick, 'function', 'P1：模块导出运行时')
   assert.equal(api.dataDir('audit').includes(join('modules-data', 'autotelic', 'audit')), true, '审计目录在 modules-data/autotelic/audit，不多一层')
   const status = await routes['/autotelic/status']()
   assert.equal(status.ok, true)
@@ -159,7 +162,9 @@ test('模块壳：默认全关、状态路由返回审计链校验，enabled=fal
   assert.equal(status.audit.today, 0)
   assert.equal(status.audit.chain.ok, true, '空目录 = 完好的空链')
   assert.deepEqual(status.heartbeats, [])
-  assert.deepEqual(Object.keys(routes), ['/autotelic/status'], 'P0 只挂 status 一条路由')
+  assert.equal(status.summary.total, 0)
+  assert.deepEqual(status.tasks, [], '默认关时账本是空的')
+  assert.deepEqual(Object.keys(routes).sort(), ['/autotelic/preview', '/autotelic/run', '/autotelic/status'].sort(), 'P0+P1：状态 / 预览 / 手动跑一轮')
 })
 
 test('模块壳：host 接线后状态路由显示「审计已开启」与当日条数', async (t) => {
@@ -170,6 +175,8 @@ test('模块壳：host 接线后状态路由显示「审计已开启」与当日
     dataDir: (...parts) => join(root, 'modules-data', 'autotelic', ...parts),
     settings: () => settingsStore,
     route: (path, fn) => { routes[path] = fn },
+    every: () => {},
+    config: () => ({ ownerQQ: '' }),
     log: { debug: () => {} },
     core: { autotelicAuditOn: true },
   }
