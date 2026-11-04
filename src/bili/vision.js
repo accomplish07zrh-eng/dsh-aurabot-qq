@@ -1,12 +1,12 @@
 // 看画面：从 B 站 DASH 流里按时间点抽几帧，交给视觉模型描述画面。
 //
 // ffmpeg 直接读取 CDN 流并定位抽帧；下载量和耗时取决于视频与 CDN 的 seek 支持。
-// 没开开关 / 没 ffmpeg / 没 cid / 流地址取不到 / 模型明确不支持图片时跳过，
+// 没开开关 / 没 ffmpeg / 没 cid / 流地址取不到 / 没有能看图的模型（聊天模型看不见、也没配识图模型）时跳过，
 // 不影响原来「标题 + 简介 + 字幕 + 热评」的文本流程。
 
 import { spawn } from 'node:child_process'
 import { UA } from './api.js'
-import { askModel, canSeeImages } from '../core/llm.js'
+import { askModel, canUnderstandImages } from '../core/llm.js'
 import { findFfmpeg } from '../core/img.js'
 import { assertPublicUrl } from '../core/net.js'
 
@@ -142,8 +142,8 @@ export async function lookWithVision({ dsh, api, info, getConfig, log, deps = {}
   const assertUrl = deps.assertPublicUrl || assertPublicUrl
   const frames = []
   try {
-    if (await (deps.canSeeImages || canSeeImages)(dsh, full) === false) {
-      log?.debug('看画面跳过：当前模型不支持图片')
+    if (await (deps.canSeeImages || canUnderstandImages)(dsh, full) === false) {
+      log?.debug('看画面跳过：没有能看图的模型')
       return empty
     }
     const pu = await api.playurl({ bvid: info.bvid, aid: info.aid, cid: info.cid })

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { imageSize, mimeOf, stickerSizeOk } from '../chat/inbound.js'
 import { segmentBytes, fetchImage } from '../core/net.js'
-import { askModel, canSeeImages } from '../core/llm.js'
+import { askModel, canSeeImages, visionModelOf } from '../core/llm.js'
 
 const dir = () => dataDir('stickers')
 const indexFile = () => join(dir(), 'index.json')
@@ -91,7 +91,8 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
   async function caption(buf, mime, hint) {
     try {
       const cfg = getConfig()
-      const target = captionModelOf(cfg)
+      // 起名单独挑了模型就用它；没挑就交给识图模型 / 聊天模型（和聊天里看图同一套）
+      const target = captionModelOf(cfg) || visionModelOf(cfg)
       // 模型看不了图就别硬发：会报错，名字也起不出来
       if ((await canSeeImages(dsh, cfg, target)) === false) {
         log.debug('模型不支持看图，跳过表情起名')
@@ -382,13 +383,13 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
   async function captionLibrary({ all = false, limit = 0 } = {}) {
     if (disposed) return { ok: false, message: '模块重载了，重新打开面板再试' }
     if (captionJob && captionJob.running) return { ok: false, message: '上一轮还在跑，等它跑完（或者点「停」）', status: captionStatus() }
-    const target = captionModelOf(getConfig())
+    const target = captionModelOf(getConfig()) || visionModelOf(getConfig())
     if ((await canSeeImages(dsh, getConfig(), target)) === false) {
       return {
         ok: false,
         message: target
           ? '「起名用的模型」' + target.provider + '/' + target.model + ' 看不了图，起不了名字：换一个能看图的模型，或者把它清空、改用聊天模型'
-          : '当前模型看不了图，起不了名字：面板「模型」里把「视觉能力」改成「支持」，或者换一个能看图的模型',
+          : '当前模型看不了图，起不了名字：面板「模型」里把「视觉能力」改成「支持」、配一个识图模型，或者换一个能看图的模型',
       }
     }
     let queue = captionTargets({ all })

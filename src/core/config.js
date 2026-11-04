@@ -56,7 +56,9 @@ export const DEFAULTS = {
     httpToken: '',
     wsToken: '',
   },
-  model: { provider: '', model: '', reasoningEffort: 'low', vision: 'auto' }, // 留空 = 跟随 DSH 默认；vision: auto/on/off
+  // 留空 = 跟随 DSH 默认；vision: auto/on/off（聊天模型自己能不能收图片）；
+  // visionModel: 单独选的识图模型 —— 配了它以后图片先交给它看，聊天模型只收文字描述
+  model: { provider: '', model: '', reasoningEffort: 'low', vision: 'auto', visionModel: { provider: '', model: '' } },
   // 按聊天选模型（主人在面板「模型」页设）：私聊 QQ 号 > 群号 > 所有私聊 / 所有群默认 > 上面的全局模型；没写的一级退到下一级
   chatModels: { privateDefault: { provider: '', model: '', reasoningEffort: '' }, groupDefault: { provider: '', model: '', reasoningEffort: '' }, privates: {}, groups: {} },
   merge: { enabled: true, waitSec: 2.5, maxSec: 8, groupWaitSec: 5, groupMaxSec: 15 }, // 连发合并：对方停顿 waitSec 秒再一起回，最多等 maxSec 秒；群里等得久一点，把一段话攒齐
@@ -374,6 +376,11 @@ export function normalize(raw) {
   if (c.workspaceDir && !/^([a-zA-Z]:[\\/]|\/)/.test(c.workspaceDir)) c.workspaceDir = ''
   // 视觉能力：auto = 问 DSH 的模型元数据；on / off = 主人手动声明（覆盖元数据）
   c.model.vision = c.model.vision === 'on' || c.model.vision === 'off' ? c.model.vision : 'auto'
+  // 识图模型：{ provider, model } 两个都填了才算；坏数据 / 只填一半一律当没配
+  const vm = isObj(c.model.visionModel) ? c.model.visionModel : {}
+  const vmProvider = typeof vm.provider === 'string' ? vm.provider.trim().slice(0, 120) : ''
+  const vmModel = typeof vm.model === 'string' ? vm.model.trim().slice(0, 200) : ''
+  c.model.visionModel = vmProvider && vmModel ? { provider: vmProvider, model: vmModel } : { provider: '', model: '' }
   c.setupDone = bool(c.setupDone, false)
   c.ownerLevel = LEVELS.includes(c.ownerLevel) ? c.ownerLevel : 'full'
   c.longTasks = bool(c.longTasks, true)

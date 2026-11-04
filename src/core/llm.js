@@ -59,6 +59,24 @@ export async function canSeeImages (dsh, cfg, target) {
   return modelVision(dsh, t.provider, t.model)
 }
 
+/**
+ * 面板上单独选的「识图模型」：{ provider, model } 两个都填了才算；null = 跟着聊天模型。
+ * 配了它以后，所有「把图片交给模型看」的地方都改交给它，聊天模型只拿文字描述。
+ */
+export function visionModelOf (cfg) {
+  const v = cfg && cfg.model && cfg.model.visionModel
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const provider = typeof v.provider === 'string' ? v.provider.trim() : ''
+  const model = typeof v.model === 'string' ? v.model.trim() : ''
+  return provider && model ? { provider, model } : null
+}
+
+/** 这次「看图」到底有没有模型可用：配了识图模型就一定算能看，否则看聊天模型自己行不行。 */
+export async function canUnderstandImages (dsh, cfg) {
+  if (visionModelOf(cfg)) return true
+  return canSeeImages(dsh, cfg)
+}
+
 // ---------- 思考强度 ----------
 //
 // 不是所有模型都支持「思考强度」：DSH 里没有推理元数据的模型（本地 Ollama 的那几个、一些手写的
@@ -178,8 +196,12 @@ async function runStream (llm, params) {
 export async function askModel (dsh, o) {
   const llm = dsh.llm || dsh.get('llm')
   if (!llm || typeof llm.stream !== 'function') throw new Error('宿主没有 llm 服务')
-  // o.model 指定了就用它（后台小任务可以单独挑便宜 / 能看图的模型），否则跟随设置
-  const t = o.model && o.model.provider && o.model.model ? { provider: o.model.provider, model: o.model.model } : defaultModel(dsh, o.cfg)
+  // o.model 指定了就用它（后台小任务可以单独挑便宜 / 能看图的模型），否则：
+  // 带图的后台任务（表情起名、头像、B 站抽帧……）优先交给面板上选的识图模型 ——
+  // 聊天模型可能是个便宜的纯文本模型，硬塞图片会让整轮请求被拒。
+  const t = o.model && o.model.provider && o.model.model
+    ? { provider: o.model.provider, model: o.model.model }
+    : ((o.images && o.images.length ? visionModelOf(o.cfg) : null) || defaultModel(dsh, o.cfg))
   if (!t) throw new Error('拿不到默认模型')
   let content = [{ type: 'text', text: cleanText(o.text) }]
   for (const img of o.images || []) content.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: 'aurabot-image' })
