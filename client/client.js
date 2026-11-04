@@ -2953,7 +2953,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '候选数', hint: '每次送多少条给 reranker；越多越慢，20 左右够用' }, f.num('memory.rerank.topN', { min: 2, max: 50 })),
           h(Row, { label: '超时', hint: '超过就这一轮用原顺序，不拖慢回复' }, f.num('memory.rerank.timeoutMs', { min: 500, max: 10000, step: 500 })),
           h('div', { className: 'ab-flex', style: { marginTop: 6 } },
-            h(Btn, { small: true, onClick: async () => { const r = await post('/memory/rerank/test', { text: '主人喜欢吃什么' }); toast(r.ok ? `重排正常：${r.model}，最高分 ${Number(r.score).toFixed(3)}` : r.message) } }, '测试重排')),
+            h(Btn, { small: true, onClick: async () => {
+              const r = await post('/memory/rerank/test', { text: '主人喜欢吃什么' })
+              if (r.moduleOff) toast('重排接口还没生效：把 DSH 完全退出再打开，不是刷新页面')
+              else toast(r.ok ? `重排正常：${r.model}，最高分 ${Number(r.score).toFixed(3)}` : r.message)
+            } }, '测试重排')),
           h('div', { className: 'ab-muted ab-small' }, '重排只处理已经通过群聊/人物权限过滤的候选，不会看到不该带出的记忆。'),
           h('div', { className: 'ab-section-title' }, '手动加一条'),
           h('div', { className: 'ab-flex' },
