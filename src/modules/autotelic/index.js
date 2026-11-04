@@ -9,15 +9,17 @@
 
 import { verifyAuditChain } from '../../autotelic/audit.js'
 import { createRuntime, isQuietNow } from '../../autotelic/runtime.js'
+import { createExec } from '../../autotelic/exec.js'
+import { createJournal } from '../../autotelic/reflect.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export default {
   id: 'autotelic',
   name: '自驱引擎（实验）',
-  version: '0.2.0',
-  description: '给她自己的后台会话与账本：独立 preset、机械审计（哈希链，删了会断）、好奇判分与立项、心跳看护。默认关闭，全关时插件行为与旧版一致。',
-  files: ['autotelic/audit.js', 'autotelic/engine.js', 'autotelic/book.js', 'autotelic/runtime.js'],
+  version: '0.3.0',
+  description: '给她自己的后台会话与账本：独立 preset、机械审计（哈希链，删了会断）、好奇判分与立项、L1 分级执行（反思/每日一页/做梦）、心跳看护。默认关闭，全关时插件行为与旧版一致。',
+  files: ['autotelic/audit.js', 'autotelic/engine.js', 'autotelic/book.js', 'autotelic/runtime.js', 'autotelic/exec.js', 'autotelic/reflect.js'],
   // 独立标签页「自驱引擎」（页面在 client/client.js：TABS/TAB_MODS/NAV_GROUPS/Autotelic 组件）。
   tab: 'autotelic',
   defaults: {
@@ -27,6 +29,8 @@ export default {
     minCuriosity: 0.55, // 好奇分阈值，不够不立项
     evalModel: '', // 便宜模型自评（'provider/model'）；留空 = 只用可复算公式
     maxCandidates: 3, // 一轮最多立几个项
+    allowAct: true, // 允许动手（L1做事回合）；false 时只「想」不「做」
+    actTimeoutMs: 180000, // 做事回合超时（§4.6b：做事用主模型，这里只限时长）
     // —— 预算（C5：她可调频率但必须有上限；上限值她永远调不动）——
     maxSteps: 8, // 单任务步数上限
     maxTasksActive: 8, // 同时进行的任务数
@@ -50,6 +54,8 @@ export default {
     { key: 'minCuriosity', label: '好奇分阈值', type: 'number', min: 0, max: 1, step: 0.05, hint: '低于这个分不立项；落选原因在「预览」里看得到' },
     { key: 'evalModel', label: '自评模型', type: 'string', hint: "provider/model 形式（如 workbuddy/hy4free）。给候选方向做一次便宜模型自评微调分数；留空只用公式" },
     { key: 'maxCandidates', label: '一轮最多立项', type: 'number', min: 1, max: 5 },
+    { key: 'allowAct', label: '允许动手（L1）', type: 'switch', hint: '立项后她会跑做事回合推进任务（presetIdOverride 开着才带工具；关着只「想」）。失败 2 次自动卡住，同指纹 2 次熔断' },
+    { key: 'actTimeoutMs', label: '做事回合超时（毫秒）', type: 'number', min: 30000, max: 600000 },
     { key: 'maxSteps', label: '单任务步数上限', type: 'number', min: 1, max: 32 },
     { key: 'maxTasksActive', label: '同时进行的任务数', type: 'number', min: 1, max: 16 },
     { key: 'budgetActionsPerHour', label: '动作数 / 小时', type: 'number', min: 1, max: 120 },
@@ -71,7 +77,8 @@ export default {
     // host 装好审计器后会把「已接线」标记放 core 上，面板据此显示「审计已开启」。
     const auditWired = () => Boolean(api.core?.autotelicAuditOn)
 
-    // P1 运行时：心跳 tick + 预览 + 账本。账本落 api.dataDir('ledger.json')。
+    // P1+P2 运行时：心跳 tick（立项+推进+复盘+做梦）+ 预览 + 账本。账本落 api.dataDir('ledger.json')。
+    const journal = createJournal(api.dataDir())
     const runtime = createRuntime({
       settings: () => api.settings(),
       cfg: api.config(),
@@ -80,6 +87,16 @@ export default {
       personaName: () => '', // 人格名（素材提权重用）；取不到就空着
       ledgerFile: api.dataDir('ledger.json'),
       evalTurn: (prompt, { model, timeoutMs }) => api.core.hub.runSystemTurn('autotelic-eval', '自驱 · 好奇自评', prompt, { timeoutMs, noTools: true, key: 'eval', model }),
+      // L1 分级执行器（P2.1）：做事回合 + 非工具路径的审计记账（§4.1 ③）
+      act: createExec({
+        settings: () => api.settings(),
+        hub: api.core.hub,
+        auditNote: (entry) => api.core?.autotelicAudit?.note?.(entry),
+        log: api.log,
+      }),
+      journal,
+      auditNote: (entry) => api.core?.autotelicAudit?.note?.(entry),
+      auditStat: () => api.core?.autotelicAudit?.status?.(),
       log: api.log,
     })
 
@@ -110,6 +127,27 @@ export default {
       const r = await runtime.tick({ manual: true })
       return { ok: r.outcome !== 'error', message: tickMessage(r), ...r }
     })
+    // 手动推进一步（调试用）：开着 + 允许动手才动。
+    api.route('/autotelic/step', async () => {
+      const s = api.settings()
+      if (!s.enabled) return { ok: false, message: '自驱引擎没开' }
+      if (!s.allowAct) return { ok: false, message: '「允许动手」关着，她只想想' }
+      const r = await runtime.step({ manual: true })
+      return { ok: r.outcome !== 'error', message: stepMessage(r), ...r }
+    })
+    // 她自己调参数（P2.6，C5）：白名单 + 上限钳制 + 本次调整进审计。主人也能代调（by=owner 不钳制方向）。
+    api.route('/autotelic/tune', async (req) => {
+      const body = await api.core.http.body(req).catch(() => ({}))
+      const patch = body && typeof body === 'object' ? body.patch || body : {}
+      const by = String(body?.by || 'she') === 'owner' ? 'owner' : 'she'
+      const r = runtime.tune(patch, { by })
+      if (!r.ok) return { ok: false, message: Object.entries(r.rejected).map(([k, v]) => `${k}：${v}`).join('；') || r.why, ...r }
+      api.setConfig({ ext: { autotelic: r.applied } })
+      api.core?.autotelicAudit?.note?.({ kind: 'autotelic/tune', args: { by, patch: r.applied, rejected: r.rejected }, outcome: '调参动作本身进审计（C5）' })
+      return { ok: true, message: `调好了：${Object.entries(r.applied).map(([k, v]) => `${k}=${v}`).join('、')}${Object.keys(r.rejected).length ? `（拒了 ${Object.keys(r.rejected).length} 项）` : ''}`, ...r }
+    })
+    // 复盘刊物：每日一页 + 做梦记录（P2.5/P2.7 的面板口）。
+    api.route('/autotelic/journal', async () => ({ ok: true, daily: journal.list('daily'), dreams: journal.list('dreams') }))
 
     return { auditDir, runtime }
   },
@@ -123,6 +161,16 @@ function tickMessage(r) {
   if (r.outcome === 'skipped-budget') return '预算见底，不开新坑'
   if (r.outcome === 'error') return '这轮出错了，看日志'
   return `这轮结束：${r.outcome}`
+}
+
+function stepMessage(r) {
+  if (r.outcome === 'step-done') return '这步办完了'
+  if (r.outcome === 'step-failed') return `这步没办成（${r.taskStatus || '记了失败'}）`
+  if (r.outcome === 'loop-broken') return '死循环熔断：同样的观察出现两次，任务放弃'
+  if (r.outcome === 'no-step') return r.why ? `没有可开的步：${r.why}` : '没有待办的步'
+  if (r.outcome === 'act-unavailable') return '执行器没接上（hub 不可用？）'
+  if (r.outcome === 'act-disabled') return '「允许动手」没开'
+  return `结束：${r.outcome}`
 }
 
 /** 今天的审计条数（读文件数行，供面板显示；出错按 0 处理）。 */

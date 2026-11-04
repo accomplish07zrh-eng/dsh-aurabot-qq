@@ -2416,6 +2416,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             : '⚠ 断链 @ ' + chain.brokenAt.file + ' 第 ' + chain.brokenAt.line + ' 条（' + chain.brokenAt.reason + '）'))
       const doPreview = async () => { setBusy('preview'); try { const r = await get('/autotelic/preview'); setPv(r) } catch (e) { toast(e.message, 'err') } finally { setBusy('') } }
       const doRun = async () => { setBusy('run'); try { const r = await post('/autotelic/run'); toast(r.message || '这轮结束了', r.ok === false ? 'err' : 'ok'); load() } catch (e) { toast(e.message, 'err') } finally { setBusy('') } }
+      const doStep = async () => { setBusy('step'); try { const r = await post('/autotelic/step'); toast(r.message || '这步结束了', r.ok === false ? 'err' : 'ok'); load() } catch (e) { toast(e.message, 'err') } finally { setBusy('') } }
+      const [jr, setJr] = useState(null)
+      const loadJournal = () => get('/autotelic/journal').then((r) => { if (r.ok) setJr(r) }).catch(() => {})
+      useEffect(() => { loadJournal() }, [])
       const tasks = (s && s.tasks) || []
       const TASK_BADGE = { active: '', done: '完成', failed: '失败', blocked: '卡住', abandoned: '放弃' }
       return h('div', { className: 'ab-grid' },
@@ -2434,17 +2438,29 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex', style: { marginTop: 10 } },
             h(Btn, { small: true, onClick: doPreview, disabled: busy === 'preview' }, busy === 'preview' ? '正在预览…' : '预览（不落盘）'),
             h(Btn, { small: true, kind: 'primary', onClick: doRun, disabled: busy === 'run' }, busy === 'run' ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在想…') : '现在想一轮'),
+            h(Btn, { small: true, onClick: doStep, disabled: busy === 'step' }, busy === 'step' ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在做…') : '推进一步'),
             h('span', { className: 'ab-muted ab-small' }, s && s.running ? '上一轮还没想完' : '')),
           pv ? h('div', { className: 'ab-note', style: { marginTop: 8 } },
             h('div', null, '素材 ' + pv.materialCount + ' 条 · 候选 ' + pv.candidates.length + ' 个（阈值 ' + pv.thresholds.minCuriosity + '）'),
             pv.candidates.map((c) => h('div', { key: c.title, className: 'ab-small', style: { marginTop: 4 } }, '✓ 「' + c.title + '」 ' + c.score.toFixed(2) + ' — ' + c.reason)),
             pv.rejected.slice(0, 6).map((x, i) => h('div', { key: i, className: 'ab-small ab-muted', style: { marginTop: 2 } }, '✗ 「' + x.title + '」 ' + x.score.toFixed(2) + ' — ' + x.why))) : null,
         ),
-        h(Card, { title: '自驱引擎', right: f.sw('ext.autotelic.enabled'), desc: '给她一间自己的屋子：独立后台会话 + 一本别人代记的账（机械审计）。她可以骗你，但不能骗账本——账是框架机械记的，删了必断链，面板能验出断点。默认关；现在她只会「想和记账」，动手（调模块/写代码）往后几期才放开。' },
+        h(Card, { title: '自驱引擎', right: f.sw('ext.autotelic.enabled'), desc: '给她一间自己的屋子：独立后台会话 + 一本别人代记的账（机械审计）。她可以骗你，但不能骗账本——账是框架机械记的，删了必断链，面板能验出断点。默认关。现在她会想、会记账、会一步一步办自己的任务（L1：只读 + 写自己目录；shell / 发消息一律不在她的工具里）。' },
           h(Row, { label: '允许后台会话指定 preset', hint: 'hub 只在你明确开了这个开关后才接受 presetId 覆盖（aurabot-autotelic，不带 shell、不带 QQ 社交工具）；关着时最坏情况也只是「她不会动」' }, f.sw('ext.autotelic.presetIdOverride')),
           h(Row, { label: '审计账本', hint: '她的工具调用全量落盘（哈希链，一天一页）；你自己在 GUI / QQ 私聊 / 群里的调用不进她的账本' },
             s ? h('span', { className: 'ab-small', style: { color: s.audit.wired ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, s.audit.wired ? '✓ 审计已接线' : '○ 未接线（插件没挂上钩子）') : h('span', { className: 'ab-muted ab-small' }, '…')),
           h(Row, { label: '今日条数 / 链校验', hint: '按节奏看：这里长期是 0 条但她「说自己干了活」，就该追问了' }, chainView, h(Btn, { small: true, onClick: load }, '刷新')),
+        ),
+        h(Card, { title: '复盘与做梦', desc: '每日一页强制有一段「今天没敢说的」（段落必须在，内容不约束——真实性靠上面的审计账本对账，不靠她的自述）。做梦是安静时段最深处的离线整理，把白天的事蒸馏成几条长期记忆；做梦本身也进审计。' },
+          !jr ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : (jr.daily || []).length === 0 && (jr.dreams || []).length === 0 ? h(Empty, { icon: '🌙', text: '还没有复盘。攒够几件完结、或到了每日一页的点儿，她会自己写。' })
+              : h('div', { className: 'ab-list' },
+                (jr.daily || []).map((d) => h('div', { key: 'd' + d.day, className: 'ab-li' },
+                  h('div', { className: 'meta' }, h('b', null, '每日一页 · ' + d.day)),
+                  h('div', { className: 'body ab-small', style: { whiteSpace: 'pre-wrap' } }, d.text))),
+                (jr.dreams || []).map((d) => h('div', { key: 'm' + d.day, className: 'ab-li' },
+                  h('div', { className: 'meta' }, h('b', null, '做梦 · ' + d.day)),
+                  h('div', { className: 'body ab-small', style: { whiteSpace: 'pre-wrap' } }, d.text)))),
         ),
         h(Card, { title: '节奏与预算', desc: 'P1/P2 才接线的占位参数，先想好数值；她以后能自己调其中几个，但上限永远在你手里。' },
           h(Row, { label: '好奇分阈值', hint: '低于这个分不立项' }, f.num('ext.autotelic.minCuriosity', { min: 0, max: 1, step: 0.05 })),
