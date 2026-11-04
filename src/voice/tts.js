@@ -318,7 +318,8 @@ export function volcanoResourceFor(voiceType) {
 function volcanoHint(code, message) {
   const m = String(message || '')
   const n = Number(code) || 0
-  if (n === 45000010 || /Invalid X-Api-Key/i.test(m)) return 'API Key 不对：去火山控制台左侧「API Key」重新复制一次（注意别把别的服务的 Key 粘过来）'
+  // 这个码不只代表「填错」：刚开通语音合成、或者刚建的 Key，火山要过几分钟才认，也会回它
+  if (n === 45000010 || /Invalid X-Api-Key/i.test(m)) return 'API Key 没被认出来：先确认是「语音技术 → 设置 → API Key」页复制的（方舟/大模型的 Key 不通用）、没被禁用；刚开通服务或刚建 Key 的话，等几分钟再试一次'
   if (n === 45000030 || /resource not granted/i.test(m)) return '这个模型还没开通：去火山控制台左侧「开通管理」，把「语音合成大模型」点开通（开通后可能要等几分钟）'
   if (n === 55000000 || /mismatched with speaker/i.test(m)) return '音色和模型版本对不上：id 里带 uranus / vv 的要配 seed-tts-2.0，带 moon / mars 的配 seed-tts-1.0'
   if (n === 40402003 || /TTSExceededTextLimit/i.test(m)) return '这段文字太长，火山一次念不完，拆成几段发'
