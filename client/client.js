@@ -776,6 +776,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'imagegen', label: '生图', flag: 'imageGen.enabled' },
       { id: 'diary', label: '空间日记', flag: 'diary.enabled' },
       { id: 'speakup', label: '主动搭话', flag: 'speakUp.enabled' },
+      { id: 'autotelic', label: '自驱引擎', flag: 'ext.autotelic.enabled' },
       { id: 'pet', label: '桌宠' },
       { id: 'mood', label: '心情与记忆', flag: 'mood.enabled' },
       { id: 'persona', label: '人物记忆', flag: 'memory.enabled' },
@@ -792,14 +793,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'logs', label: '日志' },
     ]
     // 内置标签页属于哪个模块：模块都没在跑就不显示这一页
-    const TAB_MODS = { voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], persona: ['memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'] }
+    const TAB_MODS = { voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imagegen'], diary: ['diary', 'qzone-social'], speakup: ['speakup', 'purpose'], pet: ['pet'], mood: ['mood', 'memory'], persona: ['memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], autotelic: ['autotelic'] }
     const modOn = (st, id) => (st.modules || []).some((m) => m.id === id && m.running)
 
     // 两层导航：上面一排是分组，下面一排是这组里的页面；每组记住上次看的那页，Alt+K 查找功能
     // （分组导航的思路来自社区贡献的「导航布局」扩展，这里改成面板自己实现）
     const NAV_GROUPS = [
       { id: 'home', label: '概览', icon: 'M3 10.5 12 3l9 7.5M5.5 9v11.5h13V9M10 20.5v-6h4v6', tabs: ['overview'] },
-      { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['character', 'group', 'speakup', 'mood', 'persona'] },
+      { id: 'self', label: '人设', icon: 'M12 12.5a4.25 4.25 0 1 0 0-8.5 4.25 4.25 0 0 0 0 8.5zM4.5 20.5c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5', tabs: ['character', 'group', 'speakup', 'autotelic', 'mood', 'persona'] },
       { id: 'express', label: '表达', icon: 'M20.5 11.5a8 8 0 0 1-11.7 7.1L4 20l1.4-4.4A8 8 0 1 1 20.5 11.5zM9 13.2s1.1 1.5 3 1.5 3-1.5 3-1.5M9.5 9.6h.01M14.5 9.6h.01', tabs: ['voice', 'asr', 'stickers', 'imagegen', 'song', 'pet'] },
       { id: 'platform', label: '平台', icon: 'M3.5 6.5h17v11h-17zM10.5 9.8v4.4l3.8-2.2z', tabs: ['diary', 'bili', 'douyin', 'heybox'] },
       { id: 'system', label: '系统', icon: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4', tabs: ['connect', 'model', 'access', 'security', 'backup', 'about', 'logs'] },
@@ -812,7 +813,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     const NAV_ALIAS = {
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴 相处经验 说话方式', access: '主人 白名单 权限 群管 改资料',
       group: '群聊 插话 合并', model: 'ai 大模型 视觉 思考强度', voice: '语音 tts 说话 音色 edge', asr: '语音识别 听语音 转文字 asr 语音转文本', stickers: '表情 小黄脸 gif 商城表情',
-      imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
+      imagegen: '画图 图片', diary: '空间 说说 日记', speakup: '搭话 主动', autotelic: '自驱 自主 后台 账本 审计 做梦 立项', mood: '心情 记忆', song: '唱歌 翻唱 rvc 点歌',
       bili: 'b站 bilibili 视频', douyin: '抖音 短视频 私信', pet: '桌宠 宠物 悬浮窗 气泡 electron', local: '本地 接口 sd sovits', security: '安全 防护 ssrf 内网 图片 下载', modules: '扩展 自己写 模板 安全模式', market: '模块 市场 插件 社区 下载 安装 桌宠 抖音 小黑盒 群管', logs: '日志 报错', about: '关于 关于我们 版本 许可 鸣谢 开源', backup: '备份 恢复 换电脑 迁移 导入 导出',
     }
     const navIcon = (d) => h('svg', { viewBox: '0 0 24 24', 'aria-hidden': true }, h('path', { d }))
@@ -2394,6 +2395,106 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Btn, { small: true, onClick: async () => { const r = await post('/speakup/fire'); toast(r.message) } }, '现在就让ta来找我')),
         ),
         h(PurposeStatus, { st, toast }),
+        h(OutboundPolicy, { toast }),
+      )
+    }
+
+    // 「自驱引擎」独立页（少爷定的：不属于主动搭话，单独一页）。
+    // P0 只有地基（审计哈希链 + 状态），引擎闭环（立项/做事/做梦）在 P1 之后逐期点亮；
+    // 数据走 /autotelic/status，参数就是 ext.autotelic.*（模块 defaults 里全有）。
+    function Autotelic({ st, draft, setDraft, toast }) {
+      const f = useField(draft, setDraft)
+      const [s, setS] = useState(null)
+      const load = () => get('/autotelic/status').then((r) => { if (r.ok) setS(r); else setS(null) }).catch(() => setS(null))
+      useEffect(() => { load(); const t = setInterval(load, 15000); return () => { clearInterval(t) } }, [])
+      const chain = s && s.audit && s.audit.chain
+      const chainView = !chain ? h('span', { className: 'ab-muted ab-small' }, '加载中…')
+        : h('span', { className: 'ab-small', style: { color: chain.ok ? 'var(--ab-ok)' : '#c62828' } },
+          (s.audit.today || 0) + ' 条 · ' + (chain.ok ? '链完整'
+            : '⚠ 断链 @ ' + chain.brokenAt.file + ' 第 ' + chain.brokenAt.line + ' 条（' + chain.brokenAt.reason + '）'))
+      return h('div', { className: 'ab-grid' },
+        h(Card, { title: '自驱引擎', right: f.sw('ext.autotelic.enabled'), desc: '给她一间自己的屋子：独立后台会话 + 一本别人代记的账（机械审计）。她可以骗你，但不能骗账本——账是框架机械记的，删了必断链，面板能验出断点。默认关；P0 只铺地基，她一行代码都还不会自己跑。' },
+          h(Row, { label: '允许后台会话指定 preset', hint: 'hub 只在你明确开了这个开关后才接受 presetId 覆盖（aurabot-autotelic，不带 shell、不带 QQ 社交工具）；关着时最坏情况也只是「她不会动」' }, f.sw('ext.autotelic.presetIdOverride')),
+          h(Row, { label: '审计账本', hint: '她的工具调用全量落盘（哈希链，一天一页）；你自己在 GUI / QQ 私聊 / 群里的调用不进她的账本' },
+            s ? h('span', { className: 'ab-small', style: { color: s.audit.wired ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, s.audit.wired ? '✓ 审计已接线' : '○ 未接线（插件没挂上钩子）') : h('span', { className: 'ab-muted ab-small' }, '…')),
+          h(Row, { label: '今日条数 / 链校验', hint: '按节奏看：这里长期是 0 条但她「说自己干了活」，就该追问了' }, chainView, h(Btn, { small: true, onClick: load }, '刷新')),
+        ),
+        h(Card, { title: '节奏与预算', desc: 'P1/P2 才接线的占位参数，先想好数值；她以后能自己调其中几个，但上限永远在你手里。' },
+          h(Row, { label: '好奇分阈值', hint: '低于这个分不立项' }, f.num('ext.autotelic.minCuriosity', { min: 0, max: 1, step: 0.05 })),
+          h(Row, { label: '单任务步数上限' }, f.num('ext.autotelic.maxSteps', { min: 1, max: 32 })),
+          h(Row, { label: '同时进行的任务数' }, f.num('ext.autotelic.maxTasksActive', { min: 1, max: 16 })),
+          h(Row, { label: '动作数 / 小时' }, f.num('ext.autotelic.budgetActionsPerHour', { min: 1, max: 120 })),
+          h(Row, { label: '安静时段', hint: '只禁「打扰你」，不禁她自己做事；可跨午夜' }, f.text('ext.autotelic.quietFrom'), h('span', { className: 'ab-muted' }, '到'), f.text('ext.autotelic.quietTo')),
+          h(Row, { label: '每日一页（点）', hint: '几点出她自己的总结（里面强制有一段「今天没敢说的」，内容不约束）' }, f.num('ext.autotelic.dailyReviewHour', { min: 0, max: 23 })),
+          h(Row, { label: '攒几件才评', hint: '攒够几件或满一天，先到者为准' }, f.num('ext.autotelic.minBatchForReview', { min: 1, max: 20 })),
+          h(Row, { label: '做梦窗口', hint: '安静时段最深处做一次离线整理（把白天的事蒸馏成几条长期记忆）；留空 = 关闭做梦' }, f.text('ext.autotelic.dreamFrom'), h('span', { className: 'ab-muted' }, '到'), f.text('ext.autotelic.dreamTo')),
+        ),
+        h(Card, { title: '她能自己造的东西', desc: '框架代码（src/）对她锁死；用户模块和 Python 脚本是她给自己攒本事的两条路。' },
+          h(Row, { label: '允许写用户模块', hint: '只能写自己数据目录的 modules/<id>/，插件升级不动' }, f.sw('ext.autotelic.allowUserModules')),
+          h(Row, { label: '允许跑 Python 脚本' }, f.sw('ext.autotelic.allowPython')),
+          h(Row, { label: 'Python 解释器路径', hint: '留空 = 自动探测（会滤掉商店占位别名和假货）；探测不到时填全路径' }, f.text('ext.autotelic.pythonBin', { placeholder: '留空自动探测' })),
+          h(Row, { label: '脚本超时（毫秒）' }, f.num('ext.autotelic.scriptTimeoutMs', { min: 1000, max: 600000 })),
+        ),
+      )
+    }
+
+    // 「主动发言出站策略」卡片：档位、引擎状态、拦截统计。数据走 /panel/outbound-policy，
+    // 后端已把机器值翻成中文（view 字段），前端只管排版，不另维护翻译表。
+    function OutboundPolicy({ toast }) {
+      const [d, setD] = useState(null)
+      const [busy, setBusy] = useState('')
+      const load = () => get('/panel/outbound-policy').then((r) => { if (r.ok) setD(r.view) })
+      useEffect(() => { load(); const t = setInterval(load, 10000); return () => { clearInterval(t) } }, [])
+      if (!d) return null
+      const save = (patch, key) => async () => {
+        setBusy(key)
+        try {
+          const r = await post('/panel/outbound-policy', patch)
+          if (!r.ok) toast(r.message || '没保存上', 'err')
+          else { setD(r.view); toast('保存好了', 'ok') }
+        } catch (e) { toast(e.message) } finally { setBusy('') }
+      }
+      const toneColor = d.tone === 'ok' ? '#2e7d32' : d.tone === 'bad' ? '#c62828' : '#ef6c00'
+      return h(Card, {
+        title: '主动发言出站策略',
+        desc: '决定刷抖音、逛小黑盒、热榜巡游这类模块「刷完之后能不能直接私聊你」。关掉纳管时它们照旧直接发；开成门闸后，要先问主动搭话/目的引擎的意见。',
+      },
+        // 总体状态条：一句话说清现在到底管没管
+        h('div', { className: 'ab-card', style: { padding: '10px 12px', marginBottom: 10, borderLeft: '3px solid ' + toneColor } },
+          h('b', { style: { color: toneColor } }, d.headline),
+          h('div', { className: 'ab-muted ab-small', style: { marginTop: 4, lineHeight: 1.6 } }, d.summary)),
+        // 档位
+        h(Row, { label: '纳管档位', hint: d.tierHint },
+          h(Select, {
+            value: d.tier,
+            options: (d.tiers || []).map((t) => ({ value: t.value, label: t.label })),
+            onChange: (v) => save({ tier: v }, 'tier')(),
+          })),
+        h('div', { className: 'ab-muted ab-small', style: { margin: '-4px 0 8px 2px' } }, d.tierLabel),
+        // 策略源（谁在做决定）
+        h(Row, { label: '谁来判该不该说', hint: '自动 = 用当前就绪的那个引擎' },
+          h(Select, {
+            value: d.activeMode,
+            options: (d.activeOptions || []).map((o) => ({ value: o.value, label: o.label })),
+            onChange: (v) => save({ activePolicy: v }, 'active')(),
+          })),
+        d.sources && d.sources.length
+          ? h('div', { className: 'ab-list', style: { margin: '6px 0' } }, d.sources.map((s) => h('div', { key: s.name, className: 'ab-li' },
+            h('div', { className: 'meta' },
+              s.title + ' · ' + s.stateLabel + (s.reason ? ' · ' + s.reason : '')))))
+          : h('div', { className: 'ab-note' }, '还没有可用的引擎：请先打开「主动搭话」或「目的引擎」，否则没人来决定该不该说。'),
+        // 统计
+        d.stats && d.stats.length
+          ? h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', margin: '8px 0' } },
+            d.stats.map((s) => h('div', { key: s.label, className: 'ab-card', style: { flex: '1 1 88px', padding: '8px 10px' }, title: s.hint },
+              h('div', { className: 'ab-muted ab-small' }, s.label),
+              h('b', null, s.value))))
+          : null,
+        d.ledger && d.ledger.length
+          ? h(Row, { label: '投递账本', hint: '由宿主代发的条目当前分布' },
+            h('span', { className: 'ab-muted ab-small' }, d.ledger.map((x) => x.label + ' ' + x.count).join(' · ')))
+          : null,
+>>>>>>> 8feb746 (feat(autotelic): 面板单开「自驱引擎」页（少爷定：不属于主动搭话）)
       )
     }
 
@@ -5341,10 +5442,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
       const body = curTab.ext ? ExtPage : {
         overview: Overview, connect: Connect, character: Persona, access: Access, group: Group, model: Model, voice: Voice, asr: Asr,
-        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, pet: PetPanel, mood: Mood, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
+        stickers: Stickers, imagegen: ImageGen, diary: Diary, speakup: SpeakUp, autotelic: Autotelic, pet: PetPanel, mood: Mood, persona: PersonaMemory, song: Song, bili: Bili, douyin: Douyin, heybox: Heybox, local: LocalApi, security: Security, market: Market, modules: Modules, logs: Logs, about: About, backup: Backup,
       }[curTab.id] || Overview
       // 哪些标签有没保存的改动
-      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
+      const TAB_KEYS = { connect: ['snowluma', 'botQQ'], access: ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'qqApi', 'longTasks', 'profilePerms', 'allow'], group: ['group', 'merge', 'titleFilter', 'chat'], model: ['model', 'chatModels'], voice: ['voice'], asr: ['voice'], stickers: ['stickers'], imagegen: ['imageGen'], diary: ['diary', 'qzoneSocial'], speakup: ['speakUp'], autotelic: [], pet: [], mood: ['mood', 'memory'], song: ['song'], bili: ['bili'], douyin: ['douyin'], heybox: ['heybox'], local: ['local'], security: ['security', 'update'] }
       const tabDirty = (id) => {
         if (!dirty) return false
         if (id.startsWith('ext:')) { const k = id.slice(4); return JSON.stringify((draft.ext || {})[k]) !== JSON.stringify((cfg.ext || {})[k]) }

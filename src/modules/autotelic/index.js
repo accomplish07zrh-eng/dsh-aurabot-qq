@@ -15,9 +15,8 @@ export default {
   name: '自驱引擎（实验）',
   version: '0.1.0',
   description: '给她自己的后台会话与账本：独立 preset、机械审计（哈希链，删了会断）、心跳看护。默认关闭，全关时插件行为与旧版一致。',
-  // 内置模块的设置必须有 tab 才会在面板露脸（不写 tab 的内置模块没有任何渲染落点）。
-  // 挂「主动搭话」页：与目的引擎同页，都是「她自己主动做事」这一摊（但两套引擎互不依赖）。
-  tab: 'speakup',
+  // 独立标签页「自驱引擎」（页面在 client/client.js：TABS/TAB_MODS/NAV_GROUPS/Autotelic 组件）。
+  tab: 'autotelic',
   files: ['autotelic/audit.js'],
   defaults: {
     enabled: false, // 总开关：默认关（关着时模块不做任何 IO）
@@ -39,8 +38,8 @@ export default {
     scriptTimeoutMs: 120000, // 单次脚本超时
   },
   settings: [
-    { key: 'enabled', label: '启用自驱引擎', type: 'boolean', hint: '默认关。P0 只铺「审计账本 + 独立会话」地基，她还不会自己跑任何事' },
-    { key: 'presetIdOverride', label: '允许后台会话指定 preset', type: 'boolean', hint: 'hub 只在主人明确开了这个开关时才接受 presetId 覆盖（防误伤主聊天）' },
+    { key: 'enabled', label: '启用自驱引擎', type: 'switch', hint: '默认关。P0 只铺「审计账本 + 独立会话」地基，她还不会自己跑任何事' },
+    { key: 'presetIdOverride', label: '允许后台会话指定 preset', type: 'switch', hint: 'hub 只在主人明确开了这个开关时才接受 presetId 覆盖（防误伤主聊天）' },
     { key: 'minCuriosity', label: '好奇分阈值', type: 'number', min: 0, max: 1, step: 0.05, hint: '低于这个分不立项（P1 接线）' },
     { key: 'maxSteps', label: '单任务步数上限', type: 'number', min: 1, max: 32 },
     { key: 'maxTasksActive', label: '同时进行的任务数', type: 'number', min: 1, max: 16 },
@@ -51,8 +50,8 @@ export default {
     { key: 'minBatchForReview', label: '攒几件才评', type: 'number', min: 1, max: 20 },
     { key: 'dreamFrom', label: '做梦窗口 从', type: 'string', hint: 'HH:mm；留空 = 关闭做梦' },
     { key: 'dreamTo', label: '做梦窗口 到', type: 'string' },
-    { key: 'allowUserModules', label: '允许写用户模块', type: 'boolean', hint: '写不到框架（src/ 锁死），只能写自己数据目录的 modules/<id>/' },
-    { key: 'allowPython', label: '允许跑 Python 脚本', type: 'boolean' },
+    { key: 'allowUserModules', label: '允许写用户模块', type: 'switch', hint: '写不到框架（src/ 锁死），只能写自己数据目录的 modules/<id>/' },
+    { key: 'allowPython', label: '允许跑 Python 脚本', type: 'switch' },
     { key: 'pythonBin', label: 'Python 解释器路径', type: 'string', hint: '留空 = 自动探测（会滤掉商店占位别名）；探测不到时填全路径' },
     { key: 'scriptTimeoutMs', label: '脚本超时（毫秒）', type: 'number', min: 1000, max: 600000 },
   ],
