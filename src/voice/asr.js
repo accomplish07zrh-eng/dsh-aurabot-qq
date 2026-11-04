@@ -29,7 +29,8 @@ export function asrSettings(voice) {
   if (!provider) return null
   const preset = ASR_PRESETS[provider] || null
   if (!preset && provider !== 'custom') return null
-  const baseUrl = str(c.baseUrl || preset?.baseUrl).replace(/\/+$/, '')
+  // 服务地址只填到 /v1；用户把完整 /audio/transcriptions 贴进来时自动去掉，避免拼成双路径 404
+  const baseUrl = str(c.baseUrl || preset?.baseUrl).replace(/\/+$/, '').replace(/\/audio\/transcriptions\/?$/i, '')
   const model = str(c.model || preset?.model)
   if (!baseUrl || !model) return null
   try {

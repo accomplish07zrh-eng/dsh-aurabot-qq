@@ -42,6 +42,28 @@ test('运行时默认值：地址/模型留空用预置，prefer 乱写回 qq', 
   assert.equal(s.prefer, 'qq')
 })
 
+test('服务地址误填完整 /audio/transcriptions 时自动去掉，不会拼成双路径 404', async () => {
+  const calls = []
+  const fake = async (url) => {
+    calls.push(url)
+    return { ok: true, text: async () => JSON.stringify({ text: '好' }) }
+  }
+  const cfg = normalize({
+    voice: {
+      asrApi: {
+        provider: 'custom',
+        baseUrl: 'https://api.siliconflow.cn/v1/audio/transcriptions',
+        model: 'XingChenAGI/XingChenASR-V3.2-Ultra',
+        apiKey: 'sk-asr',
+      },
+    },
+  })
+  assert.equal(asrSettings(cfg.voice).baseUrl, 'https://api.siliconflow.cn/v1')
+  const text = await transcribeAudio(wav(), cfg.voice, log, { fetchImpl: fake })
+  assert.equal(text, '好')
+  assert.equal(calls[0], 'https://api.siliconflow.cn/v1/audio/transcriptions')
+})
+
 test('multipart 上传 wav，取回 text；带 Authorization', async () => {
   const calls = []
   const fake = async (url, init) => {
