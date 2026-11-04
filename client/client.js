@@ -1724,7 +1724,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }, [])
       const cv = draft.voice.volcano || {}
       const voices = list || []
-      const opts = voices.map((v) => ({ value: v.id, label: v.name, desc: [v.ver, v.scene || '通用场景'].join(' · '), group: v.group }))
+      // 1.0 和 2.0 是两个产品：只开通了 2.0 的账号选 1.0 音色会报「模型没开通」，所以在选项里先标出来
+      const opts = voices.map((v) => ({ value: v.id, label: v.name, desc: [v.ver, v.scene || '通用场景', v.ver === '1.0' ? '要另开通 1.0' : ''].filter(Boolean).join(' · '), group: v.group }))
       // 面板里存着清单外的 id（自己从控制台复制的）时，也得能正常显示，别变成一个空格子
       if (list && cv.voiceType && !voices.some((v) => v.id === cv.voiceType)) {
         opts.unshift({ value: cv.voiceType, label: cv.voiceType, desc: '自定义音色 id（不在预置清单里）', group: '自定义' })
