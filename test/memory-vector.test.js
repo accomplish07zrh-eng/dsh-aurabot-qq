@@ -382,6 +382,13 @@ test('自动回忆和 recall_memory 工具都使用向量，失败时保留关�
   assert.match((await tool.execute({ query: '杭州' })).message, /护士/)
 })
 
+test('服务地址误填完整 /embeddings 时自动去掉，不拼成双路径', async (t) => {
+  const s = setup(t)
+  s.cfg.memory.vector.baseUrl = 'http://localhost:1234/v1/embeddings'
+  await s.index().embed(['x'])
+  assert.equal(s.calls.at(-1).url, 'http://localhost:1234/v1/embeddings')
+})
+
 test('自定义请求头、维度、批量、base64 向量；状态/测试/重建', async (t) => {
   const s = setup(t)
   const v = s.cfg.memory.vector

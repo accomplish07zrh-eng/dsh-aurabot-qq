@@ -1,7 +1,7 @@
 // Reranker：配置收敛、OpenAI 兼容 /rerank 请求、排序、失败回退。全部假 fetch，不联网。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalize } from '../src/core/config.js'
+import { normalize, publicConfig } from '../src/core/config.js'
 import { createReranker } from '../src/features/rerank.js'
 
 const log = { info() {}, warn() {}, debug() {} }
@@ -20,7 +20,17 @@ test('默认关闭；地址/Key 留空时复用向量服务', () => {
   assert.equal(s.apiKey, 'sk-v')
   assert.equal(s.topN, 20)
   assert.equal(s.timeoutMs, 2000)
+  const full = normalize({ memory: { vector: { baseUrl: 'https://api.siliconflow.cn/v1/embeddings', apiKey: 'sk-v' }, rerank: { enabled: true } } })
+  assert.equal(createReranker({ getConfig: () => full, log }).settings().baseUrl, 'https://api.siliconflow.cn/v1')
   assert.equal(createReranker({ getConfig: () => normalize({}), log }).configured(), false)
+})
+
+test('重排 Key 在面板不回显', () => {
+  const cfg = normalize({ memory: { rerank: { enabled: true, apiKey: 'sk-r-secret' } } })
+  const pub = publicConfig(cfg)
+  assert.equal(pub.memory.rerank.apiKey, '')
+  assert.equal(pub.memory.rerank.apiKeySet, true)
+  assert.equal(JSON.stringify(pub).includes('sk-r-secret'), false)
 })
 
 test('按服务端分数重排，只送 topN 候选；带 Authorization', async () => {

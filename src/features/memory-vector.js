@@ -70,7 +70,8 @@ export function createVectorIndex({ getConfig, log, fetchImpl = globalThis.fetch
     const memory = getConfig()?.memory
     const c = memory?.vector
     if (memory?.enabled === false || c?.enabled !== true) return null
-    const baseUrl = String(c.baseUrl || '').trim().replace(/\/+$/, '')
+    // 只填到 /v1；误贴完整 /embeddings 时自动去掉，避免拼成双路径 404
+    const baseUrl = String(c.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/embeddings\/?$/i, '')
     const model = String(c.model || '').trim()
     if (!baseUrl || !model) return null
     try {
@@ -218,7 +219,7 @@ export function createVectorIndex({ getConfig, log, fetchImpl = globalThis.fetch
   // 关闭开关后仍能在面板看到本机已经同步的条数。
   function count(items) {
     const c = getConfig()?.memory?.vector
-    const base = String(c?.baseUrl || '').trim().replace(/\/+$/, '')
+    const base = String(c?.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/embeddings\/?$/i, '')
     const model = String(c?.model || '').trim()
     if (!base || !model) return 0
     load()

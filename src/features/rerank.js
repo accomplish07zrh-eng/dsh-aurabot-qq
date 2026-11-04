@@ -16,7 +16,7 @@ export function createReranker({ getConfig, log, fetchImpl = globalThis.fetch })
     const c = memory.rerank
     if (!c || !c.enabled) return null
     const vector = memory.vector || {}
-    const baseUrl = String(c.baseUrl || vector.baseUrl || DEFAULT_BASE).trim().replace(/\/+$/, '').replace(/\/rerank\/?$/i, '')
+    const baseUrl = String(c.baseUrl || vector.baseUrl || DEFAULT_BASE).trim().replace(/\/+$/, '').replace(/\/embeddings\/?$/i, '').replace(/\/rerank\/?$/i, '')
     const model = String(c.model || DEFAULT_MODEL).trim()
     const apiKey = String(c.apiKey || vector.apiKey || '').trim()
     if (!baseUrl || !model) return null
