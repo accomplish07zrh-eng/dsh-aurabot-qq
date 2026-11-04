@@ -536,3 +536,59 @@ async function startProbeModule(t, coreExtra = {}, id = 'probe-mod') {
   assert.ok(captured, '模块必须真的启动过')
   return { api: captured, modules, sends, dir }
 }
+// ---------- 面板路由：GET /panel/outbound-policy 与 POST 同路径（精确匹配） ----------
+test('面板路由：/panel/outbound-policy 能读能写，且只认合法档位', async (t) => {
+  // 用 fake DSH 起真宿主，验证 route 真的注册成精确路径且读写都能用
+  const { createFakeDsh } = await import('./helpers/fake-dsh.js')
+  const { mkdtempSync: mkdtemp, writeFileSync: writeF } = await import('node:fs')
+  const { join: pjoin } = await import('node:path')
+  const dir = mkdtemp(join(tmpdir(), 'aurabot-panel-outbound-'))
+  const oldDir = process.env.AURABOT_DATA_DIR
+  const oldWs = process.env.AURABOT_WORKSPACE
+  process.env.AURABOT_DATA_DIR = dir
+  process.env.AURABOT_WORKSPACE = pjoin(dir, 'ws')
+  writeF(pjoin(dir, 'config.json'), JSON.stringify({
+    enabled: true, dryRun: true, setupDone: true, ownerQQ: '10001',
+    allow: { private: ['10001'], groups: [] },
+    snowluma: { autoStart: false, autoAttach: false, dir: pjoin(dir, 'no-snowluma') },
+    voice: { enabled: false }, stickers: { enabled: false, autoChance: 0 },
+  }))
+  const fake = createFakeDsh({ brain: async () => '嗯' })
+  t.after(() => {
+    fake.dispose()
+    if (oldDir === undefined) delete process.env.AURABOT_DATA_DIR
+    else process.env.AURABOT_DATA_DIR = oldDir
+    if (oldWs === undefined) delete process.env.AURABOT_WORKSPACE
+    else process.env.AURABOT_WORKSPACE = oldWs
+  })
+  const host = await import('../src/host.js')
+  const api = host.apply(fake.ctx)
+  await api.ready.catch(() => {})
+
+  const call = async (path, body) => (await fake.call(path, body)).json()
+
+  // 读：精确路径存在，返回 status 形状
+  const st = await call('/panel/outbound-policy')
+  assert.equal(st.ok, true)
+  assert.ok(st.outbound, 'GET 应返回 status()')
+  assert.equal(st.outbound.tier, 'pass', '默认档位是 pass')
+  assert.equal(st.outbound.managed, false, '默认未纳管')
+  assert.ok(st.outbound.ledger && typeof st.outbound.ledger.pending === 'number')
+  assert.ok(st.outbound.sources && typeof st.outbound.sources === 'object')
+
+  // 写：改档位，回读生效
+  const gate = await call('/panel/outbound-policy', { tier: 'gate' })
+  assert.equal(gate.ok, true)
+  assert.equal(gate.outbound.tier, 'gate')
+  assert.equal((await call('/panel/outbound-policy')).outbound.tier, 'gate', '写入要真的落到配置里')
+
+  // 写：非法档位被拒，档位保持原样
+  const bad = await call('/panel/outbound-policy', { tier: 'wechat' })
+  assert.equal(bad.ok, false)
+  assert.equal((await call('/panel/outbound-policy')).outbound.tier, 'gate', '非法值不能改配置')
+
+  // 写：切回 pass，别污染别的用例
+  const back = await call('/panel/outbound-policy', { tier: 'pass' })
+  assert.equal(back.ok, true)
+  assert.equal(back.outbound.tier, 'pass')
+})
