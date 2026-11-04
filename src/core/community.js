@@ -114,8 +114,22 @@ function safeName(name) {
   return name.split('/').every((seg) => seg && seg !== '.' && seg !== '..')
 }
 
-export function createCommunity({ mods, getConfig, setConfig, log, version, alive = () => true, registryUrl = process.env.AURABOT_REGISTRY_URL || REGISTRY_URL, fetcher = fetch, retryMs = RETRY_MS }) {
+// registry 地址的优先级：调用方显式传入 > 配置 ext.market.registryUrl > 环境变量 AURABOT_REGISTRY_URL > 内置默认。
+// 让模块市场支持换地址（自建索引 / 国内镜像 / 内网部署）而不必改代码或设环境变量。
+function resolveRegistryUrl(arg, getConfig) {
+  if (typeof arg === 'string' && arg.trim() && arg !== REGISTRY_URL) return arg // 显式传参优先（测试 / 旧式调用）
+  const fromConfig = String(getConfig?.()?.ext?.market?.registryUrl || '').trim()
+  if (fromConfig && /^https?:\/\//i.test(fromConfig)) return fromConfig
+  const fromEnv = String(process.env.AURABOT_REGISTRY_URL || '').trim()
+  if (fromEnv) return fromEnv
+  return REGISTRY_URL
+}
+
+export function createCommunity({ mods, getConfig, setConfig, log, version, alive = () => true, registryUrl, fetcher = fetch, retryMs = RETRY_MS }) {
   const dirOf = (id) => join(userDir(), id)
+  // 模块市场索引地址：单一真相，index 下载 / 安装量读取都用它。
+  // 支持换地址（自建索引 / 镜像 / 内网）：先看配置 ext.market.registryUrl，再退环境变量，最后回到内置 github。
+  const registryUrlOf = () => resolveRegistryUrl(registryUrl, getConfig)
   let cache = null // { at, index }
   let busy = null // 同一时间只跑一个安装 / 卸载
   let progress = null // 安装中：{ id, name, stage: 'index' | 'download' | 'install' | 'start', received, total }
@@ -128,14 +142,16 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
   const hasFolder = (id) => existsSync(dirOf(id))
 
   async function loadIndex({ force = false } = {}) {
-    if (!force && cache && Date.now() - cache.at < INDEX_TTL) return cache.index
+    const url = registryUrlOf()
+    // 换地址后旧缓存作废（按 URL 判），否则改完地址可能 5 分钟内仍读到旧的索引。
+    if (!force && cache && cache.url === url && Date.now() - cache.at < INDEX_TTL) return cache.index
     const index = await withRetry(async () => {
-      const r = await fetcher(registryUrl, { signal: AbortSignal.timeout(20_000), cache: 'no-store' })
+      const r = await fetcher(url, { signal: AbortSignal.timeout(20_000), cache: 'no-store' })
       if (!r.ok) throw new Error(`读不到社区模块索引（HTTP ${r.status}）`)
       return r.json()
     }, retryMs)
     if (index?.schema !== 1) throw new Error('社区模块索引的格式是新版的，先更新插件')
-    cache = { at: Date.now(), index }
+    cache = { at: Date.now(), url, index }
     return index
   }
 
@@ -143,7 +159,7 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
 
   /** 索引里的仓库地址 → owner/repo。索引是可下载的第三方数据，只认长得对的。 */
   function repoOf(index) {
-    for (const url of [index?.assetsBase, index?.homepage, registryUrl]) {
+    for (const url of [index?.assetsBase, index?.homepage, registryUrlOf()]) {
       const m = String(url || '').match(/github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)/)
       if (m && ID_RE.test(m[1].toLowerCase()) && ID_RE.test(m[2].toLowerCase())) return `${m[1]}/${m[2]}`
     }
@@ -362,5 +378,5 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
     return result
   }
 
-  return { progress: () => progress, list, install, remove, migrate, source: readSource }
+  return { progress: () => progress, registryUrl: registryUrlOf, list, install, remove, migrate, source: readSource }
 }

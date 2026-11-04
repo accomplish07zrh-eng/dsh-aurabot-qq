@@ -61,6 +61,21 @@ function setup(packs, { cfg = {}, revoked = [], status = [] } = {}) {
   return { c, cfg: () => config }
 }
 
+test('registry 地址：配置 ext.market.registryUrl 优先于内置，并暴露 registryUrl()', async () => {
+  const config = { ext: { market: { registryUrl: 'https://self-host.example.com/index.json' } } }
+  const seen = []
+  const fetcher = async (url) => { seen.push(url); if (url.endsWith('index.json')) return { ok: true, json: async () => ({ schema: 1, assetsBase: 'https://x/', modules: [] }) }; return { ok: true, arrayBuffer: async () => Buffer.from('') } }
+  const c = createCommunity({ mods: { status: () => [], sync: async () => {}, stop: () => true }, getConfig: () => config, setConfig() {}, log: { info() {}, warn() {} }, version: '1.2.0', fetcher })
+  assert.equal(c.registryUrl(), 'https://self-host.example.com/index.json')
+  await c.list()
+  assert.equal(seen[0], 'https://self-host.example.com/index.json')
+})
+
+test('registry 地址：配置为空时回落内置默认', async () => {
+  const c = createCommunity({ mods: { status: () => [], sync: async () => {}, stop: () => true }, getConfig: () => ({}), setConfig() {}, log: { info() {}, warn() {} }, version: '1.2.0', fetcher: async () => ({ ok: true, json: async () => ({ schema: 1, modules: [] }) }) })
+  assert.equal(c.registryUrl(), 'https://raw.githubusercontent.com/aureth-labs/dsh-aurabot-qq-mods/registry/index.json')
+})
+
 before(async () => {
   root = mkdtempSync(join(tmpdir(), 'aurabot-community-'))
   process.env.AURABOT_DATA_DIR = root

@@ -29,7 +29,7 @@ import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
-import { createCommunity } from './core/community.js'
+import { createCommunity, REGISTRY_URL } from './core/community.js'
 import { createApprovalRelay } from './security/approval.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
 import { cleanText } from './core/text.js'
@@ -1113,6 +1113,20 @@ export function apply(ctx) {
   route('/modules/community/remove', async (req) => {
     const b = await readBody(req)
     return { ...(await community.remove(String(b.id || ''), { purge: b.purge === true })), modules: mods.status() }
+  })
+  // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）用。留空 = 回到内置 GitHub 地址；
+  // 只收 http/https，别把 file:// 之类塞进来当下载源。单一真相在 ext.market.registryUrl，
+  // community.js 读取时按 config > AURABOT_REGISTRY_URL > 内置默认 的优先级解析。
+  route('/panel/market/registry', async (req) => {
+    if (String(req?.method || 'GET').toUpperCase() === 'POST') {
+      const b = await readBody(req)
+      const u = String(b.registryUrl ?? '').trim().slice(0, 1000).replace(/\/+$/, '')
+      if (u && !/^https?:\/\//i.test(u)) return { ok: false, message: '要填 http(s):// 开头的完整地址，如 https://example.com/registry/index.json' }
+      setConfig(mergeFromPanel(cfg, { ext: { market: { registryUrl: u } } }))
+      log.info(`面板已保存模块市场地址｜${u || '（留空，回到内置 GitHub 索引）'}`)
+      return { ok: true, registryUrl: community.registryUrl(), message: u ? '已换成自定义模块市场地址' : '已恢复内置 GitHub 索引地址' }
+    }
+    return { ok: true, registryUrl: community.registryUrl(), default: REGISTRY_URL }
   })
   route('/modules/reload', async (req) => {
     const id = String((await readBody(req)).id || '')
