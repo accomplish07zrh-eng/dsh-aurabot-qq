@@ -24,7 +24,8 @@ import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
 import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
 import { mimeOf } from './chat/inbound.js'
-import { COMMON_FACES, buildFaceIndex } from './chat/faces.js'
+import { buildFaceIndex } from './chat/faces.js'
+import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
@@ -1520,7 +1521,8 @@ export function apply(ctx) {
     { char: '🙏', name: '拜托', id: '128591' },
   ]
   route('/panel/faces', async () => {
-    let byId = new Map(Object.entries(COMMON_FACES).map(([name, id]) => [String(id), name]))
+    // 先用内置整表（329 条）打底：网关取不到目录时，面板也不会只剩 65 个常用表情
+    let byId = new Map(FACE_TABLE.map((f) => [String(f.id), f.name]))
     try {
       const r = await onebot.call('fetch_sys_faces', {}, { timeoutMs: 8000 })
       const built = buildFaceIndex(r?.packs ? r : r?.data)
