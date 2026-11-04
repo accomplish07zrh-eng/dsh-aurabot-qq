@@ -15,6 +15,9 @@ export default {
   name: '自驱引擎（实验）',
   version: '0.1.0',
   description: '给她自己的后台会话与账本：独立 preset、机械审计（哈希链，删了会断）、心跳看护。默认关闭，全关时插件行为与旧版一致。',
+  // 内置模块的设置必须有 tab 才会在面板露脸（不写 tab 的内置模块没有任何渲染落点）。
+  // 挂「主动搭话」页：与目的引擎同页，都是「她自己主动做事」这一摊（但两套引擎互不依赖）。
+  tab: 'speakup',
   files: ['autotelic/audit.js'],
   defaults: {
     enabled: false, // 总开关：默认关（关着时模块不做任何 IO）
