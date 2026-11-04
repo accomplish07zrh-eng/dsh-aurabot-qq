@@ -133,6 +133,7 @@ dsh plugin --profile <profile> add github:aureth-labs/dsh-aurabot-qq
 | [写模块教程](docs/MODULE-TUTORIAL.md) | 从零写一个模块；怎么热重载、怎么套用改写挂钩 |
 | [模块 API](src/modules/API.md) | 扩展接口、工具、上下文、命令行、定时任务完整说明 |
 | [语义检索（Embedding）](docs/EMBEDDING.md) | 支持的服务、配置、维度/批量/超时、隐私与排错 |
+| [硅基流动免费服务](docs/SILICONFLOW.md) | 免费对话 / embedding / ASR / 生图 / Reranker 在本项目里怎么接 |
 | [更新记录](CHANGELOG.md) | 每个版本改了什么 |
 | [设计要点](docs/DESIGN.md) | 人格注入、群聊上下文、记忆、心情、B 站、翻唱等的实现取舍 |
 
