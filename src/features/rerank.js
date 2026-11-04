@@ -82,7 +82,7 @@ export function createReranker({ getConfig, log, fetchImpl = globalThis.fetch })
     return scored
   }
 
-  async function test(text = '今天想吃白米饭') {
+  async function test(text = '主人喜欢吃什么') {
     const c = settings()
     if (!c) throw new Error('没开启重排（Reranker）')
     const docs = ['主人喜欢吃白米饭', '主人养了一只猫', '今天天气很好']
