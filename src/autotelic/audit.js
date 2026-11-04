@@ -165,13 +165,24 @@ export function createAuditor({ dir, chatOfSession, isOwnedSession, log, now = (
     }
   }
 
+  /** 她的会话里直接拒掉的工具（第二道门，P2.3）：shell / 进程级动作不在她的动作菜单里。
+   *  第一道门在 preset 工具清单（aurabot-autotelic 不带 shell），这里是万一拿到时的兜底。 */
+  const DENY_TOOLS = new Set(['bash', 'pwsh', 'sh', 'cmd', 'zsh', 'spawn_teammate', 'send_message', 'task_board_run'])
+
   return {
-    /** 挂在 tools/pre-execute 上：记「想干」，永远放行。 */
+    /** 挂在 tools/pre-execute 上：记「想干」，永远放行——除非是她的会话碰白名单外危险工具。 */
     async preExecute(exec, next) {
+      let chatId = ''
       try {
+        const sessionId = exec?.agent?.session?.id || ''
+        chatId = isOwnedSession?.(sessionId) === false ? '' : String((typeof chatOfSession === 'function' && chatOfSession(sessionId)) || '')
+        if (isAutotelicChat(chatId) && DENY_TOOLS.has(String(exec?.name || ''))) {
+          record({ kind: 'tool/denied', sessionId, tool: String(exec?.name || ''), args: exec?.arguments, outcome: '第二道门：她的会话不许碰 shell / 进程级动作' })
+          return { kind: 'deny', reason: '这个动作不在你的动作菜单里（只读 + 写自己目录为止）。要更多能力走提案（proposals/），别绕。' }
+        }
         record({
           kind: 'tool/intent',
-          sessionId: exec?.agent?.session?.id || '',
+          sessionId,
           tool: String(exec?.name || ''),
           args: exec?.arguments,
         })
@@ -191,6 +202,15 @@ export function createAuditor({ dir, chatOfSession, isOwnedSession, log, now = (
           outcome: d.error ? `error: ${d.error}` : (d.result != null ? d.result : ''),
         })
       } catch { /* 失败静默 */ }
+    },
+    /** 模块侧显式记账（§4.1 ③ 非工具路径）：tune / 做梦 / L1 做事回合等，由可信模块代码调用。
+     *  固定记在她的 chat 名下（不经过会话过滤——调用方就是 autotelic 自己）。 */
+    note(entry) {
+      try {
+        const kind = String(entry?.kind || 'autotelic/note')
+        queue.push({ ...entry, kind: kind.startsWith('autotelic/') ? kind : 'autotelic/note', chatId: AUTOTELIC_CHAT_PREFIX })
+        schedule()
+      } catch (error) { log?.debug?.('审计入队失败：', error.message) }
     },
     /** 状态面板用：目录里今天的条数 + 整条链的校验结果。 */
     async status() {
