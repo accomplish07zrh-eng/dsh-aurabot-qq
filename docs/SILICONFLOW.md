@@ -11,9 +11,9 @@
 | 翻译 | `tencent/Hunyuan-MT-7B` | 适合翻译/改写；不适合当人格聊天主模型 |
 | Embedding | `BAAI/bge-m3` | 面板「语义检索」直接填，免费 |
 | Embedding | `BAAI/bge-large-zh-v1.5` / `bge-large-en-v1.5` | 同上；中文优先 bge-m3 |
-| Reranker | `BAAI/bge-reranker-v2-m3` | 代码暂未接；可用于检索后精排 |
+| Reranker | `BAAI/bge-reranker-v2-m3` | 面板「重排候选」直接填，免费 |
 | 语音识别 | `FunAudioLLM/SenseVoiceSmall` | 面板「云端识别」直接填，免费 |
-| 语音识别 | `XingChenAGI/XingChenASR-*` | 免费，但接口形状可能不同，暂未适配 |
+| 语音识别 | `XingChenAGI/XingChenASR-*` | 免费；实测 `XingChenAGI/XingChenASR-V3.2-Ultra` 走标准 `/audio/transcriptions` 可用，模型 ID 要带前缀 |
 | 生图 | `Kwai-Kolors/Kolors` | 面板「生图」用 OpenAI 兼容 provider |
 | OCR/视觉 | `PaddlePaddle/PaddleOCR-VL-1.5` | 代码暂未接；可用于图片文字识别 |
 
@@ -100,10 +100,10 @@ llm-pi-ai:
 
 ## 5. Reranker / OCR
 
-- `BAAI/bge-reranker-v2-m3` 是免费 reranker。当前代码只做「BM25 + 向量」，没有调用 `/v1/rerank`；要接的话是在检索出 top-N 后再精排 top-K，失败回退原顺序。
+- `BAAI/bge-reranker-v2-m3` 是免费 reranker。面板「心情与记忆 → 重排候选」打开后，会先多取候选，再用它逐条打分重排；地址/Key 留空复用 embedding，失败/超时回退原顺序。
 - `PaddlePaddle/PaddleOCR-VL-1.5` 是免费 OCR/视觉模型，当前没接；适合做「看图读字」工具，不适合替代聊天视觉模型。
 
-这两项属于新功能，不是填个配置就能用。
+OCR 属于新功能，不是填个配置就能用。
 
 ## 免费额度注意事项
 
