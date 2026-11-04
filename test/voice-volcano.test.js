@@ -93,7 +93,7 @@ test('Key 不对：报错说人话，不是甩一串 code', async () => {
     res.writeHead(401, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ header: { code: 45000010, message: 'Invalid X-Api-Key' } }))
   }
-  await assert.rejects(() => volcanoSynth('嗨', conf()), /API Key 不对/)
+  await assert.rejects(() => volcanoSynth('嗨', conf()), /API Key 没被认出来/)
 })
 
 test('音色和模型版本对不上：报错里点出来是音色的问题', async () => {
