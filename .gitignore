@@ -1,3 +1,6 @@
 node_modules/
 *.log
 *.tmp-*
+
+# Workflow 文件仍会被显式 git add；本机 .github 下的其他文件不进状态
+.github/

@@ -1,0 +1,51 @@
+name: Mirror GitHub Org Repos to Gitee
+
+# 说明：
+# - push 只在主发布分支触发，避免每次普通提交都全量镜像整个组织；
+# - schedule 用于定期补齐其他仓库的变更；
+# - workflow_dispatch 可手动触发。
+# - 第三方 action 固定到 v1.5 的 commit，避免使用浮动的 master。
+on:
+  push:
+    branches:
+      - beta
+      - main
+      - 'rc/**'
+      - 'release/**'
+  schedule:
+    # UTC 03:00 = Asia/Shanghai 11:00；仅在默认分支上生效
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-github-org-to-gitee
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Mirror the GitHub organization repos to Gitee
+        uses: Yikun/hub-mirror-action@ec47170fa9d126a4bee5a1ab9359845bb1395248 # v1.5
+        with:
+          # 源账户：github/组织名
+          src: github/aureth-labs
+          # 目标账户：gitee/组织名
+          dst: gitee/aureth-labs
+          # 源和目标都是组织；显式填写，避免默认 user 行为
+          account_type: org
+          src_account_type: org
+          dst_account_type: org
+          # 目标仓库的 SSH 私钥和 Gitee API Token
+          dst_key: ${{ secrets.GITEE_PRIVATE_KEY }}
+          dst_token: ${{ secrets.GITEE_TOKEN }}
+          # 使用 HTTPS 克隆源仓库；如需私钥克隆私有仓库，可改为 ssh
+          clone_style: https
+          # 不强制覆盖目标仓库；需要强制同步时再开启
+          force_update: 'false'
+          timeout: 30m
+          debug: 'false'
