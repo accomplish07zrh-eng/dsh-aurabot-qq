@@ -2606,6 +2606,10 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
 
   return {
     noteVia, contextVia, recallHint, handleCommand, vectorHits, shouldAutoRecall,
+    vectorStatus: () => vector.status(load().items),
+    vectorTest: (text) => vector.test(text),
+    vectorReset: () => vector.reset(),
+    vectorSync: () => vector.sync(load().items, () => load().items),
     add, addEvent, recentEvents, update, remove, restore, recall, contextFor, consolidate, tick, topicScore, compressDetails, importCandidates, importCommit,
     personaOverview, personaPerson, savePersonaPerson, personTags, dislikes, chats, saveChat, gists, timeline, deleteGist, saveRelation, deleteRelation, lookupPerson, lookupChat,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },

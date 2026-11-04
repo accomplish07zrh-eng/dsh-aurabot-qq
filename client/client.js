@@ -1716,10 +1716,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
 
     function Voice({ st, draft, setDraft, toast, reload }) {
       const f = useField(draft, setDraft)
+      const voiceDirty = Boolean(st && st.config) && JSON.stringify(draft.voice) !== JSON.stringify(st.config.voice)
       const [txt, setTxt] = useState('晚安啦，今天也辛苦了，明天见～')
       const [src, setSrc] = useState('')
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '说话（文字转语音）', right: f.sw('voice.enabled'), desc: '回复里写了 <voice>…</voice> 的部分会变成 QQ 语音条；对方明确要语音时一定发语音；短回复也有一定概率整条变语音。' },
+          voiceDirty ? h('div', { className: 'ab-note' }, '语音设置有未保存的改动：点「生成」试听会直接用当前设置；真正聊天要等点底部「保存设置」后生效。') : null,
           h('div', { style: { margin: '4px 0 12px' } }, f.choices('voice.engine', [
             { value: 'auto', label: '自动', desc: 'edge-tts 优先，不行用 Windows 语音' },
             { value: 'edge', label: '微软 edge-tts', desc: st.voice.edgeInstalled ? '在线，音色自然（已装好）' : '在线，音色自然（还没装）' },
@@ -1769,13 +1771,43 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '短回复变语音的概率' }, f.percent('voice.autoChance')),
           h(Row, { label: '多短算短回复' }, f.range('voice.autoMaxChars', 10, 200, 5, (v) => v + ' 字')),
           h(Row, { label: '表情和语音分开发', hint: '语音条里的表情 / emoji 不念出来，语音发完再单独补一条文字发出去（没有表情就不补）；关掉 = 表情直接丢掉，不补发' }, f.sw('voice.emojiSeparate')),
-          h(Row, { label: '试听', hint: '先保存设置再试听' },
+          h(Row, { label: '试听', hint: '用当前页面设置试听（没保存也生效；本地接口不会把这里顶掉）' },
             h('input', { className: 'ab-input', value: txt, onChange: (e) => setTxt(e.target.value) }),
-            h(Btn, { small: true, onClick: async () => { const r = await post('/voice/test', { text: txt }); if (r.ok) setSrc('data:' + r.mime + ';base64,' + r.data); else toast(r.message) } }, '生成'),
-            src ? h('audio', { src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
+            h(Btn, { small: true, onClick: async () => {
+              setSrc('')
+              const r = await post('/voice/test', { text: txt, voice: draft.voice })
+              if (r.ok) setSrc('data:' + r.mime + ';base64,' + r.data)
+              else toast(r.message)
+            } }, '生成'),
+            src ? h('audio', { key: src, src, controls: true, autoPlay: true, style: { height: 32 } }) : null),
         ),
         h(VoiceSongModel, { draft, setDraft }),
-        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给ta：优先用 QQ 自带的转文字，不行再用 DSH 自带的语音识别（要在 DSH「插件」里开启「语音输入」）。' },
+        h(Card, { title: '听语音（语音转文字）', right: f.sw('voice.asr'), desc: '别人发来的语音会先转成文字再交给ta：本地接口 → QQ 自带转文字 → 云端识别（可选）→ DSH 自带识别。任何一层失败都会继续试下一层。' },
+          h(Row, { label: '云端识别', hint: '可选；不选就维持原来的顺序（本地 → QQ → DSH）' },
+            f.select('voice.asrApi.provider', [
+              { value: '', label: '不用云端识别' },
+              { value: 'siliconflow', label: '硅基流动' },
+              { value: 'openai', label: 'OpenAI' },
+              { value: 'custom', label: '自定义 OpenAI 兼容' },
+            ], { width: 220 })),
+          draft.voice.asrApi?.provider ? [
+            h(Row, { key: 'u', label: '服务地址', hint: '留空用预置：硅基 https://api.siliconflow.cn/v1；OpenAI https://api.openai.com/v1' },
+              f.text('voice.asrApi.baseUrl', { size: 'wide', placeholder: draft.voice.asrApi.provider === 'siliconflow' ? 'https://api.siliconflow.cn/v1' : draft.voice.asrApi.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://127.0.0.1:8000/v1' })),
+            h(Row, { key: 'm', label: '模型', hint: '留空用预置：硅基 FunAudioLLM/SenseVoiceSmall；OpenAI whisper-1' },
+              f.text('voice.asrApi.model', { size: 'wide', placeholder: draft.voice.asrApi.provider === 'siliconflow' ? 'FunAudioLLM/SenseVoiceSmall' : draft.voice.asrApi.provider === 'openai' ? 'whisper-1' : 'whisper-1' })),
+            h(Row, { key: 'k', label: 'API Key', hint: '只存在本机，面板不回显；本地服务可留空' },
+              f.text('voice.asrApi.apiKey', { type: 'password', placeholder: draft.voice.asrApi?.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+            h(Row, { key: 'l', label: '语言', hint: '可留空；只对支持 language 的模型有效' },
+              f.text('voice.asrApi.language', { placeholder: 'zh' })),
+            h(Row, { key: 'p', label: '先用谁', hint: 'QQ 通常 1~2 秒；硅基 SenseVoice 实测约 14 秒，建议先 QQ' },
+              f.select('voice.asrApi.prefer', [{ value: 'qq', label: '先 QQ 自带（推荐）' }, { value: 'cloud', label: '先云端识别' }], { width: 220 })),
+            h(Row, { key: 't', label: '测试', hint: '先用内置语音念一句，再交给云端识别；用当前页面设置，没保存也生效' },
+              h(Btn, { small: true, onClick: async () => {
+                toast('正在合成并识别，可能要十几秒…')
+                const r = await post('/voice/asr-provider-test', { text: '今天想吃白米饭', voice: draft.voice })
+                toast(r.ok ? '念的是「' + r.said + '」，听成了「' + r.heard + '」' : r.message)
+              } }, '测试云端识别')),
+          ] : null,
           h(AsrStatus, { toast })),
       )
     }
@@ -2866,11 +2898,44 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h(Row, { label: '多久以前的事开始浓缩', hint: '这些天以前的琐碎记忆才会被概括；最近的事先留着具体细节。默认 14 天' }, f.num('memory.compressAfterDays', { min: 1, max: 365 }), h('span', { className: 'ab-muted' }, '天')),
           h(Row, { label: '私聊时想起别处的话', hint: '和你私聊时，带上她最近 24 小时在别的聊天里说过的话，每轮多占约 300 字。只进你的私聊，别处一律不带。默认关。' }, f.sw('memory.crossContext')),
           h('div', { className: 'ab-section-title' }, '向量检索（实验性）'),
-          h('div', { className: 'ab-note' }, '默认关闭。请自己准备兼容 OpenAI 的 embedding 服务，例如 Ollama 的 bge-m3。开启后会把记忆文字和查询文字发给填写的地址；使用云端服务时请自行确认。'),
-          h(Row, { label: '向量检索（实验性）', hint: '补充按意思找记忆；已同步 ' + (stats ? stats.vector || 0 : '–') + ' 条（可刷新页面查看）' }, f.sw('memory.vector.enabled')),
-          h(Row, { label: '服务地址', hint: '填写兼容 OpenAI 的接口根地址，一般以 /v1 结尾' }, f.text('memory.vector.baseUrl', { size: 'wide', placeholder: 'http://127.0.0.1:11434/v1' })),
-          h(Row, { label: '模型' }, f.text('memory.vector.model', { size: 'wide', placeholder: 'bge-m3' })),
-          h(Row, { label: 'API Key', hint: '不需要密钥的本地服务可留空' }, f.text('memory.vector.apiKey', { type: 'password', placeholder: draft.memory.vector?.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+          h('div', { className: 'ab-note' }, '默认关闭。开启后会把记忆文字和查询文字发给填写的 embedding 服务，向量只存在本机；不填 Key 的本地服务（Ollama / LM Studio）也能用。服务出错或超时会自动只用关键词。'),
+          h(Row, { label: '向量检索（实验性）', hint: '补充按意思找记忆；本机已同步 ' + (stats ? stats.vector || 0 : '–') + ' 条（可刷新页面查看）' }, f.sw('memory.vector.enabled')),
+          h(Row, { label: '服务预设', hint: '只是帮你填地址和模型，填完还能改' },
+            f.select('memory.vector.provider', [
+              { value: 'siliconflow', label: '硅基流动' },
+              { value: 'ark', label: '火山方舟（豆包）' },
+              { value: 'openai', label: 'OpenAI' },
+              { value: 'ollama', label: '本地 Ollama' },
+              { value: 'custom', label: '其他兼容服务' },
+            ], { width: 220 }),
+            h(Btn, {
+              small: true, kind: 'ghost',
+              onClick: () => {
+                const p = draft.memory.vector?.provider || 'siliconflow'
+                const preset = {
+                  siliconflow: ['https://api.siliconflow.cn/v1', 'BAAI/bge-m3'],
+                  ark: ['https://ark.cn-beijing.volces.com/api/v3', 'doubao-embedding-large-text-250515'],
+                  openai: ['https://api.openai.com/v1', 'text-embedding-3-small'],
+                  ollama: ['http://127.0.0.1:11434/v1', 'bge-m3'],
+                }[p]
+                if (!preset) return toast('自定义服务请自己填地址和模型')
+                let next = setPath(draft, 'memory.vector.baseUrl', preset[0])
+                next = setPath(next, 'memory.vector.model', preset[1])
+                setDraft(next)
+              },
+            }, '填入推荐值')),
+          h(Row, { label: '服务地址', hint: 'OpenAI 兼容接口根地址，一般以 /v1 结尾；方舟是 /api/v3' }, f.text('memory.vector.baseUrl', { size: 'wide', placeholder: 'https://api.siliconflow.cn/v1' })),
+          h(Row, { label: '模型', hint: '硅基 BAAI/bge-m3；方舟填控制台开通的 doubao-embedding-*' }, f.text('memory.vector.model', { size: 'wide', placeholder: 'BAAI/bge-m3' })),
+          h(Row, { label: 'API Key', hint: '只存在本机，面板不回显；本地服务可留空' }, f.text('memory.vector.apiKey', { type: 'password', placeholder: draft.memory.vector?.apiKeySet ? '已保存（不改就留空）' : '没有就留空' })),
+          h(Row, { label: '自定义请求头', hint: '一行一个「Key: Value」；给 OneAPI/NewAPI 之类加额外头。填了 Authorization 就不再自动加 Bearer' },
+            f.area('memory.vector.headers', { size: 'wide', rows: 2, placeholder: 'X-Api-Key: ...' })),
+          h(Row, { label: '向量维度', hint: '0 = 不传；Qwen3 / OpenAI 的 MRL 模型可以截断，改完建议重建索引' }, f.num('memory.vector.dimensions', { min: 0, max: 8192 })),
+          h(Row, { label: '每批多少条', hint: '方舟等单次 input 上限小，默认 10；本地服务可以调大' }, f.num('memory.vector.batchSize', { min: 1, max: 64 })),
+          h(Row, { label: '查询超时', hint: '超过就这一轮先用关键词，不拖慢回复' }, f.num('memory.vector.queryTimeoutMs', { min: 500, max: 15000, step: 500 })),
+          h('div', { className: 'ab-flex', style: { marginTop: 6 } },
+            h(Btn, { small: true, onClick: async () => { const r = await post('/memory/vector/test', { text: '今天想吃白米饭' }); toast(r.ok ? `向量正常：${r.dims} 维，用时 ${r.ms}ms` : r.message) } }, '测试'),
+            h(Btn, { small: true, kind: 'ghost', onClick: async () => { toast('正在按已保存的设置重建，条数多会分批…'); const r = await post('/memory/vector/rebuild', {}); toast(r.message); setTimeout(() => load(q), 1500) } }, '重建索引')),
+          h('div', { className: 'ab-muted ab-small' }, '「测试」用已保存的设置；改完先点底部保存，再测试/重建。'),
           h('div', { className: 'ab-section-title' }, '手动加一条'),
           h('div', { className: 'ab-flex' },
             h('input', { className: 'ab-input', style: { flex: '2 1 260px' }, placeholder: '要ta记住的事，例如：主人不吃香菜', value: adding.text, onChange: (e) => setAdding({ ...adding, text: e.target.value }) }),

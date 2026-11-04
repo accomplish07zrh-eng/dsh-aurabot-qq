@@ -171,6 +171,17 @@ export default {
       // 立即整理一次：连今天的也提炼（今天的聊天流水不删，写日记还要用）
       return memory.consolidate({ includeToday: b.includeToday !== false })
     })
+    // 语义检索（Embedding RAG）：状态 / 连通性测试 / 清空重建
+    api.route('/memory/vector/status', async () => ({ ok: true, ...memory.vectorStatus() }))
+    api.route('/memory/vector/test', async (req) => {
+      const b = await http.body(req)
+      try { return { ok: true, ...(await memory.vectorTest(String(b.text || '今天想吃白米饭'))) } } catch (error) { return { ok: false, message: error.message } }
+    })
+    api.route('/memory/vector/rebuild', async () => {
+      if (!memory.vectorReset()) return { ok: false, message: '先开启向量检索并填好服务地址、模型和 Key' }
+      await memory.vectorSync()
+      return { ok: true, message: '本机向量已清空，正在按当前记忆重新同步', ...memory.vectorStatus() }
+    })
 
     return memory
   },
