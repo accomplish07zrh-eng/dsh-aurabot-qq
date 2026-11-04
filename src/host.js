@@ -45,6 +45,8 @@ import { createDangerGuard, safeOwnedSession } from './security/danger.js'
 import { createAuditor } from './autotelic/audit.js'
 import { setSsrpMode, assertPublicUrl, fetchGuarded } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
+import { createOutboundPolicy } from './chat/outbound-policy.js'
+import { createPurposePolicy, createSpeakupPolicy, createSharedBudget } from './features/proactive-policy.js'
 
 export const name = 'aurabot'
 export const inject = ['agents', 'sessions', 'webServer', 'timer', 'workspaceRegistry', 'attachments', 'systemPrompt', 'llm']
@@ -79,6 +81,10 @@ export function apply(ctx) {
   let backupJob = null // { running, done, total, error, result }
   let pushJob = null // { running, ok, error, result, at }
   let pushTimer = null // 云备份每日定时
+  // 主动发言出站策略服务（docs/OUTBOUND-POLICY-DESIGN.md），装配在模块之前
+  let outbound = null
+  // 已注册的策略源实例（name → policy），给 deliver 的 enginePolicy 解析用
+  const enginePolicies = new Map()
   const getConfig = () => cfg
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
   const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token) } // backup 令牌也按密钥脱敏（云备份）
@@ -529,10 +535,61 @@ export function apply(ctx) {
     }),
   }), 'aurabot: 模块接口')
 
+  // ---------- 主动发言出站策略（docs/OUTBOUND-POLICY-DESIGN.md） ----------
+  // 宿主统一发送服务：模块快捷 API / scoped hub / pet 回落全部经它判定，识别「主动私聊主人」
+  // 后交给当前活跃策略源做原子预算预占。档位默认 pass（旧行为直发），未启用时完全惰性。
+  outbound = createOutboundPolicy({
+    getConfig,
+    // 账本落盘到模块数据目录（源码目录禁写任何数据，见 AGENTS.md §4）
+    dataDir: join(dataDir('modules-data'), 'outbound-policy'),
+    log: (msg) => logger.child('出站策略').info(msg),
+    // 宿主投递器：模块调 api.proactive.submit 后由这里真正发出去，
+    // 模块不必自己管投递、超时、状态回写（设计稿 §7 feed 语义）。
+    // broker 档的核心语义是「提交后由引擎全权决定」（设计稿 §7）：
+    //   1) 先向目的引擎策略源拿「审查预占」（reserveReview）：只看引擎开关/清醒时段/在途串行，
+    //      **不占引擎的说话额度、不看她的排程**（2026-11-04 主人定的口径）；
+    //   2) 预占到了再让引擎过目（brokerReview：原样/改写/沉默）——凭记忆与心情决断内容；
+    //   3) 决断沉默 → 返回 false（账本记 failed，模块据此知道没发）；
+    //   4) 决断通过 → 走 hub.deliver 投递：自动落聊天流水（logChat）+ saidElsewhere 桥接 +
+    //      心情链路，比裸 sendText 多出完整会话记录。
+    // 最后按 review 口径结算预占（只清挂起，不动额度不重排）。
+    // item 是账本条目（含 moduleId/itemId），代发决断会话里要跟着写清是谁提交的。
+    send: async (to, text, meta = {}) => {
+      const item = (meta && meta.item) || {}
+      const moduleId = String(item.moduleId || '')
+      const itemId = String(item.itemId || '')
+      const policy = enginePolicies.get('purpose') || null
+      let reviewId = ''
+      if (policy && typeof policy.reserveReview === 'function') {
+        const r = policy.reserveReview({ to: String(to), itemId, at: Date.now() })
+        if (!r || r.ok !== true) return false // 引擎没开/安静时段/上一条还在途：这条不审查不发
+        reviewId = r.reserveId
+      }
+      let finalText = String(text ?? '')
+      try {
+        const purpose = use('purpose')
+        if (purpose && typeof purpose.brokerReview === 'function') {
+          const verdict = await purpose.brokerReview({ to: String(to), text: finalText, moduleId, itemId })
+          if (verdict && verdict.ok && verdict.send === false) return false // 引擎决断：这条不说
+          if (verdict && verdict.ok && verdict.text) finalText = verdict.text
+        }
+        const r = await hub.deliver(String(to), finalText, { userText: '【系统提醒，不是主人说的话】（代发·经目的引擎决断）' })
+        // deliver 契约：一条都没发出去时返回 {failed>0} 或 undefined——都按「没发出」算
+        return Boolean(r && (r.failed ?? 0) === 0)
+      } finally {
+        if (reviewId && policy && typeof policy.commit === 'function') {
+          try { policy.commit(reviewId, { outcome: 'sent' }, 'review') } catch {}
+        }
+      }
+    },
+  })
+
   // ---------- 模块 ----------
   const core = {
     hub, onebot, snowluma, local, groupRoles, mutes, logger, bridge: null,
     root: ROOT,
+    // 模块经 api.proactive 访问出站治理面（modules.js 里读它）
+    outbound,
     ask: (opts) => askModel(ctx, { cfg: getConfig(), ...opts }),
     listModels,
     defaultModel: () => defaultModel(ctx, { model: {} }),
@@ -544,6 +601,97 @@ export function apply(ctx) {
   bridge = createBridge({ ctx, getConfig, setConfig, hub, mods, log: logger.child('bridge'), version: VERSION, apiVersion: API_VERSION, overview: () => overview() })
   core.bridge = bridge
   core.modules = mods
+
+  // 出站门闸接进 hub（第二道保险：模块直调 api.core.hub.sendText / scopedHub 也都被覆盖）。
+  // 判定的来源因果由调用方带 sourceModule / enginePolicy 时生效；没带标记的内部发送完全不受影响。
+  // settle：admit 放行时会预占一份策略源预算，不结算就永远挂着（下一轮变成 busy），
+  // 所以把结算回调一起交给 hub，由真实出口按结果 commit/release。
+  hub.setOutboundGuard?.((ask) => {
+    const verdict = outbound.admit({
+      to: ask.chatId,
+      moduleId: ask.sourceModule || '',
+      origin: ask.sourceModule ? 'module' : 'engine',
+      cause: ask.cause || null,
+      itemId: ask.itemId || null,
+      at: Date.now(),
+    })
+    if (verdict.action === 'deny') return verdict
+    return {
+      ...verdict,
+      // 真实出口结算：sent 记一笔；uncertain 不退款（可能已经发出去了）；其余按失败释放
+      settle: (outcome) => {
+        const oc = ['sent', 'queued', 'uncertain', 'failed'].includes(outcome) ? outcome : 'failed'
+        if (verdict.reserveId) outbound.commit(verdict.reserveId, { deliveryId: verdict.deliveryId, outcome: oc })
+      },
+    }
+  })
+  // 引擎路径：deliver(chatId, text, { enginePolicy: 'purpose' | 'speakup' }) 由 hub 直接向策略源 reserve。
+  // 只有注册过（引擎启用且模块在跑）的才解析得到；解析不到时 deliver 完全按旧行为直发。
+  hub.setOutboundEngineResolver?.((name) => enginePolicies.get(String(name)) || null)
+
+  /**
+   * 按当前配置装配策略源：purpose / speakup 各自启用时才注册（未启用的不注册，
+   * 服务据此判定 managed 与 deny 语义，设计稿 §8.1 要求故障不得静默 pass）。
+   *
+   * 策略源要拿到 speakup / purpose 模块的实例面（use('speakup').state() 等），
+   * 而模块是异步启动的，所以这里做成可重复调用的懒装配：模块起来之后再调一次即可，
+   * 重复注册同名策略源是幂等的（服务内部按 name 覆盖）。
+   */
+  function wirePolicySources() {
+    if (!outbound) return
+    const cfg = getConfig()
+    const dir = join(dataDir('modules-data'), 'outbound-policy')
+    const say = (msg) => logger.child('出站策略').info(msg)
+    const budget = createSharedBudget({ ownerQQ: cfg.ownerQQ, dataDir: dir, log: say })
+    try {
+      // 目的引擎（默认关）：模块在跑且配置开着才注册。引擎未启用 / 未 ready 时不注册，
+      // 服务自己会处理 managed=false 与 deny 语义（CONTRACT §3 故障语义：不得静默 pass）。
+      const pu = use('purpose')
+      if (cfg.ext?.purpose?.enabled === true && pu) {
+        const policy = createPurposePolicy({
+          getConfig, engine: pu, state: () => pu.state?.() || null,
+          dataDir: dir, log: say, budget,
+        })
+        outbound.registerPolicySource(policy)
+        enginePolicies.set('purpose', policy) // 给 deliver(…, { enginePolicy: 'purpose' }) 用
+        // §5.3 私有凭据：引擎自发发言经 deliver 的 enginePolicy 路径直接向策略源
+        // reserve/commit（单本账），不再被模块包装层门闸按另一本账二次拦。
+        pu.setEnginePolicySource?.(policy)
+      } else {
+        outbound.unregisterPolicySource('purpose')
+        enginePolicies.delete('purpose')
+        use('purpose')?.setEnginePolicySource?.(null) // 策略源撤了，凭据一并撤
+      }
+      // 主动搭话（现行默认）：speakup 模块在跑就注册
+      const sp = use('speakup')
+      if (cfg.speakUp?.enabled !== false && sp) {
+        const policy = createSpeakupPolicy({
+          getConfig, speakup: sp,
+          // 与 companion.js 同口径：私聊「最近一次来往」= max(主人最后说话, 她最后发给主人)。
+          // 注意不能把 hub.lastPrivateAt 直接传进来：那个函数按 QQ 号查，策略源调用时不带参数。
+          lastPrivateAt: () => Math.max(hub.lastOwnerChatAt || 0, hub.lastBotToOwner?.at || 0),
+          // 策略源传进来的是完整 chatId（'private:QQ'），直接问 mutes 即可
+          isMuted: (chatId) => { try { return Boolean(mutes?.muted?.(chatId)) } catch { return false } },
+          dataDir: dir, log: say, budget,
+        })
+        outbound.registerPolicySource(policy)
+        enginePolicies.set('speakup', policy)
+      } else {
+        outbound.unregisterPolicySource('speakup')
+        enginePolicies.delete('speakup')
+      }
+      // 主人换号：旧 pending 一律作废（设计稿 §6.1「接收人固定」）
+      outbound.syncOwnerQQ?.(cfg.ownerQQ)
+      // 面板存过的 activePolicy 要在重启后重新生效（否则配置写了却只有服务实例的默认值在跑）
+      const active = (cfg.ext?.outboundPolicy && cfg.ext.outboundPolicy.activePolicy) || 'auto'
+      outbound.setActivePolicy?.(active)
+    } catch (error) {
+      // 装配失败不能拖垮宿主启动：服务会因「无 ready 策略源」按 §8.1 拒绝并显示原因
+      logger.child('出站策略').warn('策略源装配失败：', error && error.message)
+    }
+  }
+  // 模块还没起来，先做一次（建立预算域/主人快照）；模块启动后会再调一次
+  wirePolicySources()
   // 危险命令确认（可选保护）：DSH 在真正执行终端工具前会走 tools/pre-execute；
   // 这里只拦 bash / pwsh 的危险命令，其它工具和普通命令原样放行。
   dangerGuard = createDangerGuard({
@@ -626,6 +774,8 @@ export function apply(ctx) {
   const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
   booted.then(() => injectPetPort()).catch(() => {})
+  // 模块起来之后再把策略源接上（此时 use('speakup') / use('purpose') 才拿得到实例）
+  booted.then(() => wirePolicySources()).catch((error) => logger.child('出站策略').warn('策略源接线上失败：', error && error.message))
   booted.then(() => (unloaded ? [] : community.migrate())).catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
     .then(async () => {
       // 恢复备份后把市场模块装回来；没装上的留着，下次启动再试
