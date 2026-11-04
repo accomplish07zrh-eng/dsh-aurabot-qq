@@ -38,6 +38,7 @@ import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingM
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard, safeOwnedSession } from './security/danger.js'
+import { createAuditor } from './autotelic/audit.js'
 import { setSsrpMode, assertPublicUrl, fetchGuarded } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
@@ -545,6 +546,26 @@ export function apply(ctx) {
     return () => { try { if (typeof off === 'function') off() } catch (error) {} }
   }, 'aurabot: 危险命令确认')
 
+  // ---------- 自驱引擎审计（P0.5 地基，docs/AUTOTELIC-PLAN.md §4.1）----------
+  // 「她可以骗主人，但不能骗账本」：她（system:autotelic* 会话）的工具调用全量机械落盘（哈希链）。
+  // 三条硬规矩：只记录不放行（永远 return next()）；异步入队绝不同步写盘（pre-execute 是进程级
+  // waterfall，同步写会拖住主人 GUI 里的工具调用）；失败静默（审计挂了不能影响正常聊天）。
+  // 过滤口径：isOwnedSession() 且 chatOfSession 以 system:autotelic 开头，两个条件都要——
+  // 主人 GUI 会话、QQ 私聊、群聊里的调用一律不进她的账本。模块侧经 core.autotelicAuditOn 得知已接线。
+  const autotelicAudit = createAuditor({
+    dir: dataDir('modules-data', 'autotelic', 'audit'), // host 侧拿不到模块 api，要自己带上 modules-data/autotelic 前缀
+    chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    isOwnedSession: safeOwnedSession(typeof hub?.isOwnedSession === 'function' ? (sessionId) => hub.isOwnedSession(sessionId) : null),
+    log: logger.child('自驱审计'),
+  })
+  core.autotelicAuditOn = true
+  ctx.effect(() => {
+    let off = null
+    try { off = ctx.on('tools/pre-execute', (exec, next) => autotelicAudit.preExecute(exec, next)) } catch (error) { log.debug('挂自驱审计失败：', error.message) }
+    return () => { try { if (typeof off === 'function') off() } catch (error) {} }
+  }, 'aurabot: 自驱审计（工具意图）')
+  ctx.effect(() => { try { core.autotelicAudit = autotelicAudit } catch {} return () => { autotelicAudit.dispose().catch(() => {}) } }, 'aurabot: 自驱审计（卸载冲账）')
+
   // ---------- 桌宠端口注入（破「端口自举死锁」） ----------
   // pet 模块写 host.json 的 baseUrl 需要真实 Web 端口，而它自己监听不到（端口未知时只能写 null，
   // 客户端连不上 → 学不到 Host 头 → 死锁）。DSH 的 webServer 服务知道端口（ctx.webServer.port，
@@ -642,6 +663,8 @@ export function apply(ctx) {
       } catch (error) {
         log.warn('会话事件处理出错：', error.message)
       }
+      // 自驱审计补记「结果」（pre-execute 只拿得到意图；tool/* 事件来了就记一条 outcome，失败静默）
+      try { autotelicAudit.onSessionEvent(session, event) } catch (error) { log.debug?.('自驱审计补记失败：', error.message) }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
       // QQ 聊天会话不转：聊天每句都有 turn/start→turn/end，桌宠会每句话弹一次「完工」气泡/动作（#184）
       try {
