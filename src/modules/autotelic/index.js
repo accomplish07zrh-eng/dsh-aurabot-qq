@@ -11,15 +11,17 @@ import { verifyAuditChain } from '../../autotelic/audit.js'
 import { createRuntime, isQuietNow } from '../../autotelic/runtime.js'
 import { createExec } from '../../autotelic/exec.js'
 import { createJournal } from '../../autotelic/reflect.js'
-import { readFileSync } from 'node:fs'
+import { probePython, loadEnvCache, saveEnvCache, envUsable, runPython } from '../../autotelic/python.js'
+import { createSkills, writeUserModule } from '../../autotelic/skills.js'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 export default {
   id: 'autotelic',
   name: '自驱引擎（实验）',
-  version: '0.3.0',
-  description: '给她自己的后台会话与账本：独立 preset、机械审计（哈希链，删了会断）、好奇判分与立项、L1 分级执行（反思/每日一页/做梦）、心跳看护。默认关闭，全关时插件行为与旧版一致。',
-  files: ['autotelic/audit.js', 'autotelic/engine.js', 'autotelic/book.js', 'autotelic/runtime.js', 'autotelic/exec.js', 'autotelic/reflect.js'],
+  version: '0.4.0',
+  description: '给她自己的后台会话与账本：独立 preset、机械审计（哈希链）、好奇判分与立项、L1 分级执行（反思/每日一页/做梦）、Python 与用户模块（P3）、技能库与提案通道（P4）。默认关闭，全关时插件行为与旧版一致。',
+  files: ['autotelic/audit.js', 'autotelic/engine.js', 'autotelic/book.js', 'autotelic/runtime.js', 'autotelic/exec.js', 'autotelic/reflect.js', 'autotelic/python.js', 'autotelic/skills.js'],
   // 独立标签页「自驱引擎」（页面在 client/client.js：TABS/TAB_MODS/NAV_GROUPS/Autotelic 组件）。
   tab: 'autotelic',
   defaults: {
@@ -100,6 +102,177 @@ export default {
       log: api.log,
     })
 
+    // ---------- P3/P4 的手（她的工具：只在 system:autotelic* 的会话里出现） ----------
+    // 她的动作菜单 = 这些工具 + preset 的 fs 只读（presetIdOverride 开着才有）。
+    // 门：enabled 总闸 + 各能力分闸（allowPython / allowUserModules）+ 动作预算 + 全程进审计。
+    const skills = createSkills(api.dataDir())
+    const note = (entry) => api.core?.autotelicAudit?.note?.(entry)
+    const userModulesDir = () => { try { return (typeof api.core?.modules?.dir === 'function') ? api.core.modules.dir() : '' } catch { return '' } }
+    let envCache = null
+    // 测试钩子（照 pet 的 __petTestHooks 模式）：CI 注入 fake 探测，不依赖真机器环境（场景 16~18）
+    const probeFn = api.__autotelicTestHooks?.probePython || probePython
+    const readEnv = () => { if (envCache == null) envCache = loadEnvCache(api.dataDir('env.json')); return envCache }
+    // 探测（惰性 + 只在开着时做；场景 1：关着零 IO）。配置优先，结果缓存 env.json，24h 内直接用。
+    const pythonEnv = async () => {
+      const cached = readEnv()
+      const s = api.settings()
+      if (envUsable(cached) && (!s.pythonBin || cached.source === 'configured')) return cached
+      envCache = await probeFn({ configured: s.pythonBin })
+      saveEnvCache(api.dataDir('env.json'), envCache)
+      if (!envCache) api.log.info?.('自驱：本机没有探测到可用 Python，这项能力关闭（面板可手动填路径）')
+      else api.log.info?.(`自驱：Python 用 ${envCache.bin}（${envCache.version}）`)
+      return envCache
+    }
+    // 动作预算 + 记账（L1 起都要）：预算到顶直接拒（场景 7 的工具侧口径）
+    const spend = (what) => {
+      const s = api.settings()
+      const bk = runtime.book()
+      if (bk.actionsInLastHour() >= s.budgetActionsPerHour) return { ok: false, message: `动作预算到顶（${s.budgetActionsPerHour}/小时），这小时不再动手` }
+      bk.recordAction()
+      note({ kind: 'autotelic/tool', tool: what, outcome: '动作预算内' })
+      return { ok: true }
+    }
+    const isHer = (where) => String(where?.chat?.chatId || '').startsWith('system:autotelic')
+    const clip = (s, n) => { const t = String(s || ''); return t.length > n ? t.slice(0, n) + '…' : t }
+    api.tool((where) => {
+      if (!api.settings().enabled || !isHer(where)) return []
+      return [
+        api.defineTool({
+          name: 'autotelic_note',
+          description: '写一篇笔记到你自己的目录（notes/ 年月日-标题.md）。用于记录你查到的东西、想留给以后的想法。',
+          properties: { title: { type: 'string', description: '标题（做文件名用）' }, text: { type: 'string', description: '正文' } },
+          required: ['title', 'text'],
+          execute: async ({ title, text }) => {
+            const spendR = spend('autotelic_note')
+            if (!spendR.ok) return spendR
+            try {
+              const day = new Date()
+              const p2 = (n) => String(n).padStart(2, '0')
+              const safe = String(title || '无题').replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40) || '无题'
+              const file = api.dataDir('notes', `${day.getFullYear()}-${p2(day.getMonth() + 1)}-${p2(day.getDate())}-${safe}.md`)
+              const { mkdirSync, writeFileSync } = await import('node:fs')
+              mkdirSync(api.dataDir('notes'), { recursive: true })
+              writeFileSync(file, `# ${title}\n\n${text}\n`, 'utf8')
+              return { ok: true, message: `写好了：${file}` }
+            } catch (error) { return { ok: false, message: `写不了：${error.message}` } }
+          },
+        }),
+        api.defineTool({
+          name: 'autotelic_run_python',
+          description: '跑一段 Python 脚本（子进程，超时会杀，不继承主程序的任何密钥环境变量）。stdout 会回给你；要留产物就写到你目录的 out/ 附近。',
+          properties: { code: { type: 'string', description: 'Python 3 源码' }, saveAs: { type: 'string', description: '可选：保存为技能（id，小写字母/数字/-）。跑成功会累计，连续 2 次成功就学会' } },
+          required: ['code'],
+          execute: async ({ code, saveAs }) => {
+            const s = api.settings()
+            if (!s.allowPython) return { ok: false, message: '「允许跑 Python 脚本」没开（主人关的，提案也改不动）' }
+            const env = await pythonEnv()
+            if (!env || !env.pythonBin) return { ok: false, message: '本机没有可用 Python（这项能力关闭；面板「自驱引擎」页可手动填解释器路径）' }
+            const spendR = spend('autotelic_run_python')
+            if (!spendR.ok) return spendR
+            const r = await runPython({ dir: api.dataDir(), pythonBin: env.pythonBin, code, timeoutMs: Number(s.scriptTimeoutMs) || 120000 })
+            note({ kind: 'autotelic/python', tool: 'run_python', args: { bytes: String(code || '').length, saveAs: saveAs || '' }, outcome: r.ok ? 'ok' : (r.error || 'failed') })
+            // 技能记账（P4.2）：复现 2 次成功才 learned
+            let skillMsg = ''
+            if (saveAs && String(saveAs).trim()) {
+              const saved = skills.save({ id: saveAs, script: code })
+              skillMsg = saved.ok ? `；技能「${saveAs}」${skills.recordRun(saveAs, r.ok).status}` : `；技能没存上：${saved.why}`
+            } else {
+              // 没点名 saveAs 但内容跟某个候选技能一致 → 也算复现（按脚本内容匹配）
+              const m = (skills.list() || []).find((x) => { const g = skills.get(x.id); return g && g.script === code && g.status !== 'learned' })
+              if (m) skillMsg = `；技能「${m.id}」${skills.recordRun(m.id, r.ok).status}`
+            }
+            return { ok: r.ok, message: `${r.ok ? '跑完了' : '没跑成'}（${r.ms}ms）${r.error ? '：' + r.error : ''}${r.stdout ? '\n输出：' + clip(r.stdout, 3000) : ''}${skillMsg}` }
+          },
+        }),
+        api.defineTool({
+          name: 'autotelic_write_module',
+          description: '给自己写一个用户模块（扩展能力，升级不丢）。只能写你自己的模块目录；框架代码永远写不到。',
+          properties: { id: { type: 'string', description: '模块 id（小写字母开头，小写字母/数字/-）' }, code: { type: 'string', description: 'index.mjs 完整内容，必须 export default 模块对象' } },
+          required: ['id', 'code'],
+          execute: async ({ id, code }) => {
+            if (!api.settings().allowUserModules) return { ok: false, message: '「允许写用户模块」没开（主人关的）' }
+            const dir = userModulesDir()
+            if (!dir) return { ok: false, message: '拿不到用户模块目录（模块系统不可用）' }
+            const spendR = spend('autotelic_write_module')
+            if (!spendR.ok) return spendR
+            const r = writeUserModule({ dir, id, code })
+            note({ kind: 'autotelic/module', tool: 'write_module', args: { id }, outcome: r.ok ? 'ok' : r.why })
+            return { ok: r.ok, message: r.ok ? `写好了 ${r.file}。${r.note}` : r.why }
+          },
+        }),
+        api.defineTool({
+          name: 'autotelic_propose_say',
+          description: '你想对主人说一句话。不直接发：交给出站治理统筹排程；安静时段先攒着。说不说、怎么说由治理和你判断，但「想过要说」会留痕。',
+          properties: { text: { type: 'string', description: '想说的话' }, reason: { type: 'string', description: '为什么现在想说' } },
+          required: ['text'],
+          execute: async ({ text, reason }) => {
+            const body = clip(text, 2000)
+            const { readJson, writeJson } = await import('../../core/store.js')
+            // 安静时段自己判（§4.6：不能指望 outbound 治理，两者窗口不同）——先攒着
+            if (isQuietNow(api.settings())) {
+              const pending = readJson(api.dataDir('say-pending.json'), [])
+              pending.push({ at: Date.now(), text: body, reason: clip(reason, 200) })
+              writeJson(api.dataDir('say-pending.json'), pending.slice(-20))
+              return { ok: true, message: '现在是安静时段，这句先攒着（没丢，安静结束再交给治理）' }
+            }
+            const r = await api.proactive.submit({ text: body, itemId: `say-${Date.now()}`, cause: { kind: 'background' } })
+            note({ kind: 'autotelic/say', tool: 'propose_say', args: { reason: clip(reason, 120) }, outcome: r?.state || 'unknown' })
+            if (!r || r.state === 'unsupported') return { ok: false, message: '出站治理没开成 broker 档，这句话送不出去（要主人把 outboundPolicy.tier 设为 broker）' }
+            if (r.state === 'dropped') return { ok: false, message: `治理没放行：${r.reason || 'denied'}（可以攒着以后再说）` }
+            return { ok: true, message: `交给出站治理了（${r.state}）` }
+          },
+        }),
+        api.defineTool({
+          name: 'autotelic_propose',
+          description: '给主人写提案（proposals/）：想要新能力、想改框架、想加工具，都写在这里。你永远改不到框架代码（src/）。',
+          properties: { title: { type: 'string' }, body: { type: 'string' } },
+          required: ['title', 'body'],
+          execute: async ({ title, body }) => {
+            const safe = String(title || '无题').replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40) || '无题'
+            try {
+              const { mkdirSync, writeFileSync } = await import('node:fs')
+              mkdirSync(api.dataDir('proposals'), { recursive: true })
+              const file = api.dataDir('proposals', `${Date.now()}-${safe}.md`)
+              writeFileSync(file, `# 提案：${title}\n\n${body}\n`, 'utf8')
+              note({ kind: 'autotelic/proposal', args: { title: clip(title, 60) }, outcome: 'ok' })
+              return { ok: true, message: `提案写好了：${file}` }
+            } catch (error) { return { ok: false, message: `写不了：${error.message}` } }
+          },
+        }),
+        api.defineTool({
+          name: 'autotelic_modules',
+          description: '看看现在有哪些模块装着、开着（比如抖音、B站）。你只能看到清单——每个模块的具体能力要等主人逐个接给你。',
+          properties: {},
+          execute: async () => {
+            const want = ['douyin', 'bili', 'heybox', 'tophub', 'tieba-reader', 'pet', 'phone', 'song', 'imagegen', 'memory']
+            const rows = []
+            for (const id of want) {
+              let mod = null
+              try { mod = api.use(id) } catch { mod = null }
+              rows.push(`${mod ? '✓' : '✗'} ${id}${mod ? '（开着，能力待接入）' : '（没装或没开）'}`)
+            }
+            return { ok: true, message: rows.join('\n') }
+          },
+        }),
+      ]
+    })
+    // P4.4 提案 / P4.2 技能 / P3.3 Python 环境：面板口
+    api.route('/autotelic/skills', async () => ({ ok: true, list: skills.list() }))
+    api.route('/autotelic/proposals', async () => {
+      let list = []
+      try { list = readdirSync(api.dataDir('proposals')).filter((f) => f.endsWith('.md')).sort().reverse().slice(0, 20) } catch {}
+      return { ok: true, list }
+    })
+    api.route('/autotelic/env', async (req) => {
+      if (req && req.method === 'POST') {
+        const body = await api.core.http.body(req).catch(() => ({}))
+        if (body && typeof body.pythonBin === 'string') api.setConfig({ ext: { autotelic: { pythonBin: body.pythonBin.trim() } } })
+        envCache = null // 强制重新探测
+      }
+      const env = api.settings().enabled && api.settings().allowPython ? await pythonEnv() : readEnv()
+      return { ok: true, env: env || null, usable: envUsable(env), hint: env?.pythonBin ? `${env.pythonBin}（${env.version}）` : '本机没有可用 Python（可以在这里手填解释器路径）' }
+    })
+
     // 心跳：每分钟一次判定（§4.5）。enabled=false 时 tick 第一行就返回，零 IO。
     api.every(60_000, () => runtime.tick().catch(() => {}), '自驱引擎心跳')
 
@@ -117,6 +290,10 @@ export default {
         tasks: tasks.slice(-20).reverse(),
         heartbeats: runtime.book().meta().ticks,
         running: runtime.running,
+        env: api.settings().enabled && api.settings().allowPython ? await pythonEnv() : readEnv(),
+        skills: skills.list().slice(0, 12),
+        proposals: (() => { try { return readdirSync(api.dataDir('proposals')).filter((f) => f.endsWith('.md')).length } catch { return 0 } })(),
+        sayPending: (() => { try { return (JSON.parse(readFileSync(api.dataDir('say-pending.json'), 'utf8') || '[]') || []).length } catch { return 0 } })(),
       }
     })
     // 零副作用预览（验收 2/3）：今天会立什么项、为什么、分数多少、落选原因。
