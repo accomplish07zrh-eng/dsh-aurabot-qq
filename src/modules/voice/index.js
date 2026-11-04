@@ -3,7 +3,8 @@
 // 导出 speak(text) → { file, engine }：聊天中枢发语音时找它。替换这个模块就能换成任何你想要的念法。
 
 import { existsSync, readFileSync } from 'node:fs'
-import { textToSpeech, edgeInstalled, installEdge, voiceConverters } from '../../voice/tts.js'
+import { textToSpeech, edgeInstalled, installEdge, voiceConverters, volcanoResourceFor, volcanoSynth } from '../../voice/tts.js'
+import { VOLCANO_VOICES } from '../../voice/volcano-voices.js'
 import { createSongVoice } from '../../voice/rvc.js'
 import { toMono16k } from '../../voice/wav.js'
 import { fileOf } from '../../local/local.js'
@@ -14,7 +15,7 @@ export default {
   version: '1.0.0',
   description: '发语音条：把她的话念出来（关掉后想发语音时改发文字）',
   tab: 'voice',
-  files: ['voice/tts.js', 'voice/rvc.js'],
+  files: ['voice/tts.js', 'voice/rvc.js', 'voice/volcano-voices.js'],
   setup(api) {
     const { hub, onebot, local, http } = api.core
 
@@ -57,6 +58,34 @@ export default {
       return { ok: true, engine, mime: file.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg', data: buf.toString('base64') }
     })
     api.route('/voice/install', async () => installEdge(api.log))
+
+    // 单独试听一个音色：用面板上「还没保存」的 Key / 音色 / 语速直接念一句，方便一个个挑。
+    // 面板里 Key 框是密码框、保存后不回传原文，所以这里没传 Key 就用存好的那份。
+    api.route('/voice/volcano-preview', async (req) => {
+      const b = await http.body(req)
+      const saved = api.config().voice.volcano || {}
+      const c = {
+        apiKey: String(b.apiKey || '').trim() || String(saved.apiKey || ''),
+        voiceType: String(b.voiceType || saved.voiceType || '').trim(),
+        resourceId: String(b.resourceId || saved.resourceId || '').trim(),
+        speedRatio: Number(b.speedRatio) || Number(saved.speedRatio) || 1,
+      }
+      if (!c.apiKey) return { ok: false, message: '先在上面把 API Key 填上，再试听' }
+      try {
+        const file = await volcanoSynth(String(b.text || '你好呀，我是大肥鱼。这个声音你听着怎么样？'), c)
+        const buf = readFileSync(file)
+        return { ok: true, engine: 'volcano', mime: 'audio/mpeg', data: buf.toString('base64') }
+      } catch (error) {
+        return { ok: false, message: String((error && error.message) || error) }
+      }
+    })
+
+    // 面板「豆包语音」的音色下拉：火山官方预置音色，按语种 / 性别分组，2.0 排在 1.0 前面。
+    // resourceId 一起给出去，面板选中时顺手写进配置，省得猜模型版本。
+    api.route('/voice/volcano-voices', async () => ({
+      ok: true,
+      voices: VOLCANO_VOICES.map((v) => ({ id: v.id, name: v.name, group: v.group, ver: v.ver, scene: v.scene || '', resourceId: volcanoResourceFor(v.id) })),
+    }))
 
     // DSH 自带语音识别：看状态 / 下载模型
     const stt = () => api.dsh.get('speechToText')
