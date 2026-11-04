@@ -95,7 +95,7 @@ export function splitSpeakable (text) {
   const raw = String(text ?? '')
   // emoji 的那一段：图形符号之外还要算上区域指示符（🇨🇳 这类国旗不在 Extended_Pictographic 里，单列会漏掉、被 TTS 念出来）、
   // 键帽（1️⃣ 要连前面的数字一起拆走）、连接符 / 变体选择符、肤色修饰符（👋🏽）、标签字符（🏴󠁧󠁢󠁳󠁣󠁴󠁿 的尾巴）。
-  const re = /<face:[^>]{1,12}?>(?:\s*<\/face>)?|<sticker:[^>]*>(?:\s*<\/sticker>)?|<poke\s*\/?>|[#*0-9]\uFE0F?\u20E3|[\p{Extended_Pictographic}\p{Regional_Indicator}\u200D\uFE0F\u20E3\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]/gu
+  const re = /<face:[^>]{1,12}?>(?:\s*<\/face>)?|<sticker:[^>]*>(?:\s*<\/sticker>)?|<at:[^>]*>(?:\s*<\/at>)?|<poke\s*\/?>|[#*0-9]\uFE0F?\u20E3|[\p{Extended_Pictographic}\p{Regional_Indicator}\u200D\uFE0F\u20E3\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]/gu
   let spoken = ''
   let extras = ''
   let last = 0
