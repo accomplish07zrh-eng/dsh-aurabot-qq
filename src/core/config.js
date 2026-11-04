@@ -97,6 +97,9 @@ export const DEFAULTS = {
     autoChance: 0.15, // 短回复自动变语音的概率
     autoMaxChars: 80,
     asr: true, // 听语音
+    // 云端语音识别（可选）：OpenAI 兼容 /audio/transcriptions；provider 为空 = 不用。
+    // prefer=qq 时顺序是 本地 → QQ 自带 → 云端 → DSH；prefer=cloud 时云端提前到 QQ 前面。
+    asrApi: { provider: '', baseUrl: '', model: '', apiKey: '', language: '', prefer: 'qq' },
     emojiSeparate: true, // 语音条里的表情/emoji 不念出来，单独补一条文字发出去
     // 语音条变声：用翻唱里导入的 RVC 音色模型（先 TTS 念，再变声）。留空 = 不变声
     songVoice: '',
@@ -245,7 +248,27 @@ export const DEFAULTS = {
     profileFieldChars: 40, profilePeople: 2, profileChars: 240, chatImpression: true, chatImpressionChars: 120, dislikeSilence: 0.85,
     shortTerm: true, shortTermHours: 2, shortTermIdleMinutes: 3, shortTermChars: 150,
     gistEnabled: true, gistDays: 180, impressionDays: 365, gistDailyBatches: 6, tierDays: { 1: 7, 2: 30, 3: 90 },
-    extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: { enabled: false, baseUrl: '', model: '', apiKey: '' },
+    extractIdleMinutes: 30, extractMinLines: 20, extractDailyBatches: 24, capacity: { auto: 2000, event: 600, diary: 400 }, eventExpireDays: 90, vector: {
+      enabled: false,
+      // provider 只影响面板预置的地址/模型；请求统一走 OpenAI 兼容的 {baseUrl}/embeddings
+      provider: 'siliconflow',
+      baseUrl: '',
+      model: '',
+      apiKey: '',
+      dimensions: 0, // 0 = 不传；Qwen3 / OpenAI 的 MRL 模型可以截断
+      batchSize: 10, // 方舟等单次 input 上限小，10 最稳
+      queryTimeoutMs: 3000,
+      headers: '', // 自定义请求头，一行一个；有 Authorization 时不再自动加 Bearer
+    },
+    // 可选精排：对已经过滤好的候选重新打分；失败/超时回退原顺序
+    rerank: {
+      enabled: false,
+      baseUrl: '', // 留空复用 vector.baseUrl
+      model: 'BAAI/bge-reranker-v2-m3',
+      apiKey: '', // 留空复用 vector.apiKey
+      topN: 20,
+      timeoutMs: 2000,
+    },
   }, // extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
   song: {
     enabled: false,
@@ -391,6 +414,13 @@ export function normalize(raw) {
   c.voice.http.headers = headerLines(c.voice.http.headers)
   c.voice.http.body = bodyText(c.voice.http.body)
   c.voice.http.sampleRate = num(c.voice.http.sampleRate, 24000, 8000, 48000)
+  // 云端语音识别：provider 只认内置两项和 custom；地址/模型留空时由 asr.js 用预置默认值
+  if (!isObj(c.voice.asrApi)) c.voice.asrApi = structuredClone(DEFAULTS.voice.asrApi)
+  const asrApi = c.voice.asrApi
+  asrApi.provider = ['', 'siliconflow', 'openai', 'custom'].includes(asrApi.provider) ? asrApi.provider : ''
+  for (const k of ['baseUrl', 'model', 'apiKey', 'language']) asrApi[k] = String(asrApi[k] ?? '').trim()
+  asrApi.baseUrl = asrApi.baseUrl.replace(/\/+$/, '')
+  asrApi.prefer = ['qq', 'cloud'].includes(asrApi.prefer) ? asrApi.prefer : 'qq'
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   c.stickers.faces = c.stickers.faces !== false
   c.stickers.collectMode = ['ask', 'auto', 'owner'].includes(c.stickers.collectMode) ? c.stickers.collectMode : 'auto'
@@ -555,9 +585,24 @@ export function normalize(raw) {
   // 记忆压缩：具体的事慢慢淡忘、概括成长期印象（默认开；可以关；多少天以前的细节才参与概括）
   c.memory.compress = bool(c.memory.compress, true)
   c.memory.compressAfterDays = Math.round(num(c.memory.compressAfterDays, 14, 1, 365))
-  if (!isObj(c.memory.vector)) c.memory.vector = { ...DEFAULTS.memory.vector }
-  c.memory.vector.enabled = bool(c.memory.vector.enabled, false)
-  for (const k of ['baseUrl', 'model', 'apiKey']) c.memory.vector[k] = String(c.memory.vector[k] || '').trim()
+  if (!isObj(c.memory.vector)) c.memory.vector = structuredClone(DEFAULTS.memory.vector)
+  const vector = c.memory.vector
+  vector.enabled = bool(vector.enabled, false)
+  vector.provider = ['siliconflow', 'ark', 'openai', 'ollama', 'custom'].includes(vector.provider) ? vector.provider : 'siliconflow'
+  for (const k of ['baseUrl', 'model', 'apiKey']) vector[k] = String(vector[k] || '').trim()
+  vector.baseUrl = vector.baseUrl.replace(/\/+$/, '')
+  vector.dimensions = Math.round(num(vector.dimensions, 0, 0, 8192))
+  vector.batchSize = Math.round(num(vector.batchSize, 10, 1, 64))
+  vector.queryTimeoutMs = Math.round(num(vector.queryTimeoutMs, 3000, 500, 15000))
+  vector.headers = headerLines(vector.headers)
+  if (!isObj(c.memory.rerank)) c.memory.rerank = structuredClone(DEFAULTS.memory.rerank)
+  const rerank = c.memory.rerank
+  rerank.enabled = bool(rerank.enabled, false)
+  for (const k of ['baseUrl', 'model', 'apiKey']) rerank[k] = String(rerank[k] || '').trim()
+  rerank.baseUrl = rerank.baseUrl.replace(/\/+$/, '').replace(/\/rerank$/i, '')
+  rerank.model = rerank.model || DEFAULTS.memory.rerank.model
+  rerank.topN = Math.round(num(rerank.topN, 20, 2, 50))
+  rerank.timeoutMs = Math.round(num(rerank.timeoutMs, 2000, 500, 10_000))
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
   // @ 了别人时不算叫她（只挡必回，仍然可以插话）；默认关，保持原行为
@@ -642,7 +687,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['memory', 'vector', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token']]
+const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }

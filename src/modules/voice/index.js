@@ -7,6 +7,8 @@ import { textToSpeech, edgeInstalled, installEdge, voiceConverters } from '../..
 import { createSongVoice } from '../../voice/rvc.js'
 import { toMono16k } from '../../voice/wav.js'
 import { fileOf } from '../../local/local.js'
+import { asrConfigured, transcribeAudio } from '../../voice/asr.js'
+import { mergeFromPanel, normalize } from '../../core/config.js'
 
 export default {
   id: 'voice',
@@ -14,19 +16,26 @@ export default {
   version: '1.0.0',
   description: '发语音条：把她的话念出来（关掉后想发语音时改发文字）',
   tab: 'voice',
-  files: ['voice/tts.js', 'voice/rvc.js'],
+  files: ['voice/tts.js', 'voice/asr.js', 'voice/rvc.js'],
   setup(api) {
     const { hub, onebot, local, http } = api.core
 
-    async function speak(text) {
-      // 本地接口接管语音合成；出错退回内置
-      if (local.active('tts')) {
+    async function speak(text, voice = api.config().voice, { useLocal = true } = {}) {
+      // 本地接口接管语音合成；出错退回内置。试听用 useLocal=false，避免「本地接口」把任何引擎都顶掉
+      if (useLocal && local.active('tts')) {
         try {
           const file = fileOf(await local.call('tts', { text }))
           if (file && existsSync(file)) return { file, engine: 'local' }
         } catch (error) {}
       }
-      return textToSpeech(text, api.config().voice, api.log)
+      return textToSpeech(text, voice, api.log)
+    }
+
+    /** 试听用：把面板上「还没保存」的语音草稿合并进当前配置；空着的 Key 沿用已保存的。 */
+    function voiceFromBody(body) {
+      const saved = api.config()
+      if (!body || !body.voice || typeof body.voice !== 'object') return saved.voice
+      try { return normalize(mergeFromPanel(saved, { voice: body.voice })).voice } catch (error) { return saved.voice }
     }
 
     // 语音条变声：如果面板里选了「翻唱里导入的音色」，TTS 后再用 RVC 换成她的声音。
@@ -52,11 +61,34 @@ export default {
 
     api.route('/voice/test', async (req) => {
       const b = await http.body(req)
-      const { file, engine } = await speak(String(b.text || '你好呀，我是大肥鱼'))
+      // 面板会带上当前页面的 voice 草稿：没保存也能试听，空密钥用已保存的
+      const voice = voiceFromBody(b)
+      const { file, engine } = await speak(String(b.text || '你好呀，我是大肥鱼'), voice, { useLocal: false })
       const buf = readFileSync(file)
       return { ok: true, engine, mime: file.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg', data: buf.toString('base64') }
     })
     api.route('/voice/install', async () => installEdge(api.log))
+    // 自检云端识别：先用内置语音念一句，再交给配好的 ASR 服务
+    api.route('/voice/asr-provider-test', async (req) => {
+      const b = await http.body(req)
+      const voice = voiceFromBody(b)
+      if (!asrConfigured(voice)) return { ok: false, message: '没配置云端识别（面板「语音 → 听语音」里选一个）' }
+      const text = String(b.text || '今天想吃白米饭')
+      let file
+      try {
+        const r = await textToSpeech(text, { engine: process.platform === 'win32' ? 'windows' : 'edge' }, api.log)
+        file = r.file
+      } catch (error) {
+        return { ok: false, message: '生成测试语音失败：' + error.message }
+      }
+      try {
+        const t = Date.now()
+        const heard = await transcribeAudio(readFileSync(file), voice, api.log)
+        return { ok: Boolean(heard), said: text, heard, provider: voice.asrApi?.provider || '', ms: Date.now() - t }
+      } catch (error) {
+        return { ok: false, message: '识别失败：' + error.message }
+      }
+    })
 
     // DSH 自带语音识别：看状态 / 下载模型
     const stt = () => api.dsh.get('speechToText')
