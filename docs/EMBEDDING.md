@@ -54,6 +54,7 @@ Embedding 负责“找得到”，reranker 负责“找得准”。打开「重�
 推荐免费模型：`BAAI/bge-reranker-v2-m3`（硅基流动），接口是 `POST {baseUrl}/rerank`。
 
 - 服务地址、API Key 留空时复用上面的 embedding 服务；
+- 自定义请求头目前只用于 embedding，不会自动带到 reranker；需要额外 Header 的网关，reranker 会失败并回退原顺序；
 - 候选数默认 20，越大越慢；
 - 超时默认 2000ms；失败/超时保留原顺序，不会阻塞回复；
 - 只处理已经通过群聊/人物权限过滤的候选，不会把不该带出的记忆送给 reranker；
