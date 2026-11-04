@@ -127,10 +127,11 @@ test('carrier=pet 桌宠离线 + petFallbackToQQ=true：回落走原 hub.deliver
   const pet = makePet({ online: false })
   const { r } = await runPurpose(hub, pet, { carrier: 'pet', petFallbackToQQ: true })
   assert.equal(r.outcome, 'sent')
-  assert.equal(pet.calls.length, 0, '离线不调 dispatch（回落由 purpose 自己发，保住 own/userText 链路）')
+  assert.equal(pet.calls.length, 0, '离线不调 dispatch（回落由 purpose 自己发，靠 userText 标记来源）')
   assert.equal(hub.delivered.length, 1)
   assert.equal(hub.delivered[0].chatId, `private:${OWNER}`)
-  assert.deepEqual(hub.deliveryOptions, [{ own: true, userText: '【系统提醒，不是主人说的话】（她主动找你）' }])
+  // 本 PR 去掉了 own:true：桥接改由 hub 按「实际发出的文本」记 saidElsewhere（见 src/purpose/module.js 注释）
+  assert.deepEqual(hub.deliveryOptions, [{ userText: '【系统提醒，不是主人说的话】（她主动找你）' }])
 })
 
 test('carrier=pet 桌宠离线 + petFallbackToQQ=false：本轮静默，QQ 与桌宠都不发', async () => {
