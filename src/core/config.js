@@ -260,6 +260,15 @@ export const DEFAULTS = {
       queryTimeoutMs: 3000,
       headers: '', // 自定义请求头，一行一个；有 Authorization 时不再自动加 Bearer
     },
+    // 可选精排：对已经过滤好的候选重新打分；失败/超时回退原顺序
+    rerank: {
+      enabled: false,
+      baseUrl: '', // 留空复用 vector.baseUrl
+      model: 'BAAI/bge-reranker-v2-m3',
+      apiKey: '', // 留空复用 vector.apiKey
+      topN: 20,
+      timeoutMs: 2000,
+    },
   }, // extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
   song: {
     enabled: false,
@@ -586,6 +595,14 @@ export function normalize(raw) {
   vector.batchSize = Math.round(num(vector.batchSize, 10, 1, 64))
   vector.queryTimeoutMs = Math.round(num(vector.queryTimeoutMs, 3000, 500, 15000))
   vector.headers = headerLines(vector.headers)
+  if (!isObj(c.memory.rerank)) c.memory.rerank = structuredClone(DEFAULTS.memory.rerank)
+  const rerank = c.memory.rerank
+  rerank.enabled = bool(rerank.enabled, false)
+  for (const k of ['baseUrl', 'model', 'apiKey']) rerank[k] = String(rerank[k] || '').trim()
+  rerank.baseUrl = rerank.baseUrl.replace(/\/+$/, '').replace(/\/rerank$/i, '')
+  rerank.model = rerank.model || DEFAULTS.memory.rerank.model
+  rerank.topN = Math.round(num(rerank.topN, 20, 2, 50))
+  rerank.timeoutMs = Math.round(num(rerank.timeoutMs, 2000, 500, 10_000))
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
   // @ 了别人时不算叫她（只挡必回，仍然可以插话）；默认关，保持原行为
@@ -670,7 +687,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token']]
+const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['voice', 'asrApi', 'apiKey'], ['memory', 'vector', 'apiKey'], ['memory', 'rerank', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }
