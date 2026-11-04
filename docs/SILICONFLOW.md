@@ -75,7 +75,7 @@ llm-pi-ai:
 
 ## 3. 免费语音识别：SenseVoiceSmall
 
-面板 **语音 → 听语音**：
+面板 **语音识别**（和「语音」「表情包」同级）：
 
 - 云端识别：硅基流动
 - 服务地址/模型留空，用预置（`FunAudioLLM/SenseVoiceSmall`）
