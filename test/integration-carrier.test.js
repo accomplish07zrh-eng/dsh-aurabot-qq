@@ -26,7 +26,7 @@ beforeEach(() => {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(tmpdir(), 'aurabot-carrier-'))
 })
 
-// 假 hub：deliver 记录投递（成功返回 {missedAt:[]}，同 hub.deliver 契约）
+// 假 hub：deliver 记录投递（成功返回 {missedAt:[], sent}，同 hub.deliver 真契约）
 function makeHub() {
   return {
     lastOwnerChatAt: 0,
@@ -38,7 +38,8 @@ function makeHub() {
     noted: [],
     noteSaid(chatId, text) { this.noted.push({ chatId, text }) },
     async runSystemTurn() { return '主人，想到一件事想跟你说' },
-    async deliver(chatId, text, options) { this.delivered.push({ chatId, text }); this.deliveryOptions.push(options); return { missedAt: [] } },
+    // options 记下来给 carrier 回落用例断言；sent/failed/errors 是同 hub.deliver 的真契约（本 PR 桥接按它结算）
+    async deliver(chatId, text, options) { this.delivered.push({ chatId, text }); this.deliveryOptions.push(options); return { missedAt: [], failed: 0, errors: [], sent: text } },
   }
 }
 
@@ -126,10 +127,11 @@ test('carrier=pet 桌宠离线 + petFallbackToQQ=true：回落走原 hub.deliver
   const pet = makePet({ online: false })
   const { r } = await runPurpose(hub, pet, { carrier: 'pet', petFallbackToQQ: true })
   assert.equal(r.outcome, 'sent')
-  assert.equal(pet.calls.length, 0, '离线不调 dispatch（回落由 purpose 自己发，保住 own/userText 链路）')
+  assert.equal(pet.calls.length, 0, '离线不调 dispatch（回落由 purpose 自己发，靠 userText 标记来源）')
   assert.equal(hub.delivered.length, 1)
   assert.equal(hub.delivered[0].chatId, `private:${OWNER}`)
-  assert.deepEqual(hub.deliveryOptions, [{ own: true, userText: '【系统提醒，不是主人说的话】（她主动找你）' }])
+  // 本 PR 去掉了 own:true：桥接改由 hub 按「实际发出的文本」记 saidElsewhere（见 src/purpose/module.js 注释）
+  assert.deepEqual(hub.deliveryOptions, [{ userText: '【系统提醒，不是主人说的话】（她主动找你）' }])
 })
 
 test('carrier=pet 桌宠离线 + petFallbackToQQ=false：本轮静默，QQ 与桌宠都不发', async () => {

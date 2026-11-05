@@ -995,6 +995,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const firstSendable = items.findIndex((item) => item.kind === 'text' || item.kind === 'voice' || item.kind === 'image' || (item.kind === 'sticker' && cfg.stickers.enabled && Boolean(item.value && typeof item.value === 'object' ? item.value : stickers.match(item.value))))
     const missedAt = [] // 写了 @ 却没对上群里人的名字
     const failures = []
+    const sentTexts = [] // 实际成功发出的文字/语音正文：桥接与返回值只认这些，没发出去的话不能算说过
     await failStore.run(failures, async () => {
       for (let i = 0; i < items.length; i++) {
         if (disposed) return
@@ -1004,6 +1005,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         // 她自己引用了 @ 她的人就照常 @；自动回复只有一个人说话时才有（#160）
         const userId = selected && (selected.direct || opts.autoReply?.uid === selected.uid) ? selected.uid : undefined
         if (it.replyTo && !replyId) log.debug(`${chatId}：引用的编号 ${it.replyTo} 对不上，正常发`)
+        // 这条真发出去没有，看 outputScope 的 sent 计数有没有涨（sendSegments 只在真发/捕获时计数；
+        // dry-run 与总开关关闭都不涨 → sentTexts 为空，她没说出口的话不能算说过）。#211 review 二轮。
+        const sentBefore = outputScope.getStore().sent
         if (it.kind === 'text') await sendText(chatId, it.value, replyId, missedAt, userId)
         else if (it.kind === 'voice') {
           if (cfg.voice.enabled) await sendVoice(chatId, it.value, replyId, userId)
@@ -1014,6 +1018,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
           if (localImageBlocked(chatId, it.value)) log.warn(`${chatId}：回复里的本机图片不在允许的目录里，没发`)
           else await sendImage(chatId, it.value, replyId, userId)
         }
+        if ((it.kind === 'text' || it.kind === 'voice') && outputScope.getStore().sent > sentBefore && String(it.value || '').trim()) sentTexts.push(it.value)
         if (i < items.length - 1 && !opts.simulate) await pause(bubbleDelay(items[i + 1].kind === 'text' ? items[i + 1].value : '') * mood().delay)
       }
     })
@@ -1021,7 +1026,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     if (outputScope.getStore().blocked && !outputScope.getStore().sent) return silenceTurn(chatId)
     if (opts.simulate) return items
     // 一条都没发出去：不记流水，她没说出口的话不能算说过
-    if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) return { missedAt, failed: failures.length, errors: failures }
+    if (failures.length && failures.length >= items.filter((i) => i.kind !== 'poke').length) return { missedAt, failed: failures.length, errors: failures, sent: sentTexts.join(' ') }
     if (inGroup) {
       const gid = chatId.slice(6)
       const said = (groupSaid.get(gid) || []).filter((t) => Date.now() - t < 3600_000)
@@ -1031,13 +1036,14 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     const said = items.map((i) => (i.kind === 'text' || i.kind === 'voice' ? i.value : `[${i.kind}]`)).join(' ')
     logChat(chatId, 'bot', said)
-    // 不是这个聊天自己那一轮发的（主人在私聊里让她去群里说、扩展模块代发）：记下来，下次这个聊天交给她时告诉她自己说过什么
-    if (!opts.own) saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: said.slice(0, 300) }].slice(-5))
+    // 不是这个聊天自己那一轮发的（主人在私聊里让她去群里说、扩展模块代发）：记下来，下次这个聊天交给她时告诉她自己说过什么。
+    // 只记实际发出去的文本（sentTexts），且试运行（dryRun）没真发也不记——她没说出口的话不能算说过（#211 review）。
+    if (!opts.own && sentTexts.length && !cfg.dryRun) saidElsewhere.set(chatId, [...(saidElsewhere.get(chatId) || []), { at: Date.now(), text: sentTexts.join(' ').slice(0, 300) }].slice(-5))
     lastChatAt = Date.now()
     if (chatId.startsWith('private:')) lastPrivateAt.set(chatId.slice(8), Date.now())
     if (chatId === `private:${cfg.ownerQQ}`) lastBotToOwner = { at: Date.now(), text: items.filter((i) => i.kind === 'text' || i.kind === 'voice').map((i) => i.value).join('\n') }
     onActivity?.({ kind: 'out', chatId, reply: text, userText: opts.userText || '' })
-    return { missedAt, failed: failures.length, errors: failures }
+    return { missedAt, failed: failures.length, errors: failures, sent: sentTexts.join(' ') }
   }
 
   // ---------- 盯 DSH 会话：一轮结束就发 ----------
@@ -2441,6 +2447,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     get lastChatAt() { return lastChatAt },
     get lastOwnerChatAt() { return lastOwnerChatAt },
     lastPrivateAt: (qq) => lastPrivateAt.get(String(qq)) || 0,
+    // 「别处说过」桥接的只读快照（测试/诊断用）：这个聊天待补进上下文的原话列表
+    saidElsewhereOf: (chatId) => (saidElsewhere.get(String(chatId)) || []).map((x) => x.text),
     get lastBotToOwner() { return lastBotToOwner },
     get selfId() { return selfId },
     groupNames,

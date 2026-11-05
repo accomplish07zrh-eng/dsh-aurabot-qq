@@ -35,7 +35,7 @@ beforeEach(() => {
 
 function stateFile() { return join(process.env.AURABOT_DATA_DIR, 'purpose', 'purpose-state.json') }
 
-// 假 hub：runSystemTurn 可脚本化回复；deliver 记录投递（成功返回 {missedAt:[]}，同 hub.deliver 契约）
+// 假 hub：runSystemTurn 可脚本化回复；deliver 记录投递（成功返回 {missedAt:[], sent}，同 hub.deliver 真契约）
 const DEFAULT_MEMORIES = [
   { id: 'mm1', text: '主人上周在玩星穹列车', importance: 0.6 },
   { id: 'mm2', text: '主人喜欢下班后打两把游戏放松', importance: 0.5 },
@@ -49,7 +49,7 @@ function makeHub({ reply = '主人，今天想到一件事想跟你说', lastOwn
     delivered: [],
     turns: log,
     async runSystemTurn(name, title, prompt) { this.turns.push({ name, title, prompt }); return typeof reply === 'function' ? reply(prompt) : reply },
-    async deliver(chatId, text) { this.delivered.push({ chatId, text }); return { missedAt: [] } },
+    async deliver(chatId, text, opts = {}) { this.delivered.push({ chatId, text, opts }); return { missedAt: [], failed: 0, errors: [], sent: this.deliverSent ?? text } },
   }
 }
 
@@ -98,10 +98,24 @@ test('排程：tick 到点才出发，跑完后 nextFireAt 重新落盘到未来
   await p.tick() // 到点：真跑一轮
   assert.equal(hub.delivered.length, 1)
   assert.equal(hub.delivered[0].chatId, `private:${OWNER}`)
+  // 不带 own:true：这条是别处发的，hub 要把她说的话记进 saidElsewhere，
+  // 主人在私聊回复时才补得回她的上下文（她得知道自己刚发过什么）。
+  assert.ok(!hub.delivered[0].opts.own, '目的引擎 QQ 投递不能带 own:true，否则 hub 不做「别处说过」桥接')
+  assert.equal(hub.delivered[0].opts.userText, '【系统提醒，不是主人说的话】（她主动找你）')
   const s2 = JSON.parse(readFileSync(stateFile(), 'utf8'))
   assert.equal(s2.lastOutcome, 'sent')
   assert.equal(s2.countToday, 1)
   assert.ok(s2.nextFireAt >= Date.now() + 5 * MIN - 1000, `跑完重排到未来（gap 5 分钟）：${new Date(s2.nextFireAt).toISOString()}`)
+})
+
+test('deliver 没真发出去（sent 空）：按 silent 结算，不算说过（#211 review）', async () => {
+  const hub = makeHub()
+  hub.deliverSent = '' // 模拟吞错/dry-run/hook 拦截：一条都没真发
+  const { p } = makePurpose(hub)
+  await setupTick(p, hub)
+  assert.equal(hub.delivered.length, 1)
+  const s = JSON.parse(readFileSync(stateFile(), 'utf8'))
+  assert.equal(s.lastOutcome, 'silent', '没实际发出的文字不能算 sent')
 })
 
 test('闸门：主人刚说过话（空闲不足）时到点也不发，记 owner-active 跳过', async () => {
@@ -401,7 +415,7 @@ test('白名单：朋友单独排程，提示词里没有主人的记忆和群�
   const { prompt } = hub.turns[0]
   assert.match(prompt, /游泳/)
   assert.doesNotMatch(prompt, /辞职|八卦|日记|主人/)
-  assert.deepEqual(hub.delivered, [{ chatId: `private:${FRIEND}`, text: '游泳学得怎么样啦' }])
+  assert.deepEqual(hub.delivered, [{ chatId: `private:${FRIEND}`, text: '游泳学得怎么样啦', opts: { userText: '【系统提醒，不是主人说的话】（她主动找你）' } }])
 })
 
 test('白名单：没聊过的朋友不找，人设再完整也不凭空开口', async () => {
