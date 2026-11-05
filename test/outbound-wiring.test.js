@@ -496,6 +496,94 @@ test('gate 档：模块快捷发送保持原样（只判定放行，不改走代
   assert.equal(submitted.length, 0)
 })
 
+// ---------- broker 档：无可审文本（图片/文件等）「识别不了就直发」（2026-11-05 少爷定） ----------
+// 背景：代发的纯文本不占额度、不看安静时段；图片/文件却还在走普通门闸的
+// quiet/budget/busy 判定，出现「文字发得出、图片老被拦」。无可审文本的发送与代发同口径。
+
+test('broker 档：图片（无可审文本）被策略源拒绝也照发（识别不了就直发）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  let reserves = 0
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => { reserves++; return { ok: false, reason: 'quiet' } },
+    commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-quiet')
+  const r = await api.sendImage('private:10001', 'base64://abc')
+  assert.deepEqual(r, { message_id: 3 }, '策略源说不发，图片也直发出去（识别不了就直发）')
+  assert.equal(reserves, 0, '直发口径不进门闸、不碰策略源')
+})
+
+test('broker 档：放行的图片发送不占策略源额度（与代发同口径，不 reserve 不结算）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  const reserves = []
+  const commits = []
+  const releases = []
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => { reserves.push(1); return { ok: true, reserveId: 'r1' } },
+    commit: (id, p) => { commits.push([id, p]); return { ok: true } },
+    release: (id, p) => { releases.push([id, p]); return { ok: true } },
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-release')
+  const r = await api.sendFile('private:10001', 'C:/a.zip')
+  assert.deepEqual(r, { message_id: 4 }, '图片照常发出')
+  assert.equal(reserves.length, 0, '直发口径不 reserve（不占额度）')
+  assert.equal(commits.length, 0)
+  assert.equal(releases.length, 0)
+})
+
+test('broker 档：纯文本被策略源拒绝仍拦下（文本走门闸 + 代发决断，口径不变）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: false, reason: 'budget' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api, sends } = await startProbeModule(t, { outbound: svc }, 'probe-text-deny')
+  const r = await api.sendText('private:10001', '主动私聊主人')
+  assert.equal(r, null, '纯文本被拒仍返回 null（旧真值语义）')
+  assert.equal(sends.length, 0, '纯文本不能绕过门闸直发')
+})
+
+test('gate 档：图片被策略源拒绝仍拦下（直发口径只对 broker 生效）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'gate' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: false, reason: 'quiet' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-gate')
+  const r = await api.sendImage('private:10001', 'base64://abc')
+  assert.equal(r, null, 'gate 档的判定语义不变：拒绝就是不发')
+})
+
+test('broker 档：图片发朋友（治理范围外）不触直发口径，照旧过门闸放行', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  let reserves = 0
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => { reserves++; return { ok: false, reason: 'quiet' } }, commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  const { api } = await startProbeModule(t, { outbound: svc }, 'probe-img-friend')
+  const r = await api.sendImage('private:20000', 'base64://abc')
+  assert.deepEqual(r, { message_id: 3 }, '治理范围外（非主人私聊）admit 本就放行，照旧直发')
+  assert.equal(reserves, 0, '范围外不 reserve（admit 的 out-of-scope 短路，行为不变）')
+})
+
 
 /**
  * 起一个真模块，把 setup 收到的 api 暴露出来（验证 api.proactive 的实际形状）。
