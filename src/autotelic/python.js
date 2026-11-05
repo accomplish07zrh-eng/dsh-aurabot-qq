@@ -66,13 +66,19 @@ export async function probePython({ configured = '', run = probeRun, timeoutMs =
   const order = first ? [first, ...PROBE_ORDER.filter((b) => b !== first)] : PROBE_ORDER
   for (const bin of order) {
     const hit = await probeOne(bin, { run, timeoutMs })
-    if (hit) return { ...hit, probedAt: Date.now() }
+    // 字段名统一叫 pythonBin（envUsable / 面板 / 跑脚本工具都读它）；bin 保留给旧测试。
+    if (hit) return { pythonBin: hit.bin, ...hit, probedAt: Date.now() }
   }
   return null
 }
 
-/** env.json 缓存（api.dataDir('env.json')）：启动时读，失效重新探测。 */
-export function loadEnvCache(file) { return readJson(file, null) }
+/** env.json 缓存（api.dataDir('env.json')）：启动时读，失效重新探测。
+ *  兼容旧缓存：早期版本写的是 {bin,version}，统一迁到 pythonBin。 */
+export function loadEnvCache(file) {
+  const env = readJson(file, null)
+  if (env && env.bin && !env.pythonBin) env.pythonBin = env.bin
+  return env
+}
 export function saveEnvCache(file, env) { if (env) writeJson(file, env); else { try { writeJson(file, { pythonBin: '', version: '', probedAt: Date.now(), unavailable: true }) } catch {} } }
 
 /** env 缓存还有效吗：探测过且在 24h 内 → 有效（路径被卸载这种极端情况由跑脚本时的失败兜底）。 */

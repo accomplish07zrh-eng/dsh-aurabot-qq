@@ -91,7 +91,8 @@
 #### 探测结果怎么存
 
 - 成功后缓存进 `api.dataDir('env.json')`（`{ pythonBin, version, probedAt }`）—— **不带模块名**，`api.dataDir` 已自带；
-- 每次启动**重新校验一次**（路径可能被卸载/改环境变量弄失效），失效则重新探测；
+- **校验节奏（与实现对齐，2026-11-05 审查修正）**：24 小时内直接用缓存（`python.js` 的 `envUsable`），
+  超 24h 或主人改了配置路径才重新探测；面板有「重新检测」按钮可手动触发；
 - 面板显示当前用的哪个、版本多少，主人可手动改。
 
 #### 约定
@@ -179,8 +180,8 @@ scriptTimeoutMs: 120000        // 单次脚本超时
 （`totalTokens` / `inputTokens` / `outputTokens`），而 `host.js:794` **已经在监听 `session/event`**。
 
 → 所以：**首期只启用「动作/小时」和「单任务步数」两项**（够用、简单）；
-**P2 再接 token 预算**（从 `assistant/message` 的 `usage` 累加）。
-不要在 P0 假装它有，也不要写「没有数据源」——数据源是有的，只是没接线。
+**token 预算 P2 计划接（从 `assistant/message` 的 `usage` 累加），截至 2026-11-05 审查尚未接**（实现里无计量、无测试），
+文档如实标注为**延后项**，不要在 P0 假装它有。
 
 ---
 
@@ -193,7 +194,7 @@ scriptTimeoutMs: 120000        // 单次脚本超时
 | 步 | 内容 | 文件 |
 | --- | --- | --- |
 | 0.1 | 新增 preset `preset-aurabot-autotelic`（`config.id` 必须是 **`aurabot-autotelic`**）。**插在 `preset-aurabot-social` 之后**，`order` 取 **63**。**首期不带 `tool-pwsh`**（见 §4.7） | `cordis.patch.yml` |
-| 0.2 | **`createSession`（`hub.js:433`）接受 `chat.presetId`**：`const preset = (!chat.noTools && chat.presetId) \|\| presetFor(level, getConfig())` | `src/chat/hub.js:433` |
+| 0.2 | **`createSession`（`hub.js:433`）接受 `chat.presetId`**：`const preset = (!chat.noTools && chat.presetId) \|\| presetFor(level, getConfig())`。**实际实现还套了一道总闸 `ext.autotelic.presetIdOverride`（默认关）**——闸门不开时 presetId 整路失效，见 §9 悬案 1（已采纳为开关） | `src/chat/hub.js:433` |
 | 0.3 | **`hub.js:466` 的复用键把 presetId 纳入**；**`level` 判定（463）不改**（见下） | `src/chat/hub.js:466` |
 | 0.4 | `runSystemTurn` 的 opts 增加 `presetId` 透传（默认 `undefined`，**行为完全不变**） | `src/chat/hub.js:2241` |
 | 0.5 | `host.js` 挂 `tools/pre-execute` **审计钩子**（异步入队、失败静默）；结果从 `session/event` 取 | `src/host.js`、`src/autotelic/audit.js` |
@@ -258,6 +259,7 @@ level 仍是 `social`，所以 `buildTools` 照常调用（`566`：只跳过 `ch
 | 1.4 | 死循环熔断：`(tool,args,observation)` 指纹，同指纹 2 次即 `abandoned` |
 | 1.5 | `/autotelic/preview`：零副作用预览（今天会立什么项、为什么、分数多少） |
 | 1.6 | 面板：任务列表 + 每条的理由（`reason` 必填，防拍脑袋） |
+| 1.7 | **立项前预审**（2026-11-05 少爷定）：候选进账本之前先用「审查员视角」判一次值不值得办，不值得直接不立项（记冷却 + 审计 `autotelic/screen`）。常开、无开关 |
 
 **⚠️ 1.1 不能指望「复用 `collectMaterials` 就完事」**（2026-11-04 审查，已核实）：
 
@@ -325,7 +327,7 @@ level 仍是 `social`，所以 `buildTools` 照常调用（`566`：只跳过 `ch
 | --- | --- |
 | 4.1 | 「想说一句」**不直发**，交给出站治理决定何时说（**接口待补**，见下） |
 | 4.2 | 技能库：`skills/<id>/{manifest.json,run.mjs,verify.mjs}`，**复现 2 次成功**才 `status:'learned'` |
-| 4.3 | 技能只经子智能体跑（`runSubagentTurn`），不进程内 `import` —— 隔离以便观察与终止。**前提见下** |
+| 4.3 | 技能只经子智能体跑（`runSubagentTurn`），不进程内 `import` —— 隔离以便观察与终止。**⚠️ 本期未实现**（2026-11-05 审查确认）：前置的 `plugin-internals` 声明与 `subagentBackground` 都没开，**技能当前走 `runPython` 子进程直跑**（`skills.js` 注释自认）。按本条验收会误判 |
 | 4.4 | 提案通道：她写 `proposals/*.md`，面板列出，**她不改框架代码** |
 
 **⚠️ 4.1 原写的「写进 purpose 的 pending」这条链路不存在**（2026-11-04 核实）：
@@ -347,8 +349,11 @@ level 仍是 `social`，所以 `buildTools` 照常调用（`566`：只跳过 `ch
 
 1. `api.proactive.submit` 只在 `tier === 'broker'` 时放行，**默认 `tier='pass'`**（`outbound-policy.js:20`），
    新装机一律返回 `unsupported`；
-2. **她这一轮是文本输出，不是工具调用** —— 从「turn 文本」到「调用 submit」的通道必须写出来
-   （由 `autotelic` 模块在轮次结束后解析她的输出、再调 submit，不是她自己调）。
+2. ~~她这一轮是文本输出，不是工具调用——由模块解析她的输出再调 submit~~
+   **实现走了另一条路（2026-11-05 审查修正，与实现对齐）**：注册了 `autotelic_propose_say` 工具
+   （`index.js:204-225`），**她自己决定什么时候调**。行为没问题（broker 未开时优雅报 unsupported）；
+   但要注意：这也意味着「说不说」的最终扳机在她手里的一次工具调用上——
+   「攒着评」的闸门要靠工具入参前的自评约束，审计里能看到每次调用。
 
 → 所以 P4.1 实际要做三件：**① 明确写运输通道 ② 首期要求主人把 `outboundPolicy.tier` 设成 `broker`
 ③ 没有 ready 策略源时会返回 `dropped`，要能优雅处理**。
@@ -606,6 +611,7 @@ L2   跑白名单外的 shell 命令 / 调 onebot / 发消息      → 拒绝（
 | 1 | 默认关（`enabled:false`） | 模块不做任何 IO；purpose/speakup/出站治理**逐项不变** |
 | 2 | 素材不足 | 不立项，`lastTick.outcome='skipped-no-material'` |
 | 3 | 好奇分 < 阈值 | 不立项，素材留池，面板可见分数与落选原因 |
+| 3b | **立项前预审否决** | 候选进账本之前由「审查员视角」判「值不值得办」；否决的不立项，`lastTick.outcome='screened-out'`，面板可见 `vetoed` 明细，同一 `sourceId` 6 小时内不再送审 |
 | 4 | 立项 | 账本出现 task，`reason` 非空，至少 1 条 todo |
 | 5 | 单步失败 2 次 | 写反思，任务 `blocked`，不无限重试 |
 | 6 | 死循环 | 同指纹 2 次 → `abandoned`，面板可见熔断原因 |
@@ -616,7 +622,7 @@ L2   跑白名单外的 shell 命令 / 调 onebot / 发消息      → 拒绝（
 | 11 | 想说一句 | **不直发 QQ**；走 `api.proactive.submit` 交给出站治理（不经 purpose pending） |
 | 12 | 技能复用 | 复现 2 次才 `learned`；失败 3 次降级为候选 |
 | 13 | 她试图改框架 | 写不到 `src/`；想改只能写 `proposals/*.md` |
-| 14 | 她要刷抖音 | 由 `autotelic` 自己 `api.use('douyin')` 包成自有工具暴露；**模型拿不到 douyin 原生 tool**（各模块对 system 返回 `[]`） |
+| 14 | 她要刷抖音 | 由 `autotelic` 自己 `api.use('douyin')` 包成自有工具暴露；**模型拿不到 douyin 原生 tool**（各模块对 system 返回 `[]`）。**⚠️ 尚未实现**（2026-11-05 审查）：工具面只有六个自有工具，`autotelic_modules` 只给只读清单，douyin/bili 适配归 TAKEOVER 增量（`AUTOTELIC-TAKEOVER.md` §4） |
 | 15 | 她写用户模块 | 落 `plugins-data/aurabot/modules/<id>/`（**不是 modules-data**），watcher 热加载；**新 id 写坏时该模块不可用、插件不挂**；同名替换坏回退内置 |
 | 16 | **探测到真 Python** | 自动识别可用解释器，面板显示名字与版本（**注入 fake 探测函数**，不依赖真环境） |
 | 17 | **只有商店别名** | 探测函数被喂「0 字节 WindowsApps 占位符」→ 判定不可用（**用 fake 注入，CI 不依赖真机器**） |
@@ -628,7 +634,10 @@ L2   跑白名单外的 shell 命令 / 调 onebot / 发消息      → 拒绝（
 | 23 | **钩子只记她的会话** | 主人 GUI 会话、主人 QQ 私聊、群聊里的工具调用**都不进**她的账本（判 `chatOfSession` 是否以 `system:autotelic` 开头） |
 | 24 | **账本被删会露** | 她能删审计文件，但删了会**断哈希链**，面板「校验」报出断点位置 |
 
-> 场景 9 是全套设计里**唯一能证明「不能骗账本」的用例**，必须写进测试。
+> 场景 9 是全套设计里**唯一能证明「不能骗账本」的用例**——
+> **⚠️ 截止 2026-11-05 审查：对账比对与标红逻辑尚未实现、未测试**（`/autotelic/day` 只并列展示审计与每日一页，
+> 无自动比对；测试只验了「没敢说的段落存在」）。当前口径：**对账暂为人工看面板**。
+> 补实现时必须写进测试，这条不能永远欠着。
 > 场景 16~18 是「不许写死解释器名」的回归用例，**必须用 fake 注入**，否则 CI 跑不了。
 > 场景 21 证明「做梦」不是逃避审计的暗门。
 

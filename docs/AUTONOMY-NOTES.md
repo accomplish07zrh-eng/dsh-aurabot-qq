@@ -238,8 +238,9 @@ zip 那份有 `tune.json` 叠在主人配置之上（`index.mjs:37-63`），主�
 
 - 现状阻碍：`system:` 会话走 `social` 档，`aurabot-social` preset 零本地工具（`cordis.patch.yml`）；
 - 主人已定：**可以改动框架** —— 即允许新增一条 preset、或改 `hub.js:463` 的档位判定；
-- 参照 `aurabot-subagent` preset（pwsh + fs + fs-search）即可，那个已经验证过能真跑命令
-  （`test/subagent-delegation.test.js` 就在断言它）。
+- 参照 `aurabot-subagent` preset 的**结构**（fs / fs-search / compaction）即可；
+  **⚠️ 首期不照抄它的 pwsh**——按 PLAN §4.7-A，她的 preset 不带 shell
+  （2026-11-05 与实现对齐：已提交的 preset 里确实无 pwsh）。
 
 **铁律**：全量日志落盘在 `api.dataDir()`，**不与任何会话历史绑定**（因为会被压缩）。
 
@@ -250,5 +251,7 @@ zip 那份有 `tune.json` 叠在主人配置之上（`index.mjs:37-63`），主�
 2. 全量日志会很长，主人平时不看。**「不看」本身就意味着审计是抽查制的**，这是接受的代价。
 
 ## 9. 核实口径
-代码基线 `local/runtime` @ `4c362d0`；测试基线 1357 项 / 1354 过 / 3 skip / 0 挂。
-本笔记**未改任何代码**。
+- 讨论期基线：`local/runtime` @ `4c362d0`，测试 1357 项 / 1354 过 / 3 skip / 0 挂；
+- **实现后（2026-11-05）**：引擎已提交至 `eee69e6`，全量测试规模已变——
+  **基线数字以实跑为准，不再在此固化**（复核实测曾出现 1353 过 / 1 挂，挂因是 Temp 目录 EPERM 环境问题）；
+- 本笔记记录讨论结论；实现细节以 `AUTOTELIC-PLAN.md` 与已提交代码为准。
