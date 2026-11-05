@@ -9,7 +9,7 @@
 // 接口说明给写模块的人看：src/modules/API.md（每次启动复制到数据目录 modules/ 里）。
 
 import { existsSync, readdirSync, statSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
-import { join, dirname, relative, resolve, sep } from 'node:path'
+import { join, dirname, relative, resolve, sep, isAbsolute } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { dataDir } from './store.js'
 import { registerSecretField } from './config.js'
@@ -757,13 +757,19 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     return names
   }
 
+  /** file 是不是在 root 目录里面（root 自己不算；越过 root 的 ../ 一律不算）。 */
+  function inside(root, file) {
+    const rel = relative(resolve(root), resolve(file))
+    return Boolean(rel) && !rel.startsWith('..') && !isAbsolute(rel)
+  }
+
   /** 自己写的模块的面板代码（panel.js），面板拿去执行。 */
   function panelSource(id) {
     const rec = live.get(id)
     if (!rec || rec.source !== 'user' || !rec.def.panel) return null
     const u = userSeen.get(id)
     const file = typeof rec.def.panel === 'string' ? resolve(u.dir, rec.def.panel) : join(u.dir, 'panel.js')
-    if (!file.startsWith(u.dir) || !existsSync(file)) return null
+    if (!inside(u.dir, file) || !existsSync(file)) return null
     return readFileSync(file, 'utf8')
   }
 
