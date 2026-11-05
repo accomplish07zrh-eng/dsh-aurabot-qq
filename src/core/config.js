@@ -91,6 +91,9 @@ export const DEFAULTS = {
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
     // 通用 HTTP 引擎：GET 时地址里带 {text}；POST 时填接口地址，请求头一行一个，请求体里 {text} 自动替换（已做 JSON 转义）
     http: { urlTemplate: '', method: 'GET', headers: '', body: '', sampleRate: 24000 },
+    // 豆包语音（火山引擎）预设：地址、请求头、请求体全内置，只留 API Key + 音色给人填
+    // resourceId 留空 = 按音色自动配（1.0 音色配 seed-tts-1.0，2.0 音色配 seed-tts-2.0）
+    volcano: { apiKey: '', resourceId: '', voiceType: 'zh_female_vv_uranus_bigtts', speedRatio: 1 },
     voice: 'zh-CN-XiaoyiNeural',
     rate: '+0%',
     pitch: '+0Hz',
@@ -400,6 +403,15 @@ export function normalize(raw) {
   c.voice.http.headers = headerLines(c.voice.http.headers)
   c.voice.http.body = bodyText(c.voice.http.body)
   c.voice.http.sampleRate = num(c.voice.http.sampleRate, 24000, 8000, 48000)
+  // 豆包预设：Key 去两端空白并限长（粘整段文件时不会把整个配置撑爆），音色 id 也限长；
+  // resourceId 只认这两个合法值，填别的当没填（留空时按音色自己认）
+  if (!isObj(c.voice.volcano)) c.voice.volcano = structuredClone(DEFAULTS.voice.volcano)
+  c.voice.volcano.apiKey = String(c.voice.volcano.apiKey ?? '').trim().slice(0, 400)
+  c.voice.volcano.voiceType = String(c.voice.volcano.voiceType ?? '').trim().slice(0, 120) || DEFAULTS.voice.volcano.voiceType
+  c.voice.volcano.resourceId = ['seed-tts-1.0', 'seed-tts-2.0'].includes(String(c.voice.volcano.resourceId))
+    ? String(c.voice.volcano.resourceId)
+    : ''
+  c.voice.volcano.speedRatio = num(c.voice.volcano.speedRatio, 1, 0.5, 2)
   c.stickers.autoChance = num(c.stickers.autoChance, 0.35, 0, 1)
   // 主动贴表情：自己的概率（默认 0.15），不从 autoChance 取值；老配置里存成 null 的按默认算
   c.stickers.reactChance = num(c.stickers.reactChance ?? 0.15, 0.15, 0, 1)
@@ -590,7 +602,7 @@ export function normalize(raw) {
   g.burstMax = num(g.burstMax, 8, 1, BIG)
   g.engagedMax = num(g.engagedMax, 6, 0, BIG)
   g.burstWindowSec = num(g.burstWindowSec, 120, 1, BIG)
-  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http'].includes(c.voice.engine)) c.voice.engine = 'auto'
+  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'volcano'].includes(c.voice.engine)) c.voice.engine = 'auto'
   c.voice.songVoice = String(c.voice.songVoice || '').slice(0, 120)
   c.voice.songPitch = Math.max(-24, Math.min(24, Math.round(Number(c.voice.songPitch) || 0)))
   c.voice.cosyvoice.sampleRate = num(c.voice.cosyvoice.sampleRate, 22050, 8000, 48000)
@@ -657,7 +669,7 @@ export function normalize(raw) {
 }
 
 // 面板里不回传原文的字段：路径（几层都行）
-const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['memory', 'vector', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token']]
+const SECRETS = [['snowluma', 'webuiPassword'], ['snowluma', 'httpToken'], ['snowluma', 'wsToken'], ['imageGen', 'apiKey'], ['memory', 'vector', 'apiKey'], ['song', 'neteaseCookie'], ['bili', 'cookie'], ['bili', 'sessdata'], ['bili', 'biliJct'], ['heybox', 'cookie'], ['bridge', 'token'], ['voice', 'volcano', 'apiKey']]
 // 扩展模块设置里的密码类字段（模块加载时登记）：['ext', 模块id, 字段]
 const extraSecrets = new Map()
 export function registerSecretField(path) { extraSecrets.set(path.join('\u0000'), path) }

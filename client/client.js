@@ -1795,6 +1795,72 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('div', { className: 'ab-muted ab-small' }, !s ? '正在查翻唱音色…' : (s.available ? '变声要跑一次 RVC，会比普通语音慢几秒；单次变声失败会自动用原声。' : (s.message || '翻唱环境还没装好（面板「翻唱」页一键安装、导入音色后才能给语音条变声）')))) 
     }
 
+    /** 豆包语音（火山）：地址 / 请求头 / 请求体都内置好了，这里只挑音色、填 Key。 */
+    function VolcanoVoice({ draft, setDraft }) {
+      const f = useField(draft, setDraft)
+      const [list, setList] = useState(null)
+      const [pv, setPv] = useState({ src: '', busy: false, err: '' })
+      useEffect(() => {
+        get('/voice/volcano-voices').then((r) => setList(r && r.voices ? r.voices : [])).catch(() => setList([]))
+      }, [])
+      const cv = draft.voice.volcano || {}
+      const voices = list || []
+      // 1.0 和 2.0 是两个产品：只开通了 2.0 的账号选 1.0 音色会报「模型没开通」，所以在选项里先标出来
+      const opts = voices.map((v) => ({ value: v.id, label: v.name, desc: [v.ver, v.scene || '通用场景', v.ver === '1.0' ? '要另开通 1.0' : ''].filter(Boolean).join(' · '), group: v.group }))
+      // 面板里存着清单外的 id（自己从控制台复制的）时，也得能正常显示，别变成一个空格子
+      if (list && cv.voiceType && !voices.some((v) => v.id === cv.voiceType)) {
+        opts.unshift({ value: cv.voiceType, label: cv.voiceType, desc: '自定义音色 id（不在预置清单里）', group: '自定义' })
+      }
+      const cur = voices.find((v) => v.id === cv.voiceType)
+      // 选音色时把模型版本一起写掉：1.0 的音色配 2.0 的模型会直接报 speaker permission denied
+      const pick = (id) => {
+        const hit = voices.find((v) => v.id === id)
+        setDraft(setPath(setPath(draft, 'voice.volcano.voiceType', id), 'voice.volcano.resourceId', hit ? hit.resourceId : ''))
+        setPv({ src: '', busy: false, err: '' })
+      }
+      // 试听用面板上现在这一份（Key 没保存也能听），不用先存配置
+      const preview = async () => {
+        setPv({ src: '', busy: true, err: '' })
+        const r = await post('/voice/volcano-preview', { apiKey: cv.apiKey || '', voiceType: cv.voiceType || '', resourceId: cv.resourceId || '', speedRatio: cv.speedRatio })
+        if (r && r.ok) setPv({ src: 'data:' + r.mime + ';base64,' + r.data, busy: false, err: '' })
+        // 后端还是老进程时，这个接口根本不存在，插件框架会统一回「模块没开」——别让人去翻「已安装」
+        else if (r && r.moduleOff) setPv({ src: '', busy: false, err: '试听接口还没生效：把 DeepSeek Harness 关掉重开一次，再回来点这个' })
+        else setPv({ src: '', busy: false, err: (r && r.message) || '试听失败' })
+      }
+      return [
+        h(Row, { key: 'k', label: 'API Key', hint: '火山控制台左侧「API Key」里那一串；只存在这台电脑上，存过就不再显示' },
+          f.text('voice.volcano.apiKey', { type: 'password', size: 'wide', placeholder: cv.apiKeySet ? '已保存（不改就留空）' : '粘进来就行，别的都不用填' }),
+          h('a', { key: 'open', className: 'ab-btn sm', href: 'https://console.volcengine.com/speech/new/setting/apikeys?projectName=default', target: '_blank', rel: 'noreferrer', style: { marginLeft: 8 } }, '打开控制台拿 Key')),
+        h(Row, { key: 'v', label: '音色', hint: cur ? cur.ver + ' 音色，自动配 ' + cur.resourceId : '清单里没有的 id，直接填在配置里也能用' },
+          list === null
+            ? h('span', { className: 'ab-muted' }, '正在读音色清单…')
+            : voices.length
+              ? [
+                h(Select, { key: 's', value: cv.voiceType || '', options: opts, width: 320, onChange: pick }),
+                h(Btn, { key: 'b', small: true, disabled: pv.busy, onClick: preview }, pv.busy ? '念着呢…' : '试听这个'),
+              ]
+              : h('span', { className: 'ab-muted' }, '没读到音色清单：把 DeepSeek Harness 关掉重开一次，再打开面板')),
+        h(Row, { key: 's', label: '语速', hint: '1.0 是原速；拖动调整，范围 0.5～2.0' },
+          h(Range, {
+            min: 0.5,
+            max: 2,
+            step: 0.05,
+            value: Number(cv.speedRatio) || 1,
+            fmt: (v) => Number(v).toFixed(2) + ' 倍',
+            onChange: (v) => setDraft(setPath(draft, 'voice.volcano.speedRatio', Number(v))),
+          })),
+        pv.err ? h('div', { key: 'e', className: 'ab-small', style: { color: 'var(--ab-err, #d9534f)' } }, pv.err) : null,
+        pv.src ? h('div', { key: 'a' }, h('audio', { src: pv.src, controls: true, autoPlay: true, style: { height: 32 } })) : null,
+        h('div', { key: 'n', className: 'ab-muted ab-small' },
+          voices.length ? '共 ' + voices.length + ' 个官方预置音色（2.0 ' + voices.filter((v) => v.ver === '2.0').length + ' 个，1.0 ' + voices.filter((v) => v.ver === '1.0').length + ' 个），版本跟着音色自动配。' : '',
+          '还出不了声就看这两处：',
+          h('a', { key: 'k2', href: 'https://console.volcengine.com/speech/new/setting/apikeys?projectName=default', target: '_blank', rel: 'noreferrer' }, 'API Key'),
+          '（别的服务的 Key 不通用）、',
+          h('a', { key: 'o2', href: 'https://console.volcengine.com/speech/app', target: '_blank', rel: 'noreferrer' }, '开通管理'),
+          '（新账号要在「语音合成大模型」那一项点开通，开通后等几分钟生效）。音色也要账号里开通过才能念，报「speaker permission denied」就换一个。'),
+      ]
+    }
+
     function Voice({ st, draft, setDraft, toast, reload }) {
       const f = useField(draft, setDraft)
       const [txt, setTxt] = useState('晚安啦，今天也辛苦了，明天见～')
@@ -1806,6 +1872,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             { value: 'edge', label: '微软 edge-tts', desc: st.voice.edgeInstalled ? '在线，音色自然（已装好）' : '在线，音色自然（还没装）' },
             { value: 'cosyvoice', label: '本地 CosyVoice', desc: '自己部署的 CosyVoice 服务，可克隆音色' },
             { value: 'gptsovits', label: '本地 GPT-SoVITS', desc: 'GPT-SoVITS api_v2，用参考音频定音色' },
+            { value: 'volcano', label: '豆包语音（火山）', desc: '只填 API Key，选个音色就行' },
             { value: 'http', label: '其他 HTTP 接口', desc: '任意返回音频的地址' },
             { value: 'windows', label: 'Windows 自带', desc: '离线可用，机械感重一些' },
           ])),
@@ -1839,6 +1906,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h(Row, { key: 'a', label: '参考音频路径', hint: '服务那台电脑上的路径' }, f.text('voice.gptsovits.refAudio', { size: 'wide' })),
             h(Row, { key: 'p', label: '参考音频的文字' }, f.text('voice.gptsovits.promptText', { size: 'wide' })),
           ] : null,
+          draft.voice.engine === 'volcano' ? h(VolcanoVoice, { key: 'volcano', draft, setDraft }) : null,
           draft.voice.engine === 'http' ? [
             h(Row, { key: 'u', label: '接口地址', hint: 'GET：地址里带 {text}；POST：填接口地址就行' }, f.text('voice.http.urlTemplate', { size: 'wide', placeholder: 'https://openspeech.bytedance.com/api/v1/tts' })),
             h(Row, { key: 'm', label: '请求方式' }, f.select('voice.http.method', [{ value: 'GET', label: 'GET' }, { value: 'POST', label: 'POST' }], { width: 140 })),

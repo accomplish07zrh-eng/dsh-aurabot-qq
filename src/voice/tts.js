@@ -276,6 +276,118 @@ export async function httpSynth(text, c) {
   return saveAudio(buf, c.sampleRate || 24000)
 }
 
+// ---------------------------------------------------------------- 豆包语音（火山引擎）预设
+// 地址、请求头、请求体全部写死在这里，面板上只让人填 API Key、选音色。
+// 坑：v3 接口返回的不是一个 JSON，是「一堆 JSON 首尾相连」（音频一块一块放在 data 里，
+// 最后一段 code=20000000 表示结束）。所以不能 JSON.parse 整段，得一段段扒出来拼回去。
+
+// 走代理网关或自测时可以用环境变量指到别的地方
+const VOLCANO_URL = process.env.AURABOT_VOLCANO_URL || 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
+
+/** 按大括号配平，从一串连着的 JSON 里切出每个完整对象。 */
+function splitJsonObjects(raw) {
+  const out = []
+  let depth = 0
+  let start = -1
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (ch === '\\') esc = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') { inStr = true; continue }
+    if (ch === '{') { if (depth === 0) start = i; depth++ }
+    else if (ch === '}') {
+      depth--
+      if (depth === 0 && start >= 0) { out.push(raw.slice(start, i + 1)); start = -1 }
+    }
+  }
+  return out
+}
+
+/** 音色 id → 模型版本。2.0 音色 id 里带 uranus，其余都是 1.0；混用会报 speaker permission denied。 */
+export function volcanoResourceFor(voiceType) {
+  return /uranus/i.test(String(voiceType || '')) ? 'seed-tts-2.0' : 'seed-tts-1.0'
+}
+
+/** 火山的错误码翻成人话，直接显示在面板/日志上。 */
+function volcanoHint(code, message) {
+  const m = String(message || '')
+  const n = Number(code) || 0
+  // 这个码不只代表「填错」：刚开通语音合成、或者刚建的 Key，火山要过几分钟才认，也会回它
+  if (n === 45000010 || /Invalid X-Api-Key/i.test(m)) return 'API Key 没被认出来：先确认是「语音技术 → 设置 → API Key」页复制的（方舟/大模型的 Key 不通用）、没被禁用；刚开通服务或刚建 Key 的话，等几分钟再试一次'
+  // 1.0 和 2.0 是两个产品，只开通一个的话，换到另一种音色就会撞上这条
+  if (n === 45000030 || /resource not granted/i.test(m)) return '这个音色要的模型没开通（45000030）：id 带 uranus 的是 2.0，带 moon / mars 的是 1.0，两种要在「开通管理」里分别开通。账号只开了一个的话，换回另一种音色，或者去控制台把另一个也开了（开通后等几分钟生效）'
+  if (n === 55000000 || /mismatched with speaker/i.test(m)) return '音色和模型版本对不上：id 里带 uranus / vv 的要配 seed-tts-2.0，带 moon / mars 的配 seed-tts-1.0'
+  if (n === 40402003 || /TTSExceededTextLimit/i.test(m)) return '这段文字太长，火山一次念不完，拆成几段发'
+  if (/concurrency|quota/i.test(m)) return '火山的并发额度用完了，等几秒再试'
+  return ''
+}
+
+export async function volcanoSynth(text, c) {
+  const apiKey = String(c.apiKey || '').trim()
+  if (!apiKey) throw new Error('豆包语音：还没填 API Key')
+  const speaker = String(c.voiceType || 'zh_female_vv_uranus_bigtts')
+  // 音色和模型版本必须配对，所以没显式指定时就按音色自己认：id 带 uranus 的是 2.0，其余是 1.0
+  const resourceId = String(c.resourceId || '').trim() || volcanoResourceFor(speaker)
+  const speed = Number(c.speedRatio) || 1
+
+  const audioParams = { format: 'mp3', sample_rate: 24000 }
+  // 语速 1.0 就不传，省得某些音色不认这个字段
+  if (Math.abs(speed - 1) > 0.001) audioParams.speech_rate = Math.round((speed - 1) * 100)
+
+  const r = await fetch(VOLCANO_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Api-Key': apiKey,
+      'X-Api-Resource-Id': resourceId,
+      'X-Api-Request-Id': randomUUID(),
+    },
+    body: JSON.stringify({
+      user: { uid: 'aurabot' },
+      req_params: { text, speaker, audio_params: audioParams },
+    }),
+    signal: AbortSignal.timeout(120000),
+  })
+
+  const raw = await r.text()
+  if (!r.ok) {
+    let j = null
+    try { j = JSON.parse(raw) } catch (e) {}
+    const code = (j && j.header && j.header.code) || (j && j.code)
+    const msg = (j && j.header && j.header.message) || (j && j.message) || raw
+    throw new Error(volcanoHint(code, msg) || `豆包语音 HTTP ${r.status}：${String(msg).slice(0, 160)}`)
+  }
+
+  const parts = []
+  let firstError = ''
+  for (const seg of splitJsonObjects(raw)) {
+    let j = null
+    try { j = JSON.parse(seg) } catch (e) { continue }
+    const h = j.header && typeof j.header === 'object' ? j.header : j
+    const code = h.code
+    // 0 = 音频块，20000000 = 结束；别的码都算失败
+    if (code && code !== 0 && code !== 20000000 && !firstError) firstError = `${code} ${h.message || ''}`
+    if (typeof j.data === 'string' && j.data.length > 20) parts.push(Buffer.from(j.data, 'base64'))
+  }
+
+  if (!parts.length) {
+    const sp = firstError.indexOf(' ')
+    const code = sp > 0 ? firstError.slice(0, sp) : '0'
+    const msg = sp > 0 ? firstError.slice(sp + 1) : firstError
+    throw new Error(volcanoHint(code, msg) || `豆包语音没返回音频：${raw.slice(0, 160)}`)
+  }
+
+  const buf = Buffer.concat(parts)
+  if (buf.length < 400) throw new Error('豆包语音返回的音频太短：' + raw.slice(0, 160))
+  return saveAudio(buf, 24000)
+}
+
 /** 说话语音的后处理：目前原样返回（RVC 换音色只用在翻唱上，语音条直接用 TTS 的声音）。 */
 export const voiceConverters = []
 
@@ -287,7 +399,7 @@ export async function textToSpeech(text, opt = {}, log) {
   if (!clean) throw new Error('没有要念的文字')
   let file = ''
   let engine = ''
-  const local = { cosyvoice: cosyvoiceSynth, gptsovits: gptsovitsSynth, http: httpSynth }[opt.engine]
+  const local = { cosyvoice: cosyvoiceSynth, gptsovits: gptsovitsSynth, http: httpSynth, volcano: volcanoSynth }[opt.engine]
   if (local) {
     try {
       file = await local(clean, opt[opt.engine] || {})
