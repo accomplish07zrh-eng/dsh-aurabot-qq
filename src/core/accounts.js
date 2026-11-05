@@ -100,6 +100,18 @@ export function createAccount({ id, name, persona } = {}) {
   }
   cfg.bridge = { ...DEFAULTS.bridge, token: '' }
   cfg.workspaceDir = ''
+  // 新实例不继承旧实例的群/私聊白名单、群覆盖、按聊天模型
+  cfg.allow = { private: [], groups: [] }
+  if (cfg.group) {
+    cfg.group.overrides = {}
+    if (cfg.group.ownerBrief) cfg.group.ownerBrief.groups = []
+  }
+  if (cfg.titleFilter) cfg.titleFilter.groups = []
+  if (cfg.speakUp) cfg.speakUp.allow = []
+  if (cfg.chatModels) {
+    cfg.chatModels.privates = {}
+    cfg.chatModels.groups = {}
+  }
   // 新建账号用原始示范人格「大肥鱼」，不继承当前默认账号的人格。
   cfg.persona = { ...(cfg.persona || {}), current: String(persona || 'dafeiyu') }
 
@@ -135,16 +147,3 @@ export function createAccount({ id, name, persona } = {}) {
   saveAccounts(next)
   return { account: loadAccounts().find((a) => a.id === accountId), config: cfg }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
