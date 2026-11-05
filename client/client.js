@@ -5022,7 +5022,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           if (r && r.ok) setList(applyOrder(r.list || []))
         }).catch(() => {})
       }, [])
-      useEffect(() => { load() }, [load])
+      useEffect(() => {
+        load()
+        const timer = setInterval(load, 20000)
+        return () => clearInterval(timer)
+      }, [load])
       const switchTo = (prefix) => {
         if (!prefix || prefix === API) return
         onSwitch(prefix)
@@ -5039,7 +5043,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const modal = open ? h(AccountModal, { name, setName, err, create, close: () => setOpen(false) }) : null
       const tabs = list.map((a) => {
         const active = a.prefix === API
-        const title = `${a.name || a.id} · QQ ${a.botQQ || '未填'} · ${a.enabled ? '总开关开' : '总开关关'} · ${a.online ? '在线' : '离线'} · 拖动排序`
+        const displayName = a.nickname || a.name || a.id
+        const title = `${displayName} · QQ ${a.botQQ || '未填'} · ${a.enabled ? '总开关开' : '总开关关'} · ${a.online ? '在线' : '离线'} · 拖动排序`
         const dragging = dragId === a.id
         const over = overId === a.id && dragId && dragId !== a.id
         return h('button', {
@@ -5069,7 +5074,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           },
           onDragEnd: () => { setDragId(''); setOverId('') },
         },
-          h('span', { className: 'ab-acct-name' }, a.name || a.id),
+          h('span', { className: 'ab-acct-name' }, displayName),
           h('span', { className: 'ab-acct-dots' },
             h('span', { className: 'ab-acct-dot switch' + (a.enabled ? ' on' : ''), title: a.enabled ? '总开关开' : '总开关关' }, '●'),
             h('span', { className: 'ab-acct-dot online' + (a.online ? ' on' : ''), title: a.online ? '在线' : '离线' }, '●')))
@@ -5258,6 +5263,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     return module.exports
   },
 })
+
+
 
 
 

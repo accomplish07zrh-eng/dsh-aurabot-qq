@@ -1919,9 +1919,14 @@ export function apply(ctx) {
     const cfg = loadConfigFor(account.id)
     const snow = rt?.snowluma?.detect?.() || {}
     const snowRunning = rt?.snowluma?.running ? await rt.snowluma.running().catch(() => false) : false
+    let nickname = ''
+    if (rt && rt.onebot?.state === 'connected') {
+      try { nickname = String((await rt.onebot.call('get_login_info', {}, { timeoutMs: 2500 }))?.nickname || '') } catch (error) {}
+    }
     return {
       id: account.id,
       name: account.name,
+      nickname,
       slot: account.slot,
       prefix: account.slot === 'aurabot' ? '/aurabot/api' : `/${account.slot}/api`,
       enabled: account.enabled !== false && cfg.enabled === true,

@@ -80,7 +80,11 @@ export function createAccount({ id, name, persona } = {}) {
   if (accounts.some((a) => a.id === accountId)) throw new Error(`账号 ${accountId} 已经存在`)
 
   const template = withAccount('default', () => loadConfig())
-  const cfg = JSON.parse(JSON.stringify(template))
+  // 新实例从插件默认配置开始，只继承主人的身份和权限；模型/语音/平台登录等一律用默认值。
+  const cfg = JSON.parse(JSON.stringify(DEFAULTS))
+  for (const k of ['ownerQQ', 'ownerName', 'ownerLevel', 'approvalNotify', 'approvalViaQQ', 'profilePerms', 'qqApi', 'longTasks', 'subagentBackground']) {
+    if (template[k] !== undefined) cfg[k] = JSON.parse(JSON.stringify(template[k]))
+  }
   cfg.enabled = false
   cfg.dryRun = true
   cfg.setupDone = false
@@ -100,23 +104,8 @@ export function createAccount({ id, name, persona } = {}) {
   }
   cfg.bridge = { ...DEFAULTS.bridge, token: '' }
   cfg.workspaceDir = ''
-  // 新实例不继承旧实例的群/私聊白名单、群覆盖、按聊天模型
-  cfg.allow = { private: [], groups: [] }
-  if (cfg.group) {
-    cfg.group.overrides = {}
-    if (cfg.group.ownerBrief) cfg.group.ownerBrief.groups = []
-  }
-  if (cfg.titleFilter) cfg.titleFilter.groups = []
-  if (cfg.speakUp) cfg.speakUp.allow = []
-  if (cfg.chatModels) {
-    cfg.chatModels.privates = {}
-    cfg.chatModels.groups = {}
-  }
-  // 新建账号用原始示范人格「大肥鱼」，不继承当前默认账号的人格。
   cfg.persona = { ...(cfg.persona || {}), current: String(persona || 'dafeiyu') }
-
-  // 模块/模型/权限等初始配置复制默认账号；人格固定用插件自带的大肥鱼示范。
-  cfg.modules = JSON.parse(JSON.stringify(template.modules || {}))
+  cfg.modules = JSON.parse(JSON.stringify(DEFAULTS.modules || {}))
 
   ensureDir(accountDir(accountId))
   try {
@@ -147,3 +136,6 @@ export function createAccount({ id, name, persona } = {}) {
   saveAccounts(next)
   return { account: loadAccounts().find((a) => a.id === accountId), config: cfg }
 }
+
+
+
