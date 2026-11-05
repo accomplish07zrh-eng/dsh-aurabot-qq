@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseReply, stripMarkdown, bubbleDelay } from '../src/chat/reply.js'
-import { decideGroupReply, policyFor, inQuietHours, DEFAULT_GROUP_POLICY } from '../src/chat/group-policy.js'
+import { decideGroupReply, engagedHint, policyFor, inQuietHours, DEFAULT_GROUP_POLICY } from '../src/chat/group-policy.js'
 import { parseMessageEvent, isStickerSegment, stickerSizeOk, imageSize } from '../src/chat/inbound.js'
 import { checkAllowed, levelFor, presetFor, isOwner, profileToolVisible, profilePermits } from '../src/chat/access.js'
 import { avatarSource } from '../src/modules/profile/index.js'
@@ -92,16 +92,38 @@ test('群聊：话题无关不插话，越相关越容易插，加入话题后�
   assert.notEqual(decideGroupReply(base({ relevance: 0.1, engagedUntil: 10_100_000 })).mode, 'engaged')
 })
 
-test('群聊安全刹车：短时间说太多就歇着，主人 @ 能叫动', () => {
+test('群聊安全刹车：短时间说太多就歇着，但明确被叫到的不拦（#182）', () => {
   const now = 10_000_000
   const eight = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => now - 10_000 * i)
-  assert.match(decideGroupReply(base({ mentioned: true, botReplyTimes: eight })).reason, /歇一会儿/)
+  // 刹车只拦她主动接话：@、引用、叫名字、主人 @ 都能叫动
+  assert.equal(decideGroupReply(base({ mentioned: true, botReplyTimes: eight })).mode, 'must')
+  assert.equal(decideGroupReply(base({ repliedToBot: true, botReplyTimes: eight })).mode, 'must')
+  assert.equal(decideGroupReply(base({ text: '肥鱼 露馅你很自豪吗', botReplyTimes: eight, rand: () => 0.99 })).mode, 'must')
   assert.equal(decideGroupReply(base({ mentioned: true, fromOwner: true, botReplyTimes: eight })).mode, 'must')
+  // 没被叫到、纯自己想说：照常刹车
+  assert.match(decideGroupReply(base({ botReplyTimes: eight, rand: () => 0.99 })).reason, /歇一会儿/)
   // 没到刹车线照常回
   assert.equal(decideGroupReply(base({ mentioned: true, botReplyTimes: eight.slice(0, 7) })).mode, 'must')
   // 单个字的唤醒词也算必回
   const p = policyFor({ wakeWords: ['鱼'] }, {}, 1)
   assert.equal(decideGroupReply(base({ policy: p, text: '这鱼真大', rand: () => 0.99 })).mode, 'must')
+})
+
+test('群聊：刚说完被追问「人呢」也算叫她，但要防 A/B 聊天误判（#182）', () => {
+  const now = 10_000_000
+  const said = [now - 60_000, now - 30_000] // 她这两分钟里说过话（刹车/「刚说完」都成立）
+  const ask = (o = {}) => decideGroupReply(base({ policy: policyFor({}, {}, 1), text: '人呢', lastIsBot: false, botReplyTimes: said, now, rand: () => 0.99, ...o }))
+  assert.equal(ask().mode, 'must')
+  assert.equal(ask().reason, '刚说完被追问')
+  // 她这几分钟没说过话：不认（群里 A/B 正常聊天，B 回 A 一句「人呢」）
+  assert.notEqual(ask({ botReplyTimes: [] }).mode, 'must')
+  // 这一条之前最近一条就是她：也不认（不是在追问她）
+  assert.notEqual(ask({ lastIsBot: true }).mode, 'must')
+  // 超过 12 字：不认
+  assert.notEqual(ask({ text: '你们谁知道这个东西到底要怎么弄啊？' }).mode, 'must')
+  // @ 了别人：不认（不管「@ 别人不算叫她」这个策略开没开）
+  assert.notEqual(ask({ atOthers: true }).mode, 'must')
+  assert.notEqual(ask({ atOthersAny: true }).mode, 'must')
 })
 
 test('topicRelevance', async () => {
@@ -162,7 +184,7 @@ test('stickerSizeOk 尺寸兜底', () => {
   assert.equal(stickerSizeOk({ width: 240, height: 240, bytes: 50_000 }), true)
   assert.equal(stickerSizeOk({ width: 1080, height: 1080, bytes: 50_000 }), false)
   assert.equal(stickerSizeOk({ width: 300, height: 100, bytes: 50_000 }), false)
-  assert.equal(stickerSizeOk({ width: 240, height: 240, bytes: 2_000_000 }), false)
+  assert.equal(stickerSizeOk({ width: 240, height: 240, bytes: 2_000_000 }), true, '大小不限')
 })
 
 test('imageSize 读 PNG 宽高', () => {
@@ -322,7 +344,7 @@ test('解析：合并转发记下 id，回复里的 <poke> 变成戳一戳', asy
 test('#6 改资料权限：默认仅主人私聊；所有人含群；关了都不行；执行时再查', async () => {
   const { normalize } = await import('../src/core/config.js')
   const d = normalize({ ownerQQ: '1' })
-  assert.deepEqual(d.profilePerms, { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner', heyboxBrowse: 'owner', heyboxLike: 'owner', heyboxComment: 'owner', heyboxPost: 'owner' })
+  assert.deepEqual(d.profilePerms, { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', biliComment: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner', heyboxBrowse: 'owner', heyboxLike: 'owner', heyboxComment: 'owner', heyboxPost: 'owner' })
   assert.equal(normalize({ profilePerms: { qqAvatar: 'boss', biliSign: 'all' } }).profilePerms.qqAvatar, 'owner', '乱填的回到默认')
   const ownerPm = { kind: 'private', userId: '1' }
   const otherPm = { kind: 'private', userId: '2' }
@@ -367,4 +389,19 @@ test('#32 工作区位置：面板填的绝对路径优先，相对路径 / 乱�
   assert.equal(workspaceDirOf(normalize({ workspaceDir: '/srv/aurabot/chats' })), '/srv/aurabot/chats')
   assert.equal(normalize({ workspaceDir: 'chats' }).workspaceDir, '')
   assert.equal(normalize({ workspaceDir: '..\\x' }).workspaceDir, '')
+})
+
+test('群聊：没人叫她时接话有上限，叫她就重新开始', () => {
+  const six = Array.from({ length: 6 }, (_, i) => 9_000_000 + i)
+  const o = { policy: DEFAULT_GROUP_POLICY, text: '随便聊聊', now: 10_000_000, hour: 12, relevance: 0.5, engagedUntil: 10_100_000, interjectTimes: six, recentTimes: [], botReplyTimes: [], rand: () => 0 }
+  assert.equal(decideGroupReply({ ...o, engagedRun: 5 }).mode, 'engaged')
+  assert.equal(decideGroupReply({ ...o, engagedRun: 6 }).reply, false, '兜底：接满了就回到插话规则，这里冷却和上限都不过')
+  assert.equal(decideGroupReply({ ...o, engagedRun: 6, mentioned: true }).mode, 'must')
+  assert.equal(decideGroupReply({ ...o, policy: { ...DEFAULT_GROUP_POLICY, engagedMax: 0 } }).reply, false)
+})
+
+test('群聊：接话提示告诉她连着说了几次，让她自己停', () => {
+  assert.doesNotMatch(engagedHint(1), /连着接了/)
+  assert.match(engagedHint(3), /连着接了 2 次/)
+  assert.match(engagedHint(3), /\[沉默\]/)
 })

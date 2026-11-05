@@ -70,6 +70,13 @@ const PNG = (() => {
   return b
 })()
 
+// 模拟视觉类扩展：钩子里记下收到几张图
+const peekDir = join(dataDir, 'modules', 'peek')
+mkdirSync(peekDir, { recursive: true })
+writeFileSync(join(peekDir, 'index.mjs'), `export default { id: 'peek', setup(api) {
+  api.on('prompt', (content) => { globalThis.__peekImages = content.filter((c) => c.type === 'image').length })
+} }`)
+
 const { createFakeDsh } = await import(`file:///${REPO}/test/helpers/fake-dsh.js`)
 const fake = createFakeDsh({ brain: async () => '我看见啦' })
 // 让宿主能回答「这个模型支不支持图片」
@@ -120,3 +127,12 @@ test('工具看图能力按当前聊天选的模型判断', async () => {
 })
 
 after(() => fake.dispose())
+
+test('模型看不了图：prompt 钩子还能拿到图片，发给模型前才换掉（#167）', async () => {
+  clearVisionCache()
+  globalThis.__peekImages = -1
+  await sendImage()
+  assert.equal(globalThis.__peekImages, 1)
+  assert.equal(fake.turns.at(-1).images, 0)
+})
+

@@ -53,17 +53,22 @@ export function matchSticker(items, query) {
   return bestScore >= 1.5 ? best : null
 }
 
-/** 自动配表情：先按回复里的词匹配，匹配不到随机挑一张。 */
+/** 打了这个标签的表情不参与自动配（太吓人、容易误会的梗图靠手动发）。 */
+export const NEVER_RANDOM = '不随机'
+
+/** 自动配表情：先按回复里的词匹配，匹配不到随机挑一张；带「不随机」标签的不参与。 */
 export function pickForReply(items, replyText) {
   if (!items.length) return null
-  const words = DEFAULT_TAGS.concat(items.flatMap((i) => i.tags || []))
+  const pool = items.filter((i) => !(i.tags || []).includes(NEVER_RANDOM))
+  if (!pool.length) return null // 全被打上标签时，这一轮就不自动配
+  const words = DEFAULT_TAGS.concat(pool.flatMap((i) => i.tags || []))
   for (const w of words) {
     if (w && String(replyText).includes(w)) {
-      const m = matchSticker(items, w)
+      const m = matchSticker(pool, w)
       if (m) return m
     }
   }
-  return items[Math.floor(Math.random() * items.length)]
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 /** 超过上限时该清掉哪张：只看偷来的，最少被发过的里最老的那张。 */
@@ -77,23 +82,40 @@ export function pickEvict(items) {
 export function createStickerStore({ dsh, getConfig, onebot, log }) {
   const recent = [] // 每小时限额
 
+  /** 面板里给起名单独挑的模型；没挑（或者只填了一半）就返回 null = 跟随聊天用的模型。 */
+  function captionModelOf(cfg = getConfig()) {
+    const m = cfg && cfg.stickers && cfg.stickers.captionModel
+    return m && m.provider && m.model ? { provider: m.provider, model: m.model } : null
+  }
+
   async function caption(buf, mime, hint) {
     try {
+      const cfg = getConfig()
+      const target = captionModelOf(cfg)
       // 模型看不了图就别硬发：会报错，名字也起不出来
-      if ((await canSeeImages(dsh, getConfig())) === false) {
+      if ((await canSeeImages(dsh, cfg, target)) === false) {
         log.debug('模型不支持看图，跳过表情起名')
-        return { name: '', tags: [] }
+        return { name: '', tags: [], noVision: true }
       }
-      const text = await askModel(dsh, {
-        cfg: getConfig(),
+      const ask = (extra = {}) => askModel(dsh, {
+        cfg,
+        ...(target ? { model: target } : {}),
         system: '你给表情包起名字。只输出一行：不超过 12 个字的中文备注，描述这个表情表达的情绪或内容（例如「委屈巴巴的小猫」「得意地叉腰」）。然后空格，再写 1~3 个标签，从这些里挑：' + DEFAULT_TAGS.join('、') + '。格式：备注 #标签1 #标签2',
         text: hint ? `QQ 给的描述是「${hint}」。请看图起名。` : '请看图起名。',
         images: [{ data: buf.toString('base64'), mediaType: mime }],
         // ⚠ 别给太小：模型会先思考，120 这种上限会被思考吃光，正文是空的（实测踩过）
         maxTokens: 1000,
         temperature: 0.2,
+        ...extra,
       })
-      if (!text) log.warn('看图起名：模型没给出文字')
+      let text = await ask()
+      // 推理模型的思考有时会把预算吃光，正文空着回来（和记忆提炼同一类毛病）：这次先关思考（模型支持的话），
+      // 再把预算放大；光放大预算、思考关不掉的话照样吃光。
+      if (!text) {
+        log.warn('看图起名：模型没给出文字，关掉思考、放大 token 预算重试一次')
+        text = await ask({ reasoningEffort: 'off', maxTokens: 2500, temperature: 0.1 })
+      }
+      if (!text) log.warn('看图起名：重试后仍然没有文字')
       const line = text.split(/\r?\n/).map((s) => s.trim()).find(Boolean) || ''
       const tags = [...line.matchAll(/#\s*([^\s#]+)/g)].map((m) => m[1]).filter((t) => t.length <= 6).slice(0, 3)
       const name = line.replace(/#\s*[^\s#]+/g, '').replace(/[「」"'“”]/g, '').trim().slice(0, 12)
@@ -114,7 +136,7 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
     const d = seg.data || {}
     let buf
     try {
-      buf = await segmentBytes(seg, onebot, { maxBytes: 1.5 * 1024 * 1024 })
+      buf = await segmentBytes(seg, onebot, { maxBytes: 1024 * 1024 * 1024 })
     } catch (error) {
       return { ok: false, reason: '下载失败：' + error.message }
     }
@@ -226,6 +248,29 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
     return { ok: true }
   }
 
+  /** 一次删一批：面板多选后一键删掉。fromQQ = 连 QQ 收藏里的那张一起删。 */
+  async function removeMany(md5s, { fromQQ = true } = {}) {
+    const list = [...new Set((Array.isArray(md5s) ? md5s : []).map((x) => String(x || '').trim()).filter(Boolean))]
+    if (!list.length) return { ok: false, removed: 0, message: '没选表情' }
+    const found = loadLibrary().items.filter((i) => list.includes(i.md5))
+    if (!found.length) return { ok: false, removed: 0, message: '这些表情已经不在库里了' }
+    let qqFailed = 0
+    if (fromQQ && !getConfig().dryRun) {
+      for (const it of found) {
+        if (!it.emojiId) continue
+        try { await onebot.call('delete_custom_face', { emoji_id: it.emojiId }) } catch (error) { qqFailed++; log.warn('从 QQ 收藏里删除失败：', error.message) }
+      }
+    }
+    for (const it of found) { try { unlinkSync(join(dir(), it.file)) } catch (error) {} }
+    const gone = new Set(found.map((i) => i.md5))
+    // 重新读一遍再写：后台可能刚给别的表情起完名，别把那些改动冲掉
+    const fresh = loadLibrary()
+    fresh.items = fresh.items.filter((i) => !gone.has(i.md5))
+    saveLibrary(fresh)
+    log.info(`批量删掉 ${found.length} 张表情${fromQQ ? '' : '（QQ 收藏保留）'}`)
+    return { ok: true, removed: found.length, qqFailed, message: `删掉了 ${found.length} 张${qqFailed ? `（${qqFailed} 张没从 QQ 收藏删掉）` : ''}` }
+  }
+
   function rename(md5, name, tags) {
     const lib = loadLibrary()
     const it = lib.items.find((i) => i.md5 === md5)
@@ -266,7 +311,7 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
       const named = []
       for (const url of urls) {
         let buf
-        try { buf = await fetchImage(url, { maxBytes: 5 * 1024 * 1024 }) } catch (error) { failed++; continue }
+        try { buf = await fetchImage(url, { maxBytes: 1024 * 1024 * 1024 }) } catch (error) { failed++; continue }
         const md5 = createHash('md5').update(buf).digest('hex')
         if (loadLibrary().items.some((i) => i.md5 === md5)) { existed++; continue }
         const r = await addFromBuffer(buf, { from: 'qq', toQQ: false })
@@ -292,5 +337,116 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
     return importing
   }
 
-  return { importFromQQ, collect, addFromBuffer, remove, rename, segmentFor, markUsed, trim, library: loadLibrary, match: (q) => matchSticker(loadLibrary().items, q), pickForReply: (t) => pickForReply(loadLibrary().items, t) }
+  // ---------- 批量补名字 / 标签 ----------
+  // 整理整个表情库：一张张交给模型看图起名（复用 caption，和偷表情同一套提示词），后台跑、面板轮询进度。
+  // 任务状态留在闭包里，关掉面板也照跑；模块卸载 / 重载时 dispose 负责叫停 —— 不然旧实例会接着调模型、写库，
+  // 和新实例互相覆盖。
+  let captionJob = null
+  let disposed = false
+
+  function captionStatus() {
+    const t = captionModelOf(getConfig())
+    const model = t ? t.provider + '/' + t.model : ''
+    if (!captionJob) return { running: false, total: 0, done: 0, ok: 0, failed: 0, skipped: 0, message: '', model }
+    return {
+      running: captionJob.running, total: captionJob.total, done: captionJob.done,
+      ok: captionJob.ok, failed: captionJob.failed, skipped: captionJob.skipped,
+      startedAt: captionJob.startedAt, current: captionJob.current, last: captionJob.last,
+      canceled: Boolean(captionJob.cancel), message: captionJob.message, model,
+    }
+  }
+
+  function captionCancel() {
+    if (!captionJob || !captionJob.running) return { running: false, message: '没有在跑的任务' }
+    captionJob.cancel = true
+    return { running: true, message: '这一张跑完就停' }
+  }
+
+  /** 模块卸载 / 重载：叫停后台任务（循环里每张之前也会看 cancel）。 */
+  function dispose() {
+    disposed = true
+    if (captionJob && captionJob.running) {
+      captionJob.cancel = true
+      captionJob.message = '模块重载，这一轮先停了'
+      log.info('表情库批量起名：模块卸载，停止后台任务')
+    }
+  }
+
+  /** 哪些要补：默认只补名字或标签空着的（文件丢了的跳过）；all = 全库重做。 */
+  function captionTargets({ all = false } = {}) {
+    const items = loadLibrary().items.filter((i) => existsSync(join(dir(), i.file)))
+    return all ? items : items.filter((i) => !String(i.name || '').trim() || !(i.tags || []).length)
+  }
+
+  /** 开始批量起名：立刻返回，真正干活在后台。 */
+  async function captionLibrary({ all = false, limit = 0 } = {}) {
+    if (disposed) return { ok: false, message: '模块重载了，重新打开面板再试' }
+    if (captionJob && captionJob.running) return { ok: false, message: '上一轮还在跑，等它跑完（或者点「停」）', status: captionStatus() }
+    const target = captionModelOf(getConfig())
+    if ((await canSeeImages(dsh, getConfig(), target)) === false) {
+      return {
+        ok: false,
+        message: target
+          ? '「起名用的模型」' + target.provider + '/' + target.model + ' 看不了图，起不了名字：换一个能看图的模型，或者把它清空、改用聊天模型'
+          : '当前模型看不了图，起不了名字：面板「模型」里把「视觉能力」改成「支持」，或者换一个能看图的模型',
+      }
+    }
+    let queue = captionTargets({ all })
+    const cap = Math.max(0, Number(limit) || 0)
+    if (cap) queue = queue.slice(0, cap)
+    if (!queue.length) return { ok: true, total: 0, message: all ? '表情库里还没有表情' : '每张都有名字和标签了（想全部重做就勾「全部重做」）' }
+    const job = { running: true, total: queue.length, done: 0, ok: 0, failed: 0, skipped: 0, startedAt: Date.now(), current: '', last: '', cancel: false, all, message: '' }
+    captionJob = job
+    log.info(`开始给 ${queue.length} 张表情补名字（${all ? '全部重做' : '只补空缺'}${target ? '，模型 ' + target.provider + '/' + target.model : ''}）`)
+    ;(async () => {
+      let streak = 0 // 连续失败几张就收手，别在额度用光 / 网络断了的时候还一路烧下去
+      for (const want of queue) {
+        if (job.cancel) break
+        if (streak >= 5) { job.message = `连续失败 ${streak} 张，先停了（模型或网络有问题）`; break }
+        // 一张一张来，别一瞬间把模型打满
+        await new Promise((r) => setTimeout(r, 350))
+        if (job.cancel) break
+        // 每张都读一遍最新的库：跑到一半用户改过名字、或者删了这张，就跳过
+        const it = loadLibrary().items.find((i) => i.md5 === want.md5)
+        if (!it || (!all && String(it.name || '').trim() && (it.tags || []).length)) { job.skipped++; job.done++; continue }
+        job.current = it.name || it.md5.slice(0, 8)
+        let buf
+        try { buf = readFileSync(join(dir(), it.file)) } catch (error) { job.failed++; job.done++ }
+        if (!buf) continue
+        const { name, tags, noVision } = await caption(buf, mimeOf(buf), it.summary || '')
+        if (!name) {
+          job.failed++
+          job.done++
+          // 跑到一半模型换成看不了图的（或者元数据变了）：再跑下去只会一路失败，直接收手
+          if (noVision) { job.message = '模型看不了图，先停了：换一个能看图的模型再试'; break }
+          streak++
+          continue
+        }
+        streak = 0
+        const l = loadLibrary()
+        const cur = l.items.find((i) => i.md5 === it.md5)
+        if (!cur) { job.skipped++; job.done++; continue }
+        cur.name = name
+        if (tags.length) cur.tags = tags
+        saveLibrary(l)
+        if (cur.emojiId && !getConfig().dryRun) {
+          try { await onebot.call('modify_custom_face', { emoji_id: cur.emojiId, desc: cur.name.slice(0, 20) }) } catch (error) { log.warn('写回 QQ 备注失败：', error.message) }
+        }
+        job.ok++
+        job.last = cur.name
+        job.done++
+      }
+      job.running = false
+      job.current = ''
+      if (!job.message) job.message = (job.cancel ? '停下来了：这轮' : '整理完了：') + `起了 ${job.ok} 张名字，跳过 ${job.skipped} 张，失败 ${job.failed} 张`
+      log.info(job.message)
+    })().catch((error) => {
+      job.running = false
+      job.message = '出错了：' + error.message
+      log.warn('批量起名出错：', error.message)
+    })
+    return { ok: true, total: queue.length, started: true, status: captionStatus(), message: `开始给 ${queue.length} 张表情起名字（后台跑，可以关掉面板）` }
+  }
+
+  return { importFromQQ, collect, addFromBuffer, remove, removeMany, rename, segmentFor, markUsed, trim, captionLibrary, captionStatus, captionCancel, captionTargets, dispose, library: loadLibrary, match: (q) => matchSticker(loadLibrary().items, q), pickForReply: (t) => pickForReply(loadLibrary().items, t) }
 }

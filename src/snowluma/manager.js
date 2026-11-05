@@ -296,6 +296,11 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     child.stdout?.on('data', relay)
     child.stderr?.on('data', relay)
     const me = child
+    // 起不来是以 error 事件抛的，没人听就是未捕获异常，会把 DSH 整个带走（#135 同类）
+    me.on('error', (error) => {
+      log.warn('SnowLuma 启动失败：', error.message)
+      if (child === me) { child = null; childPid = 0 }
+    })
     me.on('exit', (code) => {
       log.warn(`SnowLuma 退出了（code ${code}）`)
       // 重置密码时旧进程晚一步退出：别把刚启动的新进程也当成退出了

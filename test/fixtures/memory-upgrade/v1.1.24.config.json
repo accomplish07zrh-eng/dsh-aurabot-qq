@@ -1,0 +1,12 @@
+{
+  "raw": {
+    "ownerQQ": "10000001",
+    "memory": { "enabled": false, "recallCount": "11", "dailyConsolidate": false, "consolidateAt": "6:45" }
+  },
+  "normalizedMemory": {
+    "enabled": false,
+    "recallCount": 11,
+    "dailyConsolidate": false,
+    "consolidateTimes": ["06:45", "18:45"]
+  }
+}

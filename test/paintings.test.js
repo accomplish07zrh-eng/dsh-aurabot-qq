@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 const dataDir = mkdtempSync(join(tmpdir(), 'aurabot-paint-'))
 process.env.AURABOT_DATA_DIR = dataDir
@@ -53,7 +53,7 @@ test('文件名里的时间和提示词能解析出来', () => {
 test('路径安全：挡住 ../、绝对路径和非图片', () => {
   assert.equal(safeName('../secret.png'), '')
   assert.equal(safeName('..\\secret.png'), '')
-  assert.equal(safeName('C:\\Windows\\x.png'), '')
+  assert.equal(safeName(resolve('C:\\Windows\\x.png')), '')
   assert.equal(safeName('notes.txt'), '')
   assert.equal(safeName('ok.png'), 'ok.png')
   assert.equal(paintingPath('不存在.png'), '')

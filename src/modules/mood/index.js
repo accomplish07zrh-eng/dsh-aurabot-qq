@@ -11,11 +11,12 @@ export default {
   tab: 'mood',
   files: ['features/companion.js'],
   setup(api) {
-    const mood = createMood({ getConfig: api.config, dsh: api.dsh })
+    const mood = createMood({ getConfig: api.config, dsh: api.dsh, log: api.log })
     api.context(({ chat }) => (chat.kind === 'system' ? '' : mood.contextLine()))
     api.on('activity', (a) => {
       const cfg = api.config()
       if (a.kind === 'in' && a.text) mood.observe(a.text, a.nickname, { direct: a.direct, owner: a.owner })
+      if (a.kind === 'silent' && a.text && cfg.mood.judge) mood.observe(a.text, a.nickname, { silent: true })
       // 模型判心情（开了才判）：系统提醒开头的是她自己主动找人
       if (a.kind === 'out' && a.reply && !String(a.chatId).startsWith('system:')) {
         const speakUp = String(a.userText).startsWith('【系统提醒')

@@ -33,6 +33,7 @@ const ALIASES = {
   模型: 'model', 换模型: 'model',
   唱: 'sing', 点歌: 'sing', 翻唱: 'sing',
   状态: 'status', 心情: 'mood', 日记: 'diary', 记住: 'remember', 记一下: 'remember',
+  搭话: 'speak', 主动搭话: 'speak',
   重开: 'reset', 开机: 'on', 关机: 'off', 帮助: 'help', 命令: 'help', h: 'help',
 }
 
@@ -49,6 +50,7 @@ const COMMANDS = {
   mood: '看她现在的心情',
   diary: '马上写一篇空间日记',
   remember: '让她记住一件事，如 /remember 我不吃香菜',
+  speak: '管主动搭话白名单：/speak 看名单，/speak add QQ 号 加人，/speak del QQ 号 移除',
   reset: '这个聊天重新开始（旧的对话在 DSH 侧栏里还能找回）',
   on: '打开总开关',
   off: '关掉总开关（之后除了命令什么都不回）',
@@ -125,6 +127,23 @@ export async function runCommand(cmd, msg, deps) {
       if (!inGroup) return '这个命令要在群里用'
       setGroup({ interjectChance: 0 })
       return '好，这个群里没人叫我我就不插话'
+    case 'speak': {
+      const c = getConfig()
+      const [verb = '', target = ''] = String(cmd.arg || '').split(/\s+/)
+      const list = c.speakUp.allow || []
+      if (!verb) return list.length ? `主动搭话白名单：${list.join('、')}` : '主动搭话白名单是空的，用 /speak add QQ 号 加人'
+      const qq = target.replace(/\D/g, '')
+      if (!/^\d{5,}$/.test(qq) || !/^(add|加|添加|del|rm|删|删除|移除)$/.test(verb)) return '用法：/speak add QQ 号，或 /speak del QQ 号'
+      if (/^(add|加|添加)$/.test(verb)) {
+        if (list.includes(qq)) return `${qq} 已经在白名单里了`
+        // 要能聊得上：顺手加进私聊白名单
+        setConfig({ ...c, speakUp: { ...c.speakUp, allow: [...list, qq] }, allow: { ...c.allow, private: [...new Set([...c.allow.private, qq])] } })
+        return `好，以后也会主动找 ${qq}（对方要是她的好友才发得出去）`
+      }
+      if (!list.includes(qq)) return `${qq} 不在白名单里`
+      setConfig({ ...c, speakUp: { ...c.speakUp, allow: list.filter((x) => x !== qq) } })
+      return `好，不再主动找 ${qq} 了`
+    }
     case 'chatty':
       if (!inGroup) return '这个命令要在群里用'
       setGroup({ interjectChance: 0.4, minRelevance: 0.1 })

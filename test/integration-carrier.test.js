@@ -2,6 +2,8 @@
 //   · carrier=pet 且桌宠在线 → 只推气泡（pet.dispatch 一次），本轮不发 QQ
 //   · carrier=pet 离线 + petFallbackToQQ=true → 回落走原 hub.deliver 发 QQ
 //   · carrier=pet 离线 + petFallbackToQQ=false → 本轮静默（不硬补）
+//   · 在线检查后离线，dispatch 已回落 QQ → 不再由 purpose 重发
+//   · 确认桌宠离线且未投递时按回落开关处理；投递结果不确定时不重发
 //   · carrier=qq（默认）→ 行为与从前完全一致（QQ 投递，不碰 pet）
 //   · pet 模块没在跑（api.use('pet')=null）按离线处理；专注模式（dispatch 返回 focus）静默不回落
 //   · 互斥铁律：任何情形一轮只发一处
@@ -32,8 +34,11 @@ function makeHub() {
     chatLogDays: () => [],
     chatLogOf: () => [],
     delivered: [],
+    deliveryOptions: [],
+    noted: [],
+    noteSaid(chatId, text) { this.noted.push({ chatId, text }) },
     async runSystemTurn() { return '主人，想到一件事想跟你说' },
-    async deliver(chatId, text) { this.delivered.push({ chatId, text }); return { missedAt: [] } },
+    async deliver(chatId, text, options) { this.delivered.push({ chatId, text }); this.deliveryOptions.push(options); return { missedAt: [] } },
   }
 }
 
@@ -81,10 +86,40 @@ test('carrier=pet 且桌宠在线：只推气泡（dispatch 一次、带 purpose
   assert.equal(pet.calls[0].text, '主人，想到一件事想跟你说', '气泡推的是本轮生成的发言')
   assert.ok(pet.calls[0].purpose, '事件带 purpose 字段（PET_MODULE_API 契约）')
   assert.equal(hub.delivered.length, 0, '互斥：本轮不发 QQ')
+  assert.deepEqual(hub.noted, [{ chatId: `private:${OWNER}`, text: '主人，想到一件事想跟你说' }], '气泡的话记进主人私聊（#133）')
   assert.equal(p.state().lastOutcome, 'sent')
   assert.equal(p.state().countToday, 1)
   assert.equal(cfg.ext.pet.carrier, 'pet', '投递前对齐 pet 侧镜像设置')
 })
+
+for (const petFallbackToQQ of [true, false]) {
+  test(`在线检查后掉线，dispatch 已回落 QQ：只发一次并记 sent（回落开关=${petFallbackToQQ}）`, async () => {
+    const hub = makeHub()
+    const qqSends = []
+    const sendQQ = (chatId, text) => qqSends.push({ chatId, text })
+    const originalDeliver = hub.deliver
+    hub.deliver = async function (chatId, text, options) {
+      sendQQ(chatId, text)
+      return originalDeliver.call(this, chatId, text, options)
+    }
+    const pet = makePet({ online: true, dispatchResult: { ok: true, via: 'qq' } })
+    const originalDispatch = pet.dispatch
+    pet.dispatch = async (args) => {
+      // 模拟 online 检查后连接断开：pet 自己回落并实际发送 QQ。
+      sendQQ(`private:${OWNER}`, args.text)
+      return originalDispatch(args)
+    }
+
+    const { r, p } = await runPurpose(hub, pet, { carrier: 'pet', petFallbackToQQ })
+    assert.equal(pet.calls.length, 1)
+    assert.deepEqual(qqSends, [{ chatId: `private:${OWNER}`, text: '主人，想到一件事想跟你说' }], 'QQ 物理发送恰好一次')
+    assert.deepEqual(hub.delivered, [], 'pet 已发出 QQ，purpose 不应调用 hub.deliver')
+    assert.deepEqual(hub.noted, [], 'pet 已处理 QQ，不重复记聊天流水')
+    assert.equal(r.outcome, 'sent')
+    assert.equal(p.state().lastOutcome, 'sent')
+    assert.equal(p.state().countToday, 1)
+  })
+}
 
 test('carrier=pet 桌宠离线 + petFallbackToQQ=true：回落走原 hub.deliver 发 QQ，不碰 dispatch', async () => {
   const hub = makeHub()
@@ -94,6 +129,7 @@ test('carrier=pet 桌宠离线 + petFallbackToQQ=true：回落走原 hub.deliver
   assert.equal(pet.calls.length, 0, '离线不调 dispatch（回落由 purpose 自己发，保住 own/userText 链路）')
   assert.equal(hub.delivered.length, 1)
   assert.equal(hub.delivered[0].chatId, `private:${OWNER}`)
+  assert.deepEqual(hub.deliveryOptions, [{ own: true, userText: '【系统提醒，不是主人说的话】（她主动找你）' }])
 })
 
 test('carrier=pet 桌宠离线 + petFallbackToQQ=false：本轮静默，QQ 与桌宠都不发', async () => {
@@ -132,6 +168,42 @@ test('carrier=pet 但 pet 模块没在跑（use 返回 null）+ 回落关：静�
   assert.equal(hub2.delivered.length, 0)
   assert.equal(p.state().lastOutcome, 'silent')
 })
+
+for (const petFallbackToQQ of [true, false]) {
+  test(`dispatch 确认离线且没有发送：按回落开关处理（回落开关=${petFallbackToQQ}）`, async () => {
+    const hub = makeHub()
+    const pet = makePet({ online: true, dispatchResult: { ok: false, reason: 'pet-offline' } })
+    const { r, p } = await runPurpose(hub, pet, { carrier: 'pet', petFallbackToQQ })
+    assert.equal(pet.calls.length, 1)
+    assert.equal(r.outcome, petFallbackToQQ ? 'sent' : 'silent')
+    assert.equal(p.state().lastOutcome, petFallbackToQQ ? 'sent' : 'silent')
+    assert.deepEqual(hub.delivered, petFallbackToQQ
+      ? [{ chatId: `private:${OWNER}`, text: '主人，想到一件事想跟你说' }]
+      : [])
+  })
+}
+
+for (const failure of ['fallback-failed', 'throw']) {
+  test(`dispatch ${failure} 时可能已经发送，不能再补发 QQ`, async () => {
+    const hub = makeHub()
+    const qqSends = []
+    const originalDeliver = hub.deliver
+    hub.deliver = async function (chatId, text, options) {
+      qqSends.push({ chatId, text })
+      return originalDeliver.call(this, chatId, text, options)
+    }
+    const pet = makePet({ online: true })
+    pet.dispatch = async ({ text }) => {
+      qqSends.push({ chatId: `private:${OWNER}`, text }) // 模拟发送后才遇到超时或异常
+      if (failure === 'throw') throw new Error('投递结果不确定')
+      return { ok: false, reason: failure }
+    }
+    const { r } = await runPurpose(hub, pet, { carrier: 'pet', petFallbackToQQ: true })
+    assert.equal(qqSends.length, 1)
+    assert.deepEqual(hub.delivered, [])
+    assert.equal(r.outcome, 'delivery-failed')
+  })
+}
 
 test('carrier=pet 在线但专注模式开着（dispatch 返回 focus）：不发也不回落，记 silent', async () => {
   const hub = makeHub()

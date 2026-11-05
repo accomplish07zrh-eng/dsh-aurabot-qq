@@ -19,6 +19,7 @@ import { registerSecret, redact } from './core/redact.js'
 import { createOneBotClient } from './onebot/client.js'
 import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, workspaceDirOf } from './chat/hub.js'
+import { grantOwner, moveWorkspace, realWorkspace } from './core/workspace-move.js'
 import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
 import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
@@ -28,8 +29,14 @@ import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
+import { createCommunity } from './core/community.js'
+import { createApprovalRelay } from './security/approval.js'
+import { captureSystemPrompt } from './security/leak-guard.js'
+import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
+import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
-import { createDangerGuard } from './security/danger.js'
+import { createDangerGuard, safeOwnedSession } from './security/danger.js'
+import { setSsrpMode, assertPublicUrl, fetchGuarded } from './core/net.js'
 import { BUILTINS } from './modules/index.js'
 
 export const name = 'aurabot'
@@ -42,13 +49,27 @@ const PKG = (() => {
 const VERSION = PKG.version
 const PREFIX = '/aurabot/api'
 
+/**
+ * 这个 DSH 会话是不是 Aurabot 的 QQ 聊天会话（私聊/群聊各对应一个 DSH 会话）。
+ * 桌宠的干活状态只该跟 DSH 自己发起的活儿走，聊天回合不算（#184：每句聊天都弹完工气泡太吵）。
+ */
+export function isChatSession(hub, session) {
+  try { return Boolean(session?.id && hub?.chatOfSession?.(session.id)) } catch (error) { return false }
+}
+
 export function apply(ctx) {
   const logger = createLogger({ dsh: ctx })
   const log = logger.child('core')
+  // 恢复备份必须在读配置之前：读完配置后内存里的旧状态会写回去
+  try {
+    const restored = applyPendingRestore()
+    if (restored) log.info(`已恢复备份：${restored} 个文件，原来的文件在 backups/ 里留了底`)
+  } catch (error) { log.error('恢复备份失败：', error.message) }
   let cfg = loadConfig()
   let mods = null
   let bridge = null
   const getConfig = () => cfg
+  setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
   const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token) }
   const setConfig = (next) => {
     const before = cfg
@@ -68,7 +89,7 @@ export function apply(ctx) {
   seedPersonas()
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
-  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, fn), `aurabot: 变量 ${n}`)
+  const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => captureSystemPrompt(n, cleanText(fn(...args)))), `aurabot: 变量 ${n}`)
   const rulesOpts = (kind) => (mods ? { off: mods.builtinOff(), extra: mods.rules(kind) } : {})
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
@@ -110,6 +131,7 @@ export function apply(ctx) {
   let pendingEvents = []
   let hub = null
   let dangerGuard = null // 危险命令确认（security.dangerConfirm 开着才生效）
+  let approvalRelay = null // DSH 要授权时在 QQ 私聊问主人（approvalViaQQ 开着才生效）
   async function checkLogin() {
     verifying = true
     pendingEvents = []
@@ -156,11 +178,18 @@ export function apply(ctx) {
             ? ev.message.filter((seg) => seg && seg.type === 'text').map((seg) => String(seg.data?.text || '')).join('')
             : ''
           if (dangerGuard.handleReply(`private:${ev.user_id}`, ev.user_id, text)) return
+          if (approvalRelay?.handleReply(`private:${ev.user_id}`, ev.user_id, text)) return
         }
         hub.onMessage(ev).catch((error) => log.error('处理消息出错：', error.message))
       }
+    } else if (ev.post_type === 'notice' && ev.notice_type === 'bot_offline') {
+      log.warn(`QQ 账号离线${ev.tag ? '（' + String(ev.tag).slice(0, 100) + '）' : ''}${ev.message ? '：' + String(ev.message).slice(0, 300) : ''}`)
     } else if (ev.post_type === 'notice' && ev.notice_type === 'notify' && ev.sub_type === 'poke') {
       hub.onPoke(ev).catch((error) => log.error('处理戳一戳出错：', error.message))
+    } else if (ev.post_type === 'notice' && ev.notice_type === 'group_upload') {
+      hub.onGroupFile(ev).catch((error) => log.error('处理群文件出错：', error.message))
+    } else if (ev.post_type === 'notice') {
+      hub.onNotice(ev).catch((error) => log.debug('处理通知出错：', error.message))
     }
   }
   const onebot = createOneBotClient({
@@ -240,10 +269,14 @@ export function apply(ctx) {
     stickers,
     tts,
     buildTools: (where) => mods.buildTools(where),
+    // 模块声明的能力（module.json capabilities）：子智能体委派这类要本机权限的能力靠它把关（一审 #177）
+    capabilitiesOf: (id) => (typeof mods.capabilitiesOf === 'function' ? mods.capabilitiesOf(id) : []),
     contextProviders: [(args) => mods.contextFor(args)],
     onActivity: (a) => mods.emit('activity', a),
     // 群聊话题和她的记忆有多相关（插话判断用）
     memoryScore: (text) => use('memory')?.topicScore?.(text) ?? 0,
+    dislikes: (qq) => use('memory')?.dislikes?.(qq) ?? false,
+    onMemoryCommand: (msg, text) => use('memory')?.handleCommand?.(msg, text),
     // QQ 里的主人命令（模块加的命令优先）
     onCommand: async (msg) => {
       const cmd = parseCommand(msg.text, mods.commands())
@@ -259,6 +292,8 @@ export function apply(ctx) {
     hooks: {
       message: (msg) => mods.claim('message', msg),
       reply: (text, info) => mods.filter('reply', text, info),
+      // 人格和规则的最终渲染值由 variable 在当前回合记录，发送时不重新生成。
+      secrets: () => [],
       deniedTools: () => bridge?.deniedTools() || [],
       groupDecide: (decision, info) => mods.filter('group/decide', decision, info),
       prompt: (content, info) => mods.filter('prompt', content, info),
@@ -308,13 +343,161 @@ export function apply(ctx) {
       send(res, 200, { ok: false, message: redact(String(error && error.message ? error.message : error)) })
     }
   }
-  const route = (path, handler) => ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: PREFIX + path, handler: (req, res) => answer(res, () => handler(req, res)) }), `aurabot: 路由 ${path}`)
+  // ---------- 面板级访问闸（安全基线，2026-11-02） ----------
+  // 背景：DSH 的 webServer 对插件路由**没有服务器级鉴权**，而面板接口是给本机面板用的管理接口
+  //（能改配置、能装模块、能取联动密钥、能下客户端包）。同机部署时它只绑回环，本来打不到；
+  // 但一旦用户把插件端口经反代发布到公网，整组管理接口就裸奔了。
+  // 因此：**所有管理面默认只允许回环访问**。要做远端管理必须显式开 panelRemoteAccess（并在
+  // 反代层再加一道认证——README 写明这是硬要求）。
+  // 【首审 P1-1】闸的覆盖范围不能只有 /panel/*：/state（能读到全部配置与密钥）、/save（能改配置）、
+  // /logs、/modules*（能装代码）、/bridge/token（直接返回联动密钥）、/snowluma/*（能改机器人密码）
+  // 这些**都是管理面**，必须一起纳入。只有客户端直连用的 /ext/<模块>/* 与 /asset/* 不受此闸限制
+  //（它们各自有 token 校验）。
+  const isLoopbackAddr = (ip) => {
+    const s = String(ip || '')
+    return s === '::1' || s === '127.0.0.1' || s === '::ffff:127.0.0.1' || /^127\./.test(s) || s.startsWith('::ffff:127.')
+  }
+  const normAddr = (ip) => String(ip || '').trim().replace(/^::ffff:/i, '').replace(/^\[|\]$/g, '')
+  /** 可信反代地址列表（security.trustedProxy，逗号分隔；留空 = 从不相信任何转发头）。 */
+  const trustedProxies = () => String(getConfig().security?.trustedProxy || '').split(',').map(normAddr).filter(Boolean)
+  /** 请求是否来自本机回环。
+   *  【首审 P1-2 修法】**socket 地址才是唯一可信来源**，X-Forwarded-For 是客户端自己能写的头。
+   *  旧实现「有 XFF 就只认最后一跳、不看 socket」→ 直连暴露时客户端自带
+   *  `X-Forwarded-For: 127.0.0.1` 就能 200 绕过（含 client-package 令牌下载）。
+   *  新口径：
+   *    ① socket 非回环 → 一律按 socket 判，转发头完全不看；
+   *    ② socket 是回环且来源命中 trustedProxy → 才采信 XFF 的**最后一跳**（反代追加的真实来源）；
+   *    ③ 其余（本机直连 / 进程内直调）→ 算本机。 */
+  const requestIsLocal = (req) => {
+    const sock = normAddr(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '')
+    // 没有 socket 信息 = 进程内直调（测试 / 内部转发），按本机处理。
+    // 真实 HTTP 请求一定有 remoteAddress，所以这里不会削弱对外拦截。
+    if (!sock) return true
+    if (!isLoopbackAddr(sock)) return false // ① 直连：只信 socket
+    const list = trustedProxies()
+    if (list.length && list.includes(sock)) { // ② 可信反代：看最后一跳
+      const hops = String(req?.headers?.['x-forwarded-for'] || '').split(',').map((x) => normAddr(x)).filter(Boolean)
+      if (hops.length) return isLoopbackAddr(hops[hops.length - 1])
+      // 【复审 2·P1-1】反代场景却没带 XFF：反代没配好（没追加转发头）。按回环放行等于
+      // 「反代后的所有用户都被当成本机」——这是 fail-open。兜成 fail-closed：拒绝。
+      return false
+    }
+    return isLoopbackAddr(sock) // ③ 本机直连
+  }
+  const panelNeedsLocal = () => getConfig().security?.panelRemoteAccess !== true
+  /** 管理面白名单：这些前缀之外的一律不算管理接口（客户端直连用的模块接口与素材不拦）。 */
+  const ADMIN_EXEMPT_PREFIXES = [PREFIX + '/ext/', PREFIX + '/asset/', PREFIX + '/open/']
+  /** 面板闸：命中管理面且不允许远端时拒绝。
+   *  【首审 P1-1】从「只拦 /panel/*」扩到「拦整个 PREFIX 下除客户端接口外的所有路由」——
+   *  默认拒绝比逐条列举安全：将来新增管理路由忘了登记也不会裸奔。
+   *  【复审 P1-2】/open/* 是给外部程序（curl / 脚本）用的开放接口，有自己的
+   *  `Authorization: Bearer 密钥` 鉴权（bridge.authorized），跨机带正确密钥必须放行——
+   *  它不是浏览器面板的一部分，不该被本机闸拦。 */
+  const panelBlocked = (req, res) => {
+    let path = ''
+    try { path = new URL(req.url, 'http://x').pathname } catch { return false }
+    if (!path.startsWith(PREFIX + '/') && path !== PREFIX) return false
+    if (ADMIN_EXEMPT_PREFIXES.some((p) => path.startsWith(p))) return false
+    if (!panelNeedsLocal()) return false
+    if (requestIsLocal(req)) return false
+    log.warn(`管理接口拒绝远端访问：${path}（来源不是回环；如需远端管理请开 security.panelRemoteAccess 并在反代加认证）`)
+    send(res, 403, { ok: false, message: '管理接口只允许本机访问。远端管理需在配置里显式开启 security.panelRemoteAccess，并务必在反向代理层再加一道认证' })
+    return true
+  }
+  /** 面板对外主机名（security.publicHostname，反代部署时填面板对外域名；空 = 只有回环算同源）。 */
+  const panelPublicHost = () => String(getConfig().security?.publicHostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  /** Origin 主机名是否算「同源」：回环 / localhost / 已配置的面板对外域名。 */
+  const originAllowed = (hostname) => {
+    const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    if (!h) return false
+    if (h === 'localhost' || h.endsWith('.localhost') || isLoopbackAddr(h)) return true
+    const ph = panelPublicHost()
+    return Boolean(ph) && h === ph
+  }
+  /**
+   * 【复审 2·P1-1】管理面 Host 允许名单（防 DNS rebinding）。
+   * 攻击：恶意页面把 evil.example 的 DNS rebind 到 127.0.0.1，然后 `fetch('http://evil.example:port/state')`
+   * ——socket 是本机回环（本机闸放行）、方法是 GET（不过 CSRF）→ 管理面被「同源可读」：
+   * /state、/logs、/bridge/token（返回 bearer）、client-package（含令牌）全部外泄。
+   * 修法：管理面请求的 Host 头必须在白名单内（回环 / localhost / publicHostname）。
+   * Host 头虽是请求方可控的，但浏览器同源策略保证「页面 JS 发出的请求 Host = 页面所在的源」——
+   * rebinding 页面发出的 Host 就是 evil.example 本身，进不了白名单；同源面板请求 Host 必然是
+   * 127.0.0.1 / localhost / publicHostname 之一。非浏览器客户端（curl/脚本）不受浏览器防护，
+   * 但它们也不是 rebinding 载体，且有各自的鉴权层。
+   */
+  const hostAllowedForAdmin = (hostRaw) => {
+    // 复审 3·小建议：先剥端口再剥方括号。IPv6 回环 Host 是 `[::1]:5099`——
+    // 若先剥 `[` 再剥 `]`，结尾已是数字，`]` 剥不掉，端口剥完剩 `::1]`，会被 403。
+    const h = String(hostRaw || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    if (!h) return false
+    if (h === 'localhost' || h.endsWith('.localhost')) return true
+    if (isLoopbackAddr(h)) return true
+    const ph = panelPublicHost()
+    return Boolean(ph) && h === ph
+  }
+  /** Host 校验 + 失败响应。只用于管理面（模块路由的 Host 另有 Host 闸策略）。 */
+  const adminHostBlocked = (req, res) => {
+    const hostHeader = String(req.headers?.host || '')
+    if (hostAllowedForAdmin(hostHeader)) return false
+    log.warn(`管理接口拒绝异常 Host：${hostHeader}（疑似 DNS rebinding；白名单：回环/localhost/security.publicHostname）`)
+    send(res, 403, { ok: false, message: '管理接口拒绝该 Host（只接受本机回环、localhost 或已配置的面板对外域名）' })
+    return true
+  }
+  /** 【复审 P1-1】CSRF 闸：所有改状态的方法都要过同源校验。
+   *  背景（复审实测）：恶意网页可以从攻击者页面 `fetch('http://127.0.0.1:<port>/save', {method:'POST'})`——
+   *  请求 socket 是本机回环（面板闸放行）、方法 POST、跨站。没有 CSRF 校验的话
+   *  `/save`、`/panel/pet/public-base`、rotate、client-package 全都能被恶意页面打穿，无需暴露端口。
+   *  口径：
+   *    ① 只管写方法（GET/HEAD/OPTIONS 不管——它们不该有副作用）；
+   *    ② 浏览器一定带 `Sec-Fetch-Site`：值不在 {same-origin, same-site, none} → 跨站，拒；
+   *    ③ 浏览器跨站 fetch 也一定带 `Origin`：主机名不在同源白名单 → 拒；
+   *    ④ 两者都没有 = 非浏览器客户端（curl / 脚本）——不是 CSRF 载体，放行，
+   *       它们的防线是各自的鉴权（管理面 = 本机闸，/open/* = Bearer 密钥）。 */
+  const csrfBlocked = (req, res) => {
+    const method = String(req.method || 'GET').toUpperCase()
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false
+    const site = String(req.headers?.['sec-fetch-site'] || '').trim().toLowerCase()
+    if (site && !['same-origin', 'same-site', 'none'].includes(site)) {
+      log.warn(`CSRF 拒绝（Sec-Fetch-Site=${site}）：${req.method} ${req.url}`)
+      send(res, 403, { ok: false, message: '跨站请求被拒绝（Sec-Fetch-Site 不符）' })
+      return true
+    }
+    const origin = String(req.headers?.origin || '').trim()
+    if (origin) {
+      let host = ''
+      try { host = new URL(origin).hostname } catch {}
+      if (!originAllowed(host)) {
+        log.warn(`CSRF 拒绝（Origin=${origin}）：${req.method} ${req.url}`)
+        send(res, 403, { ok: false, message: '跨站请求被拒绝（Origin 不在同源白名单）' })
+        return true
+      }
+    }
+    return false
+  }
+  /** 面板闸：面板写/读接口统一过它（见上方 panelBlocked 说明）。
+   *  opts.skipHostCheck：给 /open/* 这类「非浏览器、自带密钥鉴权」的接口用——
+   *  它们没有浏览器同源概念，跨机调用是正常用法，Host 允许名单不该拦。 */
+  const route = (path, handler, opts = {}) => ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREFIX + path,
+    handler: (req, res) => answer(res, () => {
+      if (panelBlocked(req, res)) return undefined
+      if (!opts.skipHostCheck && adminHostBlocked(req, res)) return undefined // DNS rebinding 防护（含 GET）
+      if (csrfBlocked(req, res)) return undefined
+      return handler(req, res)
+    }),
+  }), `aurabot: 路由 ${path}`)
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: PREFIX, // DSH 按「路径 = 前缀 或 以 前缀/ 开头」匹配，前缀本身不带结尾的 /
     handler: (req, res) => answer(res, () => {
       let path = ''
       try { path = new URL(req.url, 'http://x').pathname } catch (error) {}
+      // 【复审 2·P1-2】模块 prefix 路由也过 CSRF：实测本机 socket + 恶意 Origin 能跨站打
+      // POST /aurabot/api/heybox/run、/ext/phone/run 等无 token 的模块路由（真实触发逛/ADB）。
+      // 模块路由有自己的 Host 闸与鉴权，但同样缺跨站防护；桌宠 native 客户端不带 Origin，
+      // 不受影响；桌面面板的 fetch 是同源，也不受影响。
+      if (csrfBlocked(req, res)) return undefined
       return mods.handle(path, req, res)
     }),
   }), 'aurabot: 模块接口')
@@ -341,9 +524,19 @@ export function apply(ctx) {
     log: logger.child('危险命令'),
     deliver: (chatId, text) => hub.sendText(chatId, text),
     chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
+    // tools/pre-execute 是进程级的，同一个 DSH 里主人自己开的会话也会走到这里；那些会话不归这个守卫管
+    // 判断不出来（hub.isOwnedSession 缺失 / 抛错）时 safeOwnedSession 返回 true，走原 deny 逻辑；
+    // 只有明确 false（宿主自己的 GUI/CLI 会话）才放行给 DSH 自己的权限系统，别在异常时 fail-open。
+    isOwnedSession: safeOwnedSession(typeof hub?.isOwnedSession === 'function' ? (sessionId) => hub.isOwnedSession(sessionId) : null),
     ownerQQ: () => cfg.ownerQQ,
   })
   core.dangerGuard = dangerGuard
+  approvalRelay = createApprovalRelay({ getConfig, deliver: (chatId, text) => hub.sendText(chatId, text), chatOfSession: (id) => hub.chatOfSession(id), log })
+  ctx.effect(() => {
+    let off = null
+    try { off = ctx.on('approval/request', (request, next) => approvalRelay.onRequest(request, next)) } catch (error) { log.debug('挂审批应答失败：', error.message) }
+    return () => { try { if (typeof off === 'function') off() } catch (error) {} }
+  }, 'aurabot: QQ 审批')
   ctx.effect(() => {
     let off = null
     try { off = ctx.on('tools/pre-execute', (exec, next) => dangerGuard.preExecute(exec, next)) } catch (error) { log.debug('挂危险命令确认失败：', error.message) }
@@ -362,6 +555,16 @@ export function apply(ctx) {
     }
     return Number.isInteger(port) && port > 0 && port < 65536 ? port : 0
   }
+  // ---------- 桌宠远端直连（publicBaseUrl，2026-11-02）----------
+  // 单一真相：ext.pet.publicBaseUrl（pet 模块 api.settings() 读同一键；面板写入通道见 /panel/pet/config 与
+  // /panel/pet/public-base）。合法 http(s) URL 才生效；配置后 pet 的 host.json 写远端地址、guard 放行远端
+  // Host/Origin、面板把 Electron 三键换成「下载客户端包」。未配置时 pet 一切行为与旧版一致（同机零退化）。
+  function publicBaseUrlOf() {
+    const raw = String(getConfig().ext?.pet?.publicBaseUrl || '').trim().replace(/\/+$/, '')
+    if (!/^https?:\/\//i.test(raw)) return ''
+    try { const u = new URL(raw); if (!u.hostname) return '' } catch { return '' }
+    return raw
+  }
   function injectPetPort() {
     const port = webPortOf()
     if (!port) return false
@@ -369,9 +572,65 @@ export function apply(ctx) {
   }
   mods.listen('module/start', (id) => { if (id === 'pet') injectPetPort() })
 
+  let unloaded = false
+  const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
   booted.then(() => injectPetPort()).catch(() => {})
-  booted.then(() => bridge.refresh())
+  booted.then(() => (unloaded ? [] : community.migrate())).catch((error) => log.warn('搬到社区库的模块处理失败：', error.message))
+    .then(async () => {
+      // 恢复备份后把市场模块装回来；没装上的留着，下次启动再试
+      const left = []
+      for (const id of pendingModules()) {
+        if (unloaded) return
+        const r = await community.install(id)
+        if (!r.ok && !/自己的文件夹/.test(r.message)) { left.push(id); log.warn(`恢复模块「${id}」没装上，下次启动再试：`, r.message) }
+      }
+      if (!unloaded) setPendingModules(left)
+    }).catch((error) => log.warn('恢复模块失败：', error.message))
+  booted.then(() => { if (!unloaded) bridge.refresh() })
+
+  // ---------- 审批请求：DSH 要授权时把请求发到 QQ ----------
+  // 说明：DSH 的批准动作只能由界面回答（host 拿不到应答通道），所以这里只做通知。
+  const approvalSeen = new Map()
+  // 授权通知只看 Aurabot · QQ 工作区：既包括 hub 映射的聊天会话，也包括同一工作区里
+  // 主人手动打开 / 调试 / 新建的会话。别的 DSH 项目的会话一律不转到 QQ。
+  function isAurabotWorkspaceSession(session) {
+    if (!session?.id) return false
+    try { if (hub?.chatOfSession?.(session.id)) return true } catch (error) {}
+    try {
+      const reg = ctx.workspaceRegistry || ctx.get?.('workspaceRegistry')
+      const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
+      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
+      return Boolean(ws?.sessionIds?.some((sid) => String(sid) === String(session.id)))
+    } catch (error) {
+      return false
+    }
+  }
+  async function notifyApproval(session, event) {
+    try {
+      if (!cfg.enabled || cfg.dryRun || cfg.approvalNotify === false) return
+      if (!isAurabotWorkspaceSession(session)) return
+      const d = event.data || {}
+      const id = String(d.id || '')
+      if (!id || approvalSeen.has(id)) return
+      approvalSeen.set(id, Date.now())
+      // 等一下看 QQ 有没有问：问了就不用再通知；没问（比如审批没走到插件）照常通知，主人不会什么都收不到
+      if (approvalRelay?.handles(session?.id)) {
+        await new Promise((r) => setTimeout(r, 1500))
+        if (approvalRelay.askedRecently()) return
+      }
+      if (approvalSeen.size > 200) { for (const [k, t] of approvalSeen) if (Date.now() - t > 6 * 3600_000) approvalSeen.delete(k) }
+      let title = ''
+      try { title = String(session?.title || session?.id || '') } catch (error) {}
+      const lines = ['【要授权】' + (d.toolName || '未知工具')]
+      if (d.reason) lines.push('原因：' + String(d.reason).slice(0, 300))
+      if (title) lines.push('会话：' + title.slice(0, 60))
+      lines.push('这个会话的授权要在 DSH 界面里点「批准」。')
+      await hub.sendText(`private:${cfg.ownerQQ}`, lines.join('\n'))
+    } catch (error) {
+      log.debug?.('审批通知失败：', error.message)
+    }
+  }
 
   // ---------- 盯会话：一轮结束就发回 QQ ----------
   ctx.effect(() => {
@@ -382,7 +641,12 @@ export function apply(ctx) {
         log.warn('会话事件处理出错：', error.message)
       }
       // 桌宠的「干活状态」动画 / 结束提醒：把同一条事件顺手转给 pet 模块（模块没开就是 null，纯旁路）
-      try { use('pet')?.onSessionEvent?.(session, event) } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
+      // QQ 聊天会话不转：聊天每句都有 turn/start→turn/end，桌宠会每句话弹一次「完工」气泡/动作（#184）
+      try {
+        if (!isChatSession(hub, session)) use('pet')?.onSessionEvent?.(session, event)
+      } catch (error) { log.debug?.('桌宠状态联动出错：', error.message) }
+      // 审批请求顺手通知到主人私聊（只通知，不代答）
+      if (event && event.type === 'approval/asked') notifyApproval(session, event)
     })
     return () => { try { if (typeof off === 'function') off() } catch (error) {} }
   }, 'aurabot: 盯会话')
@@ -412,9 +676,15 @@ export function apply(ctx) {
   }
   const safe = (fn, label) => () => { Promise.resolve().then(fn).catch((error) => log.warn(`${label}出错：`, error.message)) }
   ctx.effect(() => ctx.interval(safe(watchdog, '看门狗'), 30_000), 'aurabot: 看门狗')
-  setTimeout(safe(watchdog, '看门狗'), 3000).unref?.()
+  const firstWatch = setTimeout(safe(watchdog, '看门狗'), 3000)
+  firstWatch.unref?.()
   ctx.effect(() => () => {
-    hub.disposeRecentMedia()
+    unloaded = true
+    clearTimeout(firstWatch)
+    dangerGuard?.dispose()
+    approvalRelay?.dispose()
+    hub.dispose()
+    bridge.dispose()
     mods.dispose()
     onebot.stop()
     snowluma.dispose()
@@ -465,6 +735,7 @@ export function apply(ctx) {
       song: use('song')?.status?.() ?? null,
       sessions: hub.sessions(),
       workspaceDir: workspaceDirOf(cfg),
+      workspaceReal: realWorkspace(workspaceDirOf(cfg)),
       personas: listPersonas(),
       modules: mods.status(),
       bridge: { dshTools: cfg.bridge.dshTools, http: cfg.bridge.http, hasToken: Boolean(cfg.bridge.token), tools: bridge.deniedTools(), toolsService: Boolean(ctx.get?.('tools')) },
@@ -578,7 +849,47 @@ export function apply(ctx) {
       // 面板口径：间隔 1~9999 分钟、每日上限 0~9999 次（0 = 不发）
       if (Number.isFinite(b[k])) patch[k] = k === 'whisperMaxPerDay' ? Math.min(9999, Math.max(0, Math.floor(b[k]))) : Math.min(9999, Math.max(1, Math.floor(b[k])))
     }
+    // 人物大小倍率：0.5~2.0，步进 0.05；坏值忽略（别把桌宠缩没了）
+    if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
+    // 松手后落地：布尔透传（模块侧缺省当开，别让老面板把抛掷关没）
+    if (typeof b.petReleaseLand === 'boolean') patch.petReleaseLand = b.petReleaseLand
+    // 对话框（pet 1.0.5 起在模块库，模块自己的 settings 同样不渲染成表单；这里仍是唯一写入通道）
+    for (const k of ['petChatEnabled', 'petChatBlurHide']) {
+      if (typeof b[k] === 'boolean') patch[k] = b[k]
+    }
+    // 快捷键 / 关闭关键字 / 天气城市：纯文本，按模块 settings 的口径截断（空串合法 = 关掉该项）
+    for (const [k, max] of [['petChatHotkey', 40], ['petChatCloseKeyword', 20], ['petWeatherCity', 40]]) {
+      if (typeof b[k] === 'string') patch[k] = b[k].trim().slice(0, max)
+    }
+    // 天气接口模板：只收 http/https（留空 = 用模块内置默认 wttr.in）
+    if (typeof b.petWeatherUrl === 'string') {
+      const u = b.petWeatherUrl.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.petWeatherUrl = u
+    }
+    // 历史上限与保留天数：与模块 settings 的 min/max 对齐（10~2000 条；0 天 = 永久保留）
+    if (Number.isFinite(b.petChatMaxEntries)) patch.petChatMaxEntries = Math.min(2000, Math.max(10, Math.round(b.petChatMaxEntries)))
+    if (Number.isFinite(b.petChatRetentionDays)) patch.petChatRetentionDays = Math.min(3650, Math.max(0, Math.round(b.petChatRetentionDays)))
     if (typeof b.whisperLines === 'string') patch.whisperLines = b.whisperLines.slice(0, 4000)
+    // 素材包下载地址：内建模块的 settings 字段不渲染成表单（同上），这里是它唯一的写入通道。
+    // 只收 http/https（或空 = 回到内置默认），别把 file:// 之类塞进来当下载源
+    if (typeof b.petPackUrl === 'string') {
+      const u = b.petPackUrl.trim().slice(0, 1000)
+      if (!u || /^https?:\/\//i.test(u)) patch.petPackUrl = u
+    }
+    // Electron 下载镜像：同上（内建模块不渲染 settings）；留空 = 回落内置默认 npmmirror
+    if (typeof b.electronMirror === 'string') {
+      const u = b.electronMirror.trim().slice(0, 500)
+      if (!u || /^https?:\/\//i.test(u)) patch.electronMirror = u
+    }
+    // 对外公网地址（远端直连）：只收 http/https 或空（空 = 关掉远端模式，回到同机）
+    if (typeof b.publicBaseUrl === 'string') {
+      const u = b.publicBaseUrl.trim().replace(/\/+$/, '').slice(0, 300)
+      if (!u || /^https?:\/\//i.test(u)) patch.publicBaseUrl = u
+    }
+    // 安全项（2026-11-02）：明文 http 跨机开关 + 令牌有效期。同样因为内置模块的 settings 不渲染表单，
+    // 这里是唯一写入通道。
+    if (typeof b.allowInsecureRemote === 'boolean') patch.allowInsecureRemote = b.allowInsecureRemote
+    if (Number.isFinite(b.tokenTtlDays)) patch.tokenTtlDays = Math.min(3650, Math.max(0, Math.floor(b.tokenTtlDays)))
     // 行为大脑的模块级设置（AI 自己改不了，只有主人能改）。pet 是**内置模块**，
     // 它的 settings schema 不会渲染成表单（面板只给「用户自己复制出来的模块」生成），
     // 所以这里是这些开关唯一的写入通道——不补，关窗物理闸就永远打不开。
@@ -592,11 +903,16 @@ export function apply(ctx) {
       ['behaviorIdleCursorMinutes', 1, 240],
       ['behaviorMoodCloseWindowBelow', 0, 100],
       ['behaviorIconQuarantineDays', 1, 365],
+      ['chatBehaviorCooldownMinutes', 1, 1440], // 聊天联动冷却：1 分钟起，最长一天
+      ['chatBehaviorMaxPerDay', 0, 9999],       // 聊天联动每日上限：0 = 聊天时她也不动
     ]) {
       if (Number.isFinite(b[k])) patch[k] = Math.min(hi, Math.max(lo, Math.round(b[k])))
     }
     if (typeof b.behaviorWindowWhitelist === 'string') patch.behaviorWindowWhitelist = b.behaviorWindowWhitelist.slice(0, 2000)
     if (typeof b.behaviorDisabledActions === 'string') patch.behaviorDisabledActions = b.behaviorDisabledActions.slice(0, 500)
+    // 聊天联动动作（1.2.0 起 pet 模块代码在 mods 仓；核心侧 /panel/pet/config 仍是这些键的面板写入通道）
+    if (typeof b.chatBehaviorEnabled === 'boolean') patch.chatBehaviorEnabled = b.chatBehaviorEnabled
+    if (typeof b.chatBehaviorWhitelist === 'string') patch.chatBehaviorWhitelist = b.chatBehaviorWhitelist.slice(0, 2000)
     if (!Object.keys(patch).length) return { ok: false, message: '没有可保存的字段' }
     setConfig(mergeFromPanel(cfg, { ext: { pet: patch } }))
     log.info(`面板已保存桌宠设置｜${Object.keys(patch).map((k) => k + '=' + String(patch[k]).slice(0, 20)).join(' ')}`)
@@ -615,6 +931,12 @@ export function apply(ctx) {
     if (typeof pet?.download !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，装不了客户端' }
     return { ok: true, result: redactTokens(await pet.download()) }
   })
+  // 素材包：手动重下默认形象包（换镜像地址后用；force=true 表示已有也重下）
+  route('/panel/pet/fetch-pack', async () => {
+    const pet = use('pet')
+    if (typeof pet?.ensureDefaultPack !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，下不了素材包' }
+    return { ok: true, result: await pet.ensureDefaultPack(true), pet: petStatus() }
+  })
   route('/panel/pet/focus', async (req) => {
     const enabled = Boolean((await readBody(req)).enabled)
     const pet = use('pet')
@@ -622,12 +944,32 @@ export function apply(ctx) {
     return { ok: true, result: redactTokens(await pet.setFocus(enabled)) }
   })
   // Electron 三键：安装（npmmirror 镜像）→ 启动（清 ELECTRON_RUN_AS_NODE 分离进程）→ 停止（杀 pid）
+  // 远端直连模式（配了 publicBaseUrl）下安装/启动不再执行——服务器无桌面，spawn 无头 Electron 的坑从入口上消失，
+  // 面板据 remoteClient:true 把这两键换成「下载客户端包」（/panel/pet/client-package）。
+  // 【首审 P2】还要看模块具备不具备 clientPackage 能力：装上的是旧版 pet（1.0.8 及以前）时，
+  // 面板如果照旧提示「点下载客户端包」，用户点下去只会拿到 404/降级文案。这种情况下要说清楚是版本问题。
+  const remotePetHint = () => {
+    const pet = use('pet')
+    const canPackage = typeof pet?.clientPackage === 'function'
+    if (!canPackage) {
+      return {
+        ok: false, available: false, remoteClient: true, needModuleUpgrade: true,
+        message: '已配置对外地址（远端直连模式），但当前桌宠模块太旧、不具备「打包客户端」能力（需要 pet 1.0.10+）：请先在模块市场把桌宠更新到最新版',
+      }
+    }
+    return {
+      ok: false, available: false, remoteClient: true,
+      message: '已配置对外地址（远端直连模式）：服务器上不再安装/启动 Electron。请在「桌宠」页点「下载客户端包」，在你自己的电脑上解压运行',
+    }
+  }
   route('/panel/pet/electron-install', async () => {
+    if (publicBaseUrlOf()) return remotePetHint()
     const pet = use('pet')
     if (typeof pet?.electronInstall !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，装不了 Electron' }
     return { ok: true, result: redactTokens(await pet.electronInstall()) }
   })
   route('/panel/pet/launch', async () => {
+    if (publicBaseUrlOf()) return remotePetHint()
     const pet = use('pet')
     if (typeof pet?.launch !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，启动不了桌宠' }
     return { ok: true, result: redactTokens(await Promise.resolve(pet.launch())) }
@@ -637,6 +979,118 @@ export function apply(ctx) {
     if (typeof pet?.stop !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，停不了桌宠' }
     return { ok: true, result: redactTokens(await Promise.resolve(pet.stop())) }
   })
+  // 轮换令牌（安全）：旧的立即失效，客户端必须重新下载包。跨机部署时这是唯一的应急手段
+  // （令牌一旦泄露，只有换掉它才收得回口子）。
+  route('/panel/pet/rotate-token', async () => {
+    const pet = use('pet')
+    if (typeof pet?.rotateToken !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪 / 版本太旧（需要 1.0.10+），换不了令牌' }
+    const r = pet.rotateToken()
+    log.info(`面板轮换桌宠令牌｜${r.ok ? '成功' : '失败：' + r.message}`)
+    return { ok: Boolean(r && r.ok), message: r?.message || '', issuedAt: r?.issuedAt || null }
+  })
+  // 对外公网地址：保存 + 验证。验证 = 服务端向 <publicBaseUrl>/aurabot/api/state 发一次请求，
+  // 回 200 且响应带本插件标识才算通；hairpin NAT 打不通自己的公网地址时可显式确认跳过验证。
+  // 【首审 P1-5 + 复审 P1-4】SSRF 收口，全部复用 core/net.js 的判定（不再手写正则）：
+  //   ① `assertPublicUrl`：域名要 **DNS 解析后**逐个 IP 校验——`https://[::ffff:127.0.0.1]`、
+  //      解析到内网的公网域名都拦得住（旧手写正则只看字符串，这两条都漏）；
+  //   ② 跨机必须 https（明文只放行本机回环，自测用）；
+   //   ③ 验证请求走 `fetchGuarded`：手动跟重定向，**每一跳都重新做 SSRF 校验**——302 到内网照样拦；
+  //   ④ 响应必须带本插件标识（ok + version/apiVersion），不能只看 200；
+  //   ⑤ `force` 不再跳过安全校验：它只表示「跳过连通性验证」，要内网/本机地址必须再加
+  //      `confirm: true` 显式二次确认，并写审计日志。这满足「内网自测」的合法场景
+  //      （局域网部署 + allowInsecureRemote），但不再是无声的 SSRF 旁路。
+  route('/panel/pet/public-base', async (req) => {
+    const b = await readBody(req)
+    const raw = String(b.publicBaseUrl ?? '').trim().replace(/\/+$/, '').slice(0, 300)
+    if (!raw) {
+      setConfig(mergeFromPanel(cfg, { ext: { pet: { publicBaseUrl: '' } } }))
+      log.info('面板已清空桌宠对外地址：回到同机模式')
+      return { ok: true, publicBaseUrl: '', message: '已清空：回到同机模式（host.json 恢复回环地址）' }
+    }
+    if (!/^https?:\/\//i.test(raw)) return { ok: false, message: '要填 http(s):// 开头的完整地址，如 https://bot.example.com' }
+    // ① 安全校验（DNS 解析后逐 IP 判私网/本机）——force 也不跳过这一步的**判定**，
+    //    只是把「判定为内网」从拒绝变成「confirm 后审计放行」（局域网自测的合法场景）。
+    let privateHit = ''
+    try {
+      await assertPublicUrl(raw)
+    } catch (error) {
+      if (b.force !== true || b.confirm !== true) {
+        return {
+          ok: false, publicBaseUrl: raw, verified: false,
+          message: `这个地址不允许作为对外地址（${error.message}）。它指向本机/内网，只适合局域网自测：确实要保存，请带 force + confirm 显式确认（面板会弹二次确认）`,
+        }
+      }
+      privateHit = error.message
+    }
+    // ② 明文检查：**公网**地址必须 https（令牌与聊天内容走明文等于送人，这条没有确认通道）；
+    //    内网明文已在上面走 force+confirm 审计通道放行。
+    if (!privateHit) {
+      const u = new URL(raw)
+      if (u.protocol === 'http:' && !isLoopbackAddr(u.hostname)) {
+        return { ok: false, publicBaseUrl: raw, message: '跨机对外地址必须用 https：令牌与聊天内容走明文等于送人。局域网自测请直接填内网地址并走 force + confirm' }
+      }
+    }
+    let detail = ''
+    let ok = false
+    if (!privateHit) {
+      // ③ 验证请求：手动跟重定向，每一跳都重新做 SSRF 校验；④ 响应要带本插件标识
+      try {
+        const r = await fetchGuarded(raw + '/aurabot/api/state', { timeoutMs: 8000 })
+        if (!r.ok) {
+          detail = `HTTP ${r.status}`
+        } else {
+          let body = null
+          try { body = await r.json() } catch { body = null }
+          if (body && body.ok === true && (body.version || body.apiVersion)) {
+            ok = true
+            detail = 'HTTP 200 + 插件标识匹配'
+          } else {
+            detail = 'HTTP 200 但响应不像本插件（缺少 version/apiVersion 标识）'
+          }
+        }
+      } catch (error) {
+        detail = error?.name === 'AbortError' ? '请求超时' : String(error?.message || error)
+      }
+      if (!ok && b.force !== true) {
+        return { ok: false, publicBaseUrl: raw, verified: false, message: `验证没过（${detail}）：确认反代已把 ${raw} 指到本插件。地址确实打不通自己的公网（如 hairpin NAT）可再点一次「跳过验证保存」` }
+      }
+    }
+    setConfig(mergeFromPanel(cfg, { ext: { pet: { publicBaseUrl: raw } } }))
+    if (privateHit) {
+      // 审计：内网/本机地址被显式确认保存了，必须留痕（谁在什么时候放行了什么地址）
+      log.warn(`【审计】桌宠对外地址保存了内网/本机地址｜${raw}｜原因：${privateHit}｜force+confirm 显式确认`)
+      return { ok: true, publicBaseUrl: raw, verified: false, confirmedPrivate: true, message: `已保存（内网地址，未经连通性验证：${privateHit}）。仅限自测，公网部署请换 https 公网域名` }
+    }
+    log.info(`面板已保存桌宠对外地址｜${raw}｜验证${ok ? '通过' : '跳过'}（${detail}）`)
+    return { ok: true, publicBaseUrl: raw, verified: ok, message: ok ? `验证通过（${detail}）：远端直连已开启，host.json 会写这个地址` : `已保存（验证被跳过：${detail}）` }
+  })
+  // 客户端包（zip）：app/ 目录 + 内嵌 host.json。面板远端模式的「下载客户端包」用；浏览器直接下载二进制，
+  // 所以不能走 JSON 包装的 route()，这里单独注册精确路径并手动设 content-type/content-disposition。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREFIX + '/panel/pet/client-package',
+    handler: (req, res) => answer(res, async () => {
+      // 【安全】这一条不走 route()，必须自己过面板闸：包内嵌 host.json（含 bearer 令牌），
+      // 公网上谁都能无鉴权下到就等于把桌宠令牌送出去。CSRF 闸也要过（一致性；GET 本身不受影响）。
+      // 复审 3·P1-1：还必须过 Host 校验——此前手动注册路由漏了 adminHostBlocked，
+      // 实测 socket 回环 + `Host: evil.example` 的 GET 能拿到含令牌的 zip（DNS rebinding 载体）。
+      if (panelBlocked(req, res)) return undefined
+      if (adminHostBlocked(req, res)) return undefined
+      if (csrfBlocked(req, res)) return undefined
+      const pet = use('pet')
+      if (typeof pet?.clientPackage !== 'function') return { ok: false, available: false, message: '桌宠模块还没就绪，打不了客户端包' }
+      const r = await Promise.resolve(pet.clientPackage())
+      if (!r.ok) return { ok: false, message: r.message }
+      // 【安全 P2】内含 bearer 令牌：任何缓存层都不许留；文件名要清洗（模块来自磁盘，不完全可信）
+      const safeName = String(r.filename || 'aurabot-pet-client.zip').replace(/[^\w.-]/g, '_')
+      res.setHeader?.('content-type', 'application/zip')
+      res.setHeader?.('content-disposition', `attachment; filename="${safeName}"`)
+      res.setHeader?.('cache-control', 'no-store, no-cache, must-revalidate, private')
+      res.setHeader?.('pragma', 'no-cache')
+      send(res, 200, r.buffer, 'application/zip') // answer 只在返回非 undefined 时才发 JSON，这里已手动发过
+      return undefined
+    }),
+  }), 'aurabot: 桌宠客户端包下载')
   // ---------- 行为动作（设计稿 §8 测试通道）：面板「试一下」+ 每动作 AI 开关 + 图标隔离区 ----------
   // 全部代理到 pet 模块已暴露的函数（behaviorEmit / behaviorStatus / iconQuarantine / iconRestore）；
   // 模块没就绪或旧版本缺接口时降级 available:false，面板显示兜底文案不炸。
@@ -731,7 +1185,7 @@ export function apply(ctx) {
   })
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
-  const checkUpdate = createUpdateChecker({ pkg: PKG, log })
+  const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })
   route('/update/check', async (req) => checkUpdate({ force: query(req).force === '1' }))
   route('/changelog', async () => {
     let text = ''
@@ -752,6 +1206,14 @@ export function apply(ctx) {
   // 控制台密码：看一眼（打开 SnowLuma 自己的控制台要用）、自己设一个
   route('/snowluma/password', async () => ({ ok: true, password: snowluma.password(), auto: cfg.snowluma.passwordAuto }))
   route('/snowluma/set-password', async (req) => snowluma.setPassword(String((await readBody(req)).password || '')))
+  route('/workspace/move', async (req) => {
+    const r = moveWorkspace(workspaceDirOf(cfg), (await readBody(req)).to)
+    if (r.ok) {
+      await grantOwner(r.target, log)
+      log.info(r.message)
+    }
+    return r
+  })
   route('/setup/done', async (req) => {
     const body = await readBody(req)
     if (!cfg.botQQ || !cfg.ownerQQ || cfg.botQQ === cfg.ownerQQ) return { ok: false, message: '先填好不同的机器人 QQ 和你的 QQ' }
@@ -877,9 +1339,41 @@ export function apply(ctx) {
   // 本地接口
   const openFolder = (dir) => {
     mkdirSync(dir, { recursive: true })
-    spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref()
-    return { ok: true, message: '打开了' }
+    const opener = process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+    // 子进程起不来是以 error 事件抛的，没人听就是未捕获异常，会把 DSH 整个带走（#135）
+    return new Promise((resolve) => {
+      const child = spawn(opener, [dir], { detached: true, stdio: 'ignore' })
+      child.once('error', (error) => resolve({ ok: false, message: `打不开文件夹：${dir}（${error.message}）` }))
+      child.once('spawn', () => { child.unref(); resolve({ ok: true, message: '打开了' }) })
+    })
   }
+  // 备份：文件里有账号凭证，只存在本机文件夹，不提供网页下载
+  let backupJob = null // { running, done, total, error, result }
+  const backupAction = (run) => async (req) => {
+    if (req.method !== 'POST' || req.headers?.['x-aurabot-backup'] !== '1') return { ok: false, message: '请从面板发起操作' }
+    return run(req)
+  }
+  route('/backup/state', async () => ({ ok: true, job: backupJob, list: listBackups(), pending: pendingRestore(), modules: pendingModules(), dir: dataDir('backups') }))
+  route('/backup/create', backupAction(async () => {
+    if (backupJob?.running) return { ok: false, message: '上一个备份还在打包' }
+    backupJob = { running: true, done: 0, total: 0 }
+    createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()), onProgress: (p) => { backupJob = { ...backupJob, ...p } } })
+      .then((result) => { backupJob = { running: false, result }; log.info(`备份完成：${result.name}，${result.files} 个文件`) })
+      .catch((error) => { backupJob = { running: false, error: error.message }; log.error('备份失败：', error.message) })
+    return { ok: true, message: '开始打包了' }
+  }))
+  route('/backup/open', backupAction(async () => openFolder(dataDir('backups'))))
+  route('/backup/upload', backupAction(async (req) => {
+    const buf = await readRaw(req, 2 * 1024 * 1024 * 1024 - 1)
+    if (!buf.length) return { ok: false, message: '文件是空的' }
+    try { return await stageRestore(await saveUpload(buf)) } catch (error) { return { ok: false, message: error.message } }
+  }))
+  route('/backup/restore-path', backupAction(async (req) => {
+    const path = String((await readBody(req)).path || '').trim().replace(/^"|"$/g, '')
+    if (!path) return { ok: false, message: '填备份文件的完整路径' }
+    try { return await stageRestore(path) } catch (error) { return { ok: false, message: error.message } }
+  }))
+  route('/backup/cancel', backupAction(async () => { cancelRestore(); return { ok: true, message: '取消了' } }))
   route('/local/status', async () => ({ ok: true, dir: local.dir(), list: local.status() }))
   route('/local/template', async (req) => {
     const slot = String((await readBody(req)).slot || '')
@@ -907,6 +1401,21 @@ export function apply(ctx) {
 
   // 模块（面板「扩展」页）
   route('/modules', async () => ({ ok: true, dir: mods.dir(), safeMode: cfg.safeMode, apiVersion: API_VERSION, list: mods.status(), prompt: mods.promptFor('') }))
+  route('/modules/community', async (req) => {
+    try { return { ok: true, ...(await community.list({ force: query(req).force === '1' })) } } catch (error) { return { ok: false, message: error.message, list: [] } }
+  })
+  route('/modules/tutorial', async () => {
+    try { return { ok: true, text: readFileSync(join(ROOT, 'docs', 'MODULE-TUTORIAL.md'), 'utf8') } } catch (error) { return { ok: false, message: '教程文件不见了' } }
+  })
+  route('/modules/community/progress', async () => ({ ok: true, progress: community.progress() }))
+  route('/modules/community/install', async (req) => {
+    const b = await readBody(req)
+    return { ...(await community.install(String(b.id || ''), { confirmReplace: b.confirmReplace === true })), modules: mods.status() }
+  })
+  route('/modules/community/remove', async (req) => {
+    const b = await readBody(req)
+    return { ...(await community.remove(String(b.id || ''), { purge: b.purge === true })), modules: mods.status() }
+  })
   route('/modules/reload', async (req) => {
     const id = String((await readBody(req)).id || '')
     if (!id) { await mods.sync(); return { ok: true, message: '检查过了', list: mods.status() } }
@@ -995,11 +1504,12 @@ export function apply(ctx) {
   route('/bridge/token', async () => ({ ok: true, token: cfg.bridge.http ? bridge.ensureToken() : '' }))
   route('/bridge/token/reset', async () => ({ ok: true, token: bridge.resetToken(), message: '换了新密钥，旧的立刻失效' }))
   route('/bridge/examples', async (req) => ({ ok: true, ...bridge.examples(String(query(req).base || 'http://127.0.0.1:端口')) }))
-  // 开放接口：都要带密钥
+  // 开放接口：都要带密钥。/open/* 给外部程序（curl/脚本）用，跨机 + 自定义 Host 是正常用法，
+  // 且有自己的 Bearer 鉴权——跳过管理面的 Host 允许名单（复审 2·P1-2 的豁免原则同理）。
   const open = (path, fn) => route('/open' + path, async (req) => {
     if (!bridge.authorized(req)) return { ok: false, code: 401, message: cfg.bridge.http ? '密钥不对（请求头 Authorization: Bearer 密钥）' : '开放接口没打开（面板「扩展」→ 联动）' }
     return fn(req)
-  })
+  }, { skipHostCheck: true })
   open('/info', async () => bridge.ops.info())
   open('/send', async (req) => bridge.ops.send(await readBody(req)))
   open('/think', async (req) => bridge.ops.think(await readBody(req)))

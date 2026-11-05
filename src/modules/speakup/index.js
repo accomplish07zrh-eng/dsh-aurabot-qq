@@ -11,7 +11,7 @@ export default {
   files: ['features/companion.js'],
   setup(api) {
     const { hub, mutes } = api.core
-    const speakUp = createSpeakUp({ getConfig: api.config, hub, log: api.log, isMuted: (chatId) => mutes.muted(chatId) })
+    const speakUp = createSpeakUp({ getConfig: api.config, hub, log: api.log, isMuted: (chatId) => mutes.muted(chatId), memory: () => api.use('memory') })
     api.every(60_000, () => speakUp.tick(), '主动搭话')
     api.route('/speakup/fire', async () => {
       if (!api.config().enabled) return { ok: false, message: '先打开总开关' }

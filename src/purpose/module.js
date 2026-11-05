@@ -10,6 +10,7 @@
 // 想换引擎的主人自己开关，迁移说明见 docs/PURPOSE_MODULE_API.md。
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { cleanOutboundText } from '../chat/reply.js'
 import {
   DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS,
   normalizePurposeConfig, createPurposeState, normalizePurposeState,
@@ -67,13 +68,13 @@ export function purposeConfig(cfg = {}) {
 }
 
 /** 模型回包清洗：去掉备忘段、引号、「大肥鱼：」前缀；空/沉默返回 ''。 */
-export function cleanReply(raw) {
+export function cleanReply(raw, options) {
   let s = String(raw ?? '')
-  const cut = /(^|\n)\s*[【\[]\s*(目的|需求|情绪|类型|状态|待续)\s*[】\]]/.exec(s)
+  const cut = /(^|\n)\s*(?:[【\[]\s*(?:目的|需求|情绪|类型|状态|待续)\s*[】\]]|[【\[]?\s*内部备忘)/.exec(s)
   if (cut) s = s.slice(0, cut.index) // 内部备忘不发到 QQ
   s = s.replace(/^[「“"'']+/, '').replace(/[」”"'']+$/, '')
   s = s.replace(new RegExp(`^${ROLE}\\s*[:：]\\s*`), '')
-  s = s.trim()
+  s = cleanOutboundText(s, options).trim()
   if (!s || s.replace(/\s/g, '').startsWith(SILENCE)) return ''
   return s
 }
@@ -81,16 +82,17 @@ export function cleanReply(raw) {
 export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, memory, personaText, pet: petOf }) {
   const moodOf = () => { try { return mood?.() || null } catch { return null } }
   const memoryOf = () => { try { return memory?.() || null } catch { return null } }
-  const chatIdOf = (cfg) => `private:${cfg.ownerQQ}`
-  const lastPrivateAt = (cfg) => Math.max(hub?.lastOwnerChatAt || 0, hub?.lastBotToOwner?.at || 0)
-  const stateFile = () => dataDir('purpose', 'purpose-state.json')
+  // 下面的 friend 是主动搭话白名单里的 QQ 号，不传就是主人。朋友各有各的状态，素材只看和这个人的私聊、关于这个人的记忆。
+  const chatIdOf = (cfg, friend) => `private:${friend || cfg.ownerQQ}`
+  const lastPrivateAt = (cfg, friend) => friend ? (hub?.lastPrivateAt?.(friend) || 0) : Math.max(hub?.lastOwnerChatAt || 0, hub?.lastBotToOwner?.at || 0)
+  const stateFile = (friend) => dataDir('purpose', ...(friend ? ['friends', `${friend}.json`] : ['purpose-state.json']))
   const nudgeFile = () => dataDir('purpose', 'nudge.json')
 
   // ---------- 状态 ----------
-  function loadState(config, now = Date.now()) {
-    const raw = readJson(stateFile(), null)
+  function loadState(config, now = Date.now(), friend = '') {
+    const raw = readJson(stateFile(friend), null)
     const state = normalizePurposeState(raw, now)
-    if (!raw) {
+    if (!raw && !friend) {
       // 旧 speakup.json 只读迁移当日次数，之后弃用
       const legacy = readJson(dataDir('speakup.json'), null)
       const legacyCount = Number(legacy?.count) || 0
@@ -104,14 +106,14 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     ensurePurposeSchedule(state, { now, config })
     return state
   }
-  const saveState = (state) => writeJson(stateFile(), state)
+  const saveState = (state, friend = '') => writeJson(stateFile(friend), state)
 
   // ---------- 素材（记忆 importance 0~1 → 引擎 0~100） ----------
-  function memoryRecords() {
+  function memoryRecords(friend = '') {
     try {
       const items = memoryOf()?.list?.('') || []
       return items
-        .filter((m) => m && !m.invalidAt && m.text)
+        .filter((m) => m && !m.invalidAt && m.text && !['hearsay', 'guess'].includes(m.status) && (!friend || (m.scope !== 'group' && String(m.about) === friend)))
         .map((m) => ({
           id: m.id,
           title: '',
@@ -127,9 +129,9 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     }
   }
 
-  // 聊天流水（hub.chatLogOf）→ 引擎的 conversations 结构：只看主人私聊 + 最近群
-  function conversations(cfg, now = Date.now()) {
-    const ownerKey = chatIdOf(cfg)
+  // 聊天流水（hub.chatLogOf）→ 引擎的 conversations 结构：只看主人私聊 + 最近群；朋友只看 TA 自己的私聊
+  function conversations(cfg, now = Date.now(), friend = '') {
+    const ownerKey = chatIdOf(cfg, friend)
     const per = new Map()
     const pick = (chatId) => {
       let c = per.get(chatId)
@@ -140,8 +142,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       const days = hub.chatLogDays?.() || []
       for (const day of days.slice(-2)) {
         for (const e of hub.chatLogOf?.(day) || []) {
-          if (!e?.chatId) continue
-          if (e.chatId !== ownerKey && !String(e.chatId).startsWith('group:')) continue
+          if (!e?.chatId || e.forgottenAt) continue
+          if (e.chatId !== ownerKey && (friend || !String(e.chatId).startsWith('group:'))) continue
           pick(e.chatId).recentMessages.push({
             text: String(e.text || ''),
             time: Number(e.t) || 0,
@@ -162,17 +164,17 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   }
 
   // ①~④ 收素材 → 驱动 → 目标假设 → 候选（只读，不落盘）
-  function prepare(cfg, config, state, now = Date.now()) {
+  function prepare(cfg, config, state, now = Date.now(), friend = '') {
     const materials = collectMaterials({
       now, config,
-      ownerUin: cfg.ownerQQ,
+      ownerUin: friend || cfg.ownerQQ,
       roleName: ROLE,
-      conversations: conversations(cfg, now),
+      conversations: conversations(cfg, now, friend),
       biliEntries: [], // 首期不接 B站/Qzone 素材，字段留扩展
-      memoryRecords: memoryRecords(),
+      memoryRecords: memoryRecords(friend),
     })
     const persona = personaOf(cfg)
-    const lastMasterAt = lastPrivateAt(cfg)
+    const lastMasterAt = lastPrivateAt(cfg, friend)
     const { drives } = deriveDrives({
       drives: state.drives, drivesAt: state.drivesAt,
       materials: materials.items, now, lastMasterAt, personaBias: persona.bias,
@@ -188,11 +190,16 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     return { materials, persona, lastMasterAt, drives, goals, observations, seeds }
   }
 
-  function promptFor(cfg, config, selected, ctx, state, now = Date.now()) {
-    return buildPurposePrompt({
+  const friendName = (friend) => {
+    try { return memoryOf()?.profiles?.().find((p) => p.qq === friend)?.name || '这位朋友' } catch { return '这位朋友' }
+  }
+
+  function promptFor(cfg, config, selected, ctx, state, now = Date.now(), friend = '') {
+    const name = friend ? friendName(friend) : cfg.ownerName || '主人'
+    const prompt = buildPurposePrompt({
       now, config, mode: 'auto', // 模型直接输出那句话（Aurabot 没有 QQ 发送工具）
-      ownerUin: cfg.ownerQQ,
-      ownerName: cfg.ownerName || '主人',
+      ownerUin: friend || cfg.ownerQQ,
+      ownerName: name,
       contextBlocks: [],
       materials: ctx.materials.items,
       candidates: ctx.candidates,
@@ -201,7 +208,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       history: state.history,
       stats: ctx.materials.stats,
       drives: ctx.drives,
-    }) + `\n6) 这一轮不能用任何工具：直接输出你要发的那句话即可（会自动转发给${cfg.ownerName || '主人'}）。不想说就整段只输出 ${SILENCE}。`
+    }) + `\n6) 这一轮不能用任何工具：直接输出你要发的那句话即可（会自动转发给${name}）。不想说就整段只输出 ${SILENCE}。`
+    return friend ? prompt.replaceAll('主人', name) : prompt // 引擎的提示词是写给主人的，朋友不是她的主人
   }
 
   // ---------- 载体分发（互斥铁律：一轮只发一处，永不双发） ----------
@@ -222,7 +230,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     } catch {}
   }
   /**
-   * carrier=pet 时的投递决策。返回 'pet'（已推气泡）| 'qq'（调用方走原 hub.deliver）| 'silent'（本轮不发）。
+   * carrier=pet 时的投递决策。返回 'sent'（已投递）| 'qq'（调用方投递）| 'silent'（不发）| 'failed'（结果不确定，不重发）。
    * 在线才调 pet.dispatch（避免它内部回落路径绕过 own/userText 心情链路）；离线由 purpose 自己决定回落或静默；
    * dispatch 返回非 ok（如专注模式 focus：不发也不回落）按契约映射，绝不在一个回合里两头都发。
    */
@@ -238,32 +246,39 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       try {
         r = await pet.dispatch({ text, purpose: String(purposeLabel || '').slice(0, 40) })
       } catch (error) {
-        log.warn?.('目的：桌宠气泡投递出错：', error?.message)
+        // dispatch 可能已经发出后才抛错；结果不确定时不能再发一次。
+        log.warn?.('目的：桌宠气泡投递出错，结果不确定，不再重发：', error?.message)
+        return 'failed'
       }
-      if (r && r.ok) return r.via === 'qq' ? 'qq' : 'pet' // dispatch 内部竞态回落（极小概率）也只发了一处
+      if (r && r.ok && r.via !== 'qq') hub.noteSaid?.(chatIdOf(getConfig()), text) // 气泡没法回，主人在 QQ 接话时她得知道说过什么
+      if (r && r.ok) return 'sent' // dispatch 内部竞态回落 QQ 时也已发出，调用方不能再发
       if (r && r.reason === 'focus') return 'silent' // 专注模式开着：不发也不回落
-      return su.petFallbackToQQ ? 'qq' : 'silent'
+      if (r && r.reason === 'pet-offline') return su.petFallbackToQQ ? 'qq' : 'silent' // 已确认尚未投递
+      log.warn?.('目的：桌宠投递未确认成功，不再重发')
+      return 'failed'
     }
     // pet 离线 / 模块没在跑：按回落开关决定 purpose 自己走 QQ（带 own/userText，保住心情与流水链路）或静默
     return su.petFallbackToQQ ? 'qq' : 'silent'
   }
 
   // ---------- 生成 + 投递 + 回执（hub.deliver 内部吞错，成功判定看返回值） ----------
-  async function runOnce({ reason = '定时', config, state, force = false } = {}) {
+  async function runOnce({ reason = '定时', config, state, force = false, friend = '' } = {}) {
     const cfg = getConfig()
     const now = Date.now()
     ensurePurposeDay(state, now)
-    const ctx = prepare(cfg, config, state, now)
+    const ctx = prepare(cfg, config, state, now, friend)
     state.drives = ctx.drives
     state.drivesAt = now
     state.goals = ctx.goals
     state.observations = ctx.observations
 
-    const hasEnough = ctx.materials.items.length >= config.minMaterials
-      || state.pending.length > 0 || ctx.persona.hasText
+    // 朋友没聊过就别凭人设硬找：没有素材时她只能瞎编由头
+    const hasEnough = friend
+      ? ctx.materials.items.length >= Math.max(1, config.minMaterials)
+      : ctx.materials.items.length >= config.minMaterials || state.pending.length > 0 || ctx.persona.hasText
     if (!hasEnough) {
       markPurposeSkip(state, { now, reason: 'materials', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday }) })
-      saveState(state)
+      saveState(state, friend)
       log.info?.(`目的（${reason}）：素材太少，改约下一次`)
       return { outcome: 'skipped-materials' }
     }
@@ -276,39 +291,41 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     state.lastCandidateCount = picked.candidates.length
     if (!picked.purpose) {
       markPurposeSkip(state, { now, reason: 'no-candidate', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday }) })
-      saveState(state)
+      saveState(state, friend)
       log.info?.(`目的（${reason}）：这轮没选出目的，改约下一次`)
       return { outcome: 'skipped-no-candidate' }
     }
 
-    const prompt = promptFor(cfg, config, picked.purpose, { ...ctx, candidates: picked.candidates }, state, now)
+    const prompt = promptFor(cfg, config, picked.purpose, { ...ctx, candidates: picked.candidates }, state, now, friend)
     // 投递即占今日次数（模型回合已经花钱了）；引擎随后按真结局结算
     markPurposeDelivered(state, { now, planned: picked.purpose })
-    saveState(state)
+    saveState(state, friend)
 
     let raw = ''
     let genError = null
     try {
       log.info?.(`目的（${reason}）：${picked.purpose.text}`)
-      raw = await hub.runSystemTurn('purpose', 'QQ · 主动搭话（目的回合）', prompt, { timeoutMs: 180000, noTools: true })
+      raw = await hub.runSystemTurn('purpose', 'QQ · 主动搭话（目的回合）', prompt, { timeoutMs: 180000, noTools: true, key: friend })
     } catch (error) {
       genError = error
       log.warn?.('目的：生成出错：', error?.message)
     }
     const memo = parsePurposeMemo(raw)
-    const text = cleanReply(raw)
+    const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
     let outcome
     if (!text) {
       outcome = genError ? 'failed' : 'silent' // 模型有权跳过（【状态】跳过 / [沉默]），silent 不硬发
     } else {
-      const where = await deliverByCarrier(text, picked.purpose.text)
-      if (where === 'pet') {
-        outcome = 'sent' // 气泡已推桌宠：本轮不发 QQ，正常结算次数与心情
+      const where = friend ? 'qq' : await deliverByCarrier(text, picked.purpose.text) // 桌宠气泡只给主人看
+      if (where === 'sent') {
+        outcome = 'sent' // dispatch 已推气泡或回落 QQ：正常结算次数与心情
       } else if (where === 'silent') {
         outcome = 'silent' // carrier=pet 且关闭回落（或专注模式）：静默，不硬补
+      } else if (where === 'failed') {
+        outcome = 'delivery-failed' // dispatch 结果不确定：不补发，避免重复
       } else {
         try {
-          const r = await hub.deliver(chatIdOf(cfg), text, { own: true, userText: MOOD_PREFIX })
+          const r = await hub.deliver(chatIdOf(cfg, friend), text, { own: true, userText: MOOD_PREFIX })
           outcome = r && typeof r === 'object' ? 'sent' : 'silent' // deliver 吞错只返回 undefined / {missedAt}
         } catch (error) {
           outcome = 'delivery-failed'
@@ -317,8 +334,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       }
     }
     applyPurposeOutcome(state, { now: Date.now(), config, outcome, text, memo, planned: picked.purpose })
-    nudgeMood(picked.purpose, outcome)
-    saveState(state)
+    if (!friend) nudgeMood(picked.purpose, outcome)
+    saveState(state, friend)
     log.info?.(`目的：回合结束 ${outcome}（今天第 ${state.countToday} 次）`)
     return { outcome, text, memo }
   }
@@ -352,7 +369,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const prompt = `【系统提醒，不是${owner}说的话】你刚才跟${owner}说「${String(lb.text || '').slice(-60)}」，${owner}已经 ${idle} 分钟没回了。可以轻轻追一句（比如「人呢」「睡着啦？」，或者换个话题），别催、别抱怨；觉得${owner}在忙就只回 ${SILENCE}。这一轮不能用工具，直接输出那句话。`
     try {
       const raw = await hub.runSystemTurn('purpose-nudge', 'QQ · 主动搭话（追问）', prompt, { timeoutMs: 120000, noTools: true })
-      const text = cleanReply(raw)
+      const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
       if (text) await hub.deliver(chatIdOf(cfg), text, { own: true, userText: MOOD_PREFIX })
     } catch (error) {
       log.warn?.('目的：追问出错：', error?.message)
@@ -361,27 +378,36 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   }
 
   // ---------- 对外 ----------
-  async function tick() {
-    const cfg = getConfig()
-    const config = purposeConfig(cfg)
-    if (!config.enabled || !cfg.ownerQQ) return
-    const chatId = chatIdOf(cfg)
-    if (isMuted?.(chatId)) return
+  /** 到点就跑一轮，跑了返回 true。 */
+  async function tickOne(cfg, config, friend = '') {
     const now = Date.now()
-    const state = loadState(config, now)
-    if (await maybeNudge(cfg, state, now)) return
+    const state = loadState(config, now, friend)
+    if (!friend && await maybeNudge(cfg, state, now)) return true
     const env = {
       enabled: true, modeOk: true, dshReady: true, paused: false, ownerAllowed: true,
       busy: false, friendOk: true, budgetBlocked: false, // Aurabot 无 token 预算/好友探测服务，恒可用（留 env 位）
-      ownerIdleMs: now - lastPrivateAt(cfg),
+      ownerIdleMs: now - lastPrivateAt(cfg, friend),
     }
     const verdict = evaluatePurposeTick({ now, config, state, env })
     if (verdict.action !== 'run') {
       if (verdict.reason !== 'waiting') markPurposeSkip(state, { now, reason: verdict.reason, nextFireAt: verdict.nextFireAt || state.nextFireAt })
-      saveState(state)
-      return
+      saveState(state, friend)
+      return false
     }
-    await runOnce({ reason: '定时', config, state })
+    await runOnce({ reason: friend ? '定时（白名单）' : '定时', config, state, friend })
+    return true
+  }
+
+  /** 主人和白名单的朋友各算各的，一次最多找一个人，不一口气群发。 */
+  async function tick() {
+    const cfg = getConfig()
+    const config = purposeConfig(cfg)
+    if (!config.enabled || !cfg.ownerQQ) return
+    if (!isMuted?.(chatIdOf(cfg)) && await tickOne(cfg, config)) return
+    for (const qq of cfg.speakUp?.allow || []) {
+      if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq)) || memoryOf()?.dislikes?.(qq)) continue
+      if (await tickOne(cfg, config, String(qq))) return
+    }
   }
 
   /** 手动触发（面板「现在就让她来找我」）：跳过排程类闸门，不跳过总开关/禁言。 */

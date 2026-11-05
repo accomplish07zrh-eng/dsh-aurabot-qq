@@ -14,7 +14,10 @@ export function isStickerSegment(seg) {
   if (seg.type === 'mface') return true
   if (seg.type !== 'image') return false
   const d = seg.data
-  if (String(d.sub_type ?? d.subType ?? '') === '1') return true
+  const sub = String(d.sub_type ?? d.subType ?? '')
+  if (sub === '1') return true
+  // 带文字说明的表情（比如「[啊？]」）是 sub_type 7；只认有说明的，普通图片的说明是「[图片]」
+  if (sub === '7' && d.summary && d.summary !== '[图片]') return true
   if (d.emoji_id || d.emojiId) return true
   return false
 }
@@ -23,9 +26,9 @@ export function isStickerSegment(seg) {
  * @param {object} event OneBot 消息事件
  * @param {string|number} selfId 机器人 QQ
  * @returns {{
- *   kind: 'private'|'group', chatId: string, userId: string, groupId: string,
+ *   kind: 'private'|'group', chatId: string, userId: string, groupId: string, sourceGroupId: string,
  *   nickname: string, role: string, messageId: string, text: string,
- *   mentioned: boolean, replyId: string, images: object[], stickers: object[], records: object[],
+ *   mentioned: boolean, wakeText: string, replyId: string, images: object[], stickers: object[], records: object[], files: object[],
  * }}
  */
 export function parseMessageEvent(event, selfId, { faceName } = {}) {
@@ -34,13 +37,17 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
   const userId = String(event.user_id ?? event.sender?.user_id ?? '')
   const groupId = kind === 'group' ? String(event.group_id ?? '') : ''
   const sender = event.sender || {}
+  const sourceGroupId = kind === 'private' && event.sub_type === 'group' && /^\d+$/.test(String(sender.group_id ?? '')) && Number(sender.group_id) > 0 ? String(sender.group_id) : ''
   let mentioned = false
+  let atOthers = false // 这一条 @ 了别人（既不是她，也不是全体）
   let replyId = ''
   const texts = []
+  const atAllIndexes = new Set()
   const images = []
   const stickers = []
   const records = []
   const forwards = [] // 合并转发的 id
+  const files = []
   for (const seg of segmentsOf(event)) {
     const d = seg.data || {}
     switch (seg.type) {
@@ -48,8 +55,12 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
         texts.push(String(d.text ?? ''))
         break
       case 'at':
-        if (String(d.qq) === self || d.qq === 'all') mentioned = mentioned || String(d.qq) === self
-        else texts.push(`@${d.name || d.qq} `)
+        if (String(d.qq) === 'all') { atAllIndexes.add(texts.length); texts.push('@全体成员 ') }
+        else if (self && String(d.qq) === self) mentioned = true
+        else {
+          atOthers = true
+          texts.push(`@${d.name || d.qq} `)
+        }
         break
       case 'reply':
         replyId = String(d.id ?? '')
@@ -57,7 +68,8 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
       case 'face': {
         // QQ 系统表情按名字给她看（「[捂脸]」），认不出才写「[表情]」
         const name = faceName?.(d.id)
-        texts.push(name ? `[${name}]` : d.raw?.faceText || '[表情]')
+        const label = String(d.id) === '358' ? '骰子' : String(d.id) === '359' ? '猜拳' : name || String(d.raw?.faceText || '').replace(/^\[|\]$/g, '') || '表情'
+        texts.push(d.resultId !== undefined && d.resultId !== null && String(d.resultId) !== '' ? `[${label}：${String(d.resultId)}]` : name ? `[${name}]` : d.raw?.faceText || '[表情]')
         break
       }
       case 'image':
@@ -78,6 +90,10 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
         break
       case 'file':
         texts.push(`[文件 ${d.name || d.file || ''}]`)
+        files.push({ name: String(d.name || d.file || ''), size: Number(d.size ?? d.file_size) || 0, id: String(d.id ?? d.file_id ?? ''), url: String(d.url || ''), hash: String(d.file_hash || ''), busid: Number(d.busid) || 0 })
+        break
+      case 'flash_file':
+        texts.push(d.title ? `[闪传文件：${String(d.title)}]` : '[闪传文件]')
         break
       case 'json':
         texts.push(cardText(d.data))
@@ -100,29 +116,33 @@ export function parseMessageEvent(event, selfId, { faceName } = {}) {
     }
   }
   const text = texts.join('').replace(/\s+\n/g, '\n').trim()
+  const wakeText = atAllIndexes.size ? texts.filter((_t, i) => !atAllIndexes.has(i)).join('').replace(/\s+\n/g, '\n').trim() : text
   return {
     kind,
     chatId: kind === 'group' ? `group:${groupId}` : `private:${userId}`,
     userId,
     groupId,
+    sourceGroupId,
     nickname: String(sender.card || sender.nickname || userId),
     role: String(sender.role || ''),
     messageId: String(event.message_id ?? ''),
     text,
+    wakeText,
     mentioned,
+    atOthers,
     replyId,
     images,
     stickers,
     records,
     forwards,
+    files,
   }
 }
 
 /** 偷表情的尺寸兜底（拿到字节、宽高之后再判）。 */
 export function stickerSizeOk({ width, height, bytes }, limits = {}) {
   const maxSide = limits.maxSide ?? 520
-  const maxBytes = limits.maxBytes ?? 1.5 * 1024 * 1024
-  if (!(bytes > 0) || bytes > maxBytes) return false
+  if (!(bytes > 0)) return false
   if (!(width > 0) || !(height > 0)) return true // 读不出尺寸就只看体积
   if (width > maxSide || height > maxSide) return false
   const r = width / height
@@ -165,6 +185,14 @@ export function cardText(raw) {
   try {
     const j = typeof raw === 'string' ? JSON.parse(raw) : raw
     const meta = j?.meta || {}
+    if (j?.app === 'com.tencent.map' && meta.Location) {
+      const parts = [meta.Location.title, meta.Location.address].filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim())
+      return `[位置${parts.length ? '：' + parts.join(' ') : ''}]`
+    }
+    if (j?.app === 'com.tencent.contact.lua' && meta.contact) {
+      const id = meta.contact.id
+      return `[联系人${id !== undefined && id !== null && String(id).trim() ? '：' + String(id).trim() : ''}]`
+    }
     const m = meta.detail_1 || meta.news || meta.music || Object.values(meta)[0] || {}
     const title = String(m.desc || m.title || j.prompt || '').trim()
     const url = String(m.qqdocurl || m.jumpUrl || m.url || '').split('?')[0]
@@ -174,6 +202,14 @@ export function cardText(raw) {
   } catch (error) {
     return '[卡片消息]'
   }
+}
+
+/** GIF 有几帧：数图形控制扩展块，够判断是不是动图。 */
+export function gifFrames(buf) {
+  if (!buf || buf[0] !== 0x47 || buf[1] !== 0x49) return 0
+  let n = 0
+  for (let i = 13; i + 2 < buf.length; i++) if (buf[i] === 0x21 && buf[i + 1] === 0xf9 && buf[i + 2] === 4) n++
+  return n
 }
 
 export function mimeOf(buf) {

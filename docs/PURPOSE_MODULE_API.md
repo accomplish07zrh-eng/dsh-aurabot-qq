@@ -72,5 +72,5 @@ ext.purpose 同名键可覆写。
 - 闸门：`evaluatePurposeTick`（enabled/quiet/dailyMax/nextFireAt/ownerIdleMs）；`nextFireAt` 落盘 tick 重算，重启时在途 `pending` 改判 `interrupted` 不补发。
 - 归属/回执/pending 语义与 surfcore 一致（群友目标重复≥3 或被点名才升 self；主人回复正/负/中性 → confirmed/rejected/微调；备忘【状态】待续/完成驱动 pending）。
 - 投递载体：`ext.purpose.carrier`（默认 `qq`）。`carrier=pet` 时经桌宠模块（pet）推桌面气泡，
-  桌宠离线按 `petFallbackToQQ` 回落 QQ 或静默；互斥铁律一轮只发一处，详见 docs/PET_MODULE_API.md §4。
+  桌宠离线按 `petFallbackToQQ` 回落 QQ 或静默；互斥铁律一轮只发一处，详见 docs/PET_MODULE_API.md（在社区库 modules/pet/ 里） §4。
 - 旧 `createSpeakUp` 仍在 `src/features/companion.js`，是「主动搭话」的现行实现（mood 模块 files 与旧测试依赖，勿删）。

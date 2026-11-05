@@ -1,6 +1,6 @@
 {
   "name": "dsh-aurabot-qq",
-  "version": "1.1.24",
+  "version": "1.2.0",
   "description": "Aurabot：住在 QQ 里的 AI 伙伴「大肥鱼」—— DeepSeek Harness 插件（经 SnowLuma / OneBot v11 接 QQ）",
   "license": "MIT",
   "private": true,
@@ -36,7 +36,6 @@
     "onebot"
   ],
   "files": [
-    "extensions",
     "src",
     "client",
     "personas",
@@ -44,14 +43,17 @@
     "cordis.patch.yml",
     "README.md",
     "docs/USER-MANUAL.md",
+    "docs/MODULE-TUTORIAL.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "README_EN.md",
+    "docs/DESIGN.md"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/accomplish07zrh-eng/dsh-aurabot-qq.git"
+    "url": "https://github.com/aureth-labs/dsh-aurabot-qq.git"
   },
-  "homepage": "https://github.com/accomplish07zrh-eng/dsh-aurabot-qq",
+  "homepage": "https://github.com/aureth-labs/dsh-aurabot-qq",
   "engines": {
     "node": ">=22.13.0"
   }

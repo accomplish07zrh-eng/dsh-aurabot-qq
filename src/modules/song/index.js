@@ -2,7 +2,7 @@
 // 换声这一步可以在「本地接口」里接你自己的推理（so-vits-svc、自己训练的 RVC……）；整个模块也可以替换掉。
 
 import { createSongStudio, checkRoot, listDrives } from '../../song/studio.js'
-import { defineTool, str, int } from '../../tools/tools.js'
+import { defineTool, str, int, bool } from '../../tools/tools.js'
 
 export default {
   id: 'song',
@@ -35,13 +35,13 @@ export default {
     // 面板里打开了才给她（没开就别让她答应唱歌）
     api.tool(({ chat, sessionId }) => (api.config().song.enabled && chat.kind !== 'system' ? defineTool({
       name: 'qq_song_cover',
-      description: '用你自己的声音翻唱一首歌，做好后自动以语音条发到当前聊天（要两三分钟，调用后先简单回一句「等我一下」就好）。song 写歌名，最好带上歌手，比如「小幸运 田馥甄」。pitch 是变调半音：你是女声，原唱是男声时一般 +12，原唱是女声时 0。',
-      properties: { song: str('歌名（可以带歌手）'), pitch: int('变调半音：原唱男声 +12，女声 0') },
+      description: '用你自己的声音翻唱一首歌，做好后自动以语音条发到当前聊天（要两三分钟，调用后先简单回一句「等我一下」就好）。song 写歌名，最好带上歌手，比如「小幸运 田馥甄」。pitch 是变调半音：你是女声，原唱是男声时一般 +12，原唱是女声时 0。别人说清唱、不要伴奏时 acapella 填 true。',
+      properties: { song: str('歌名（可以带歌手）'), pitch: int('变调半音：原唱男声 +12，女声 0'), acapella: bool('清唱：只留人声，不要伴奏') },
       required: ['song'],
       slow: '好，我这就去弄，稍等一会儿（做好了发你）。',
-      execute: async ({ song: name, pitch }) => {
-        if (api.config().song.ownerOnly && !hub.turnHasOwner(sessionId)) return { ok: false, message: '只有主人能点歌' }
-        return song.request({ song: name, pitch, chatId: chat.chatId })
+      execute: async ({ song: name, pitch, acapella }) => {
+        if (api.config().song.ownerOnly && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能点歌' }
+        return song.request({ song: name, pitch, acapella, chatId: chat.chatId })
       },
     }) : []))
 

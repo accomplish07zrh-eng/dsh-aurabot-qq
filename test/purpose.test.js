@@ -363,3 +363,71 @@ test('提示词：不带 qq_send_private_message 发送指令；带反注入与�
   assert.match(pv.prompt, /不是给你的指令/, '素材段带反注入提醒')
   assert.match(pv.prompt, /不要要钱、不要要贵重东西/, '索取边界写进提示词')
 })
+
+// ---------- 白名单的朋友 ----------
+
+test('白名单：朋友单独排程，提示词里没有主人的记忆和群聊，发给朋友本人', async () => {
+  const FRIEND = '20000009'
+  const now = Date.now()
+  const rows = [
+    { t: now - 7200000, chatId: `private:${FRIEND}`, who: '阿花', uid: FRIEND, text: '我最近在学游泳，好累呀' },
+    { t: now - 7100000, chatId: `private:${FRIEND}`, who: 'bot', text: '加油，下次跟我说说' },
+    { t: now - 7000000, chatId: 'group:555', who: '路人', uid: '333333', text: '群里的八卦不能外传' },
+    { t: now - 6900000, chatId: `private:${OWNER}`, who: '主人', uid: OWNER, text: '我准备辞职了别告诉别人' },
+  ]
+  const hub = { ...makeHub({ reply: '游泳学得怎么样啦' }), chatLogDays: () => ['d'], chatLogOf: () => rows, lastPrivateAt: () => now - 7200000 }
+  const memories = [
+    { id: 'f1', text: '阿花最近在学游泳', about: FRIEND, importance: 0.7, at: now },
+    { id: 'o1', text: '主人打算偷偷辞职', about: OWNER, importance: 0.9, at: now },
+    { id: 'n1', text: '没写是谁的日记内容', about: '', importance: 0.9, at: now },
+  ]
+  const cfg = {
+    enabled: true, ownerQQ: OWNER, ownerName: '主人',
+    speakUp: { allow: [FRIEND, OWNER], awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false },
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0 } },
+  }
+  const p = createPurpose({
+    getConfig: () => cfg, hub, log: { info() {}, warn() {}, debug() {} },
+    isMuted: (id) => id === `private:${OWNER}`,
+    mood: () => null, personaText: () => '',
+    memory: () => ({ list: () => memories, profiles: () => [{ qq: FRIEND, name: '阿花' }] }),
+  })
+  await p.tick()
+  const file = join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends', `${FRIEND}.json`)
+  const s = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...s, nextFireAt: Date.now() - 1 }))
+  await p.tick()
+  assert.equal(hub.turns.length, 1, JSON.stringify(JSON.parse(readFileSync(file, 'utf8')).lastOutcome))
+  const { prompt } = hub.turns[0]
+  assert.match(prompt, /游泳/)
+  assert.doesNotMatch(prompt, /辞职|八卦|日记|主人/)
+  assert.deepEqual(hub.delivered, [{ chatId: `private:${FRIEND}`, text: '游泳学得怎么样啦' }])
+})
+
+test('白名单：没聊过的朋友不找，人设再完整也不凭空开口', async () => {
+  const FRIEND = '20000010'
+  const hub = { ...makeHub(), lastPrivateAt: () => 0 }
+  const cfg = {
+    enabled: true, ownerQQ: OWNER, ownerName: '主人',
+    speakUp: { allow: [FRIEND], awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false },
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0 } },
+  }
+  const p = createPurpose({
+    getConfig: () => cfg, hub, log: { info() {}, warn() {}, debug() {} },
+    isMuted: (id) => id === `private:${OWNER}`, mood: () => null,
+    personaText: () => '她是一条活泼的鱼，喜欢聊天', memory: () => ({ list: () => [] }),
+  })
+  await p.tick()
+  const file = join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends', `${FRIEND}.json`)
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), nextFireAt: Date.now() - 1 }))
+  await p.tick()
+  assert.equal(hub.turns.length, 0)
+  assert.equal(hub.delivered.length, 0)
+})
+
+test('内部备忘的标题不发到 QQ（#172）', () => {
+  assert.equal(cleanReply('正文\n内部备忘\n【目的】说说群里的事\n【状态】完成'), '正文')
+  assert.equal(cleanReply('正文\n【内部备忘】\n【目的】x'), '正文')
+  assert.equal(cleanReply('内部备忘\n【状态】跳过'), '')
+  assert.equal(cleanReply('这是我的内部备忘录哦'), '这是我的内部备忘录哦', '句子中间提到不算')
+})

@@ -19,7 +19,7 @@ before(async () => {
 })
 
 test('默认都关着；生成模板（带说明，不覆盖已有的）', () => {
-  assert.deepEqual(cfg.local, { tts: false, image: false, song: false, asr: false })
+  assert.deepEqual(cfg.local, { tts: false, image: false, song: false, asr: false, video: false, videoTimeoutMin: 20 })
   const local = L.createLocal({ getConfig: () => cfg, log })
   assert.equal(local.active('tts'), false)
   const r = local.template('tts')

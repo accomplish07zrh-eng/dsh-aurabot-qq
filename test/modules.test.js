@@ -86,6 +86,10 @@ before(async () => {
     files: { enabled: true, maxMB: 5, dirs: [dataDir] },
   }))
   writeMod('echo', echoCode('pong'))
+  const flagCode = (id, extra) => `export default { id: '${id}', ${extra} setup() {} }`
+  writeMod('flagged', flagCode('flagged', "flag: 'loggedIn', settings: [{ key: 'enabled', label: '开' }],"))
+  writeMod('switchy', flagCode('switchy', "settings: [{ key: 'enabled', label: '开' }],"))
+  writeMod('plain', flagCode('plain', "settings: [{ key: 'city', label: '城市' }],"))
   writeMod('sender', senderCode)
   // 替换内置的空间日记
   writeMod('diary', `export default { id: 'diary', name: '我的日记', api: 1, setup(api) {
@@ -147,7 +151,7 @@ test('模块接管消息、改写回复、加命令；她的规则里有模块�
   assert.match(rules, /你会说回声/)
   assert.doesNotMatch(rules, /你会刷 B 站/, 'B 站模块关着就不说她会刷 B 站')
   // 主人私聊会话：有模块的工具，没有关掉模块的工具
-  const agent = [...fake.agents.values()].find((a) => a.preset === 'aurabot-private')
+  const agent = [...fake.agents.values()].find((a) => String(a.preset).startsWith('aurabot-private'))
   assert.ok(agent.tools.has('echo_tool'))
   assert.ok(!agent.tools.has('bili_watch'))
   assert.ok(agent.tools.has('remember'))
@@ -277,7 +281,7 @@ test('联动：别的 DSH 插件能 ctx.get(aurabot)；打开后 DSH 会话有�
   await until(() => sentTo(OWNER).includes('从 DSH 发的'))
   // 她的 QQ 会话下一轮重挂工具时屏蔽联动工具
   mock.push(priv('在吗'))
-  const agent = [...fake.agents.values()].find((a) => a.preset === 'aurabot-private')
+  const agent = [...fake.agents.values()].find((a) => String(a.preset).startsWith('aurabot-private'))
   await until(() => agent.denied.has('aurabot_qq_send'))
   await fake.call('/save', { bridge: { dshTools: false } })
   assert.equal(fake.ctx.globalTools.size, 0)
@@ -301,7 +305,7 @@ test('改她怎么想、怎么说：群聊决定、提示词、拆条、最终�
   mock.push(priv('钩子测试'))
   await until(() => sentTo(OWNER).includes('尾巴'))
   assert.ok(sentTo(OWNER).includes('第二条!'), '最终发送被改写')
-  const agent = [...fake.agents.values()].find((a) => a.preset === 'aurabot-private')
+  const agent = [...fake.agents.values()].find((a) => String(a.preset).startsWith('aurabot-private'))
   assert.ok(agent.events.some((e) => e.type === 'model/selection' && e.data.model === 'hooked'), '私聊换成了模块指定的模型')
 
   mock.push({ message_type: 'group', sub_type: 'normal', group_id: 777, user_id: 123456, message_id: 99, sender: { user_id: 123456, nickname: '群友', card: '群友', role: 'member' }, message: [{ type: 'text', data: { text: '强制回一下' } }] })
@@ -453,3 +457,10 @@ test('#52 模块 API：api.sendVoiceFile 把音频文件当语音条发', async 
   const call = mock.sent('send_private_msg').filter((c) => c.params.message.some((s) => s.type === 'record' && String(s.data.file).startsWith('base64://'))).at(-1)
   assert.ok(call, '语音条发出去了')
 })
+
+test('模块状态带标签状态点：写了 flag 用它，有 enabled 设置看 enabled，都没有不显示（#166）', async () => {
+  assert.equal((await mod('flagged')).flag, 'loggedIn')
+  assert.equal((await mod('switchy')).flag, 'enabled')
+  assert.equal((await mod('plain')).flag, '')
+})
+

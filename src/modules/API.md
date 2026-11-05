@@ -7,9 +7,9 @@
 你可以：
 
 - **加新模块**：给她新本事（查天气、接智能家居、关键词回复、对接自己的服务……）
-- **关掉内置模块**：面板「扩展」页一个开关
+- **关掉内置模块**：面板「已安装」页一个开关
 - **替换内置模块**：写一个**同名**的模块，内置的就不加载了，用你的
-- **复制内置模块来改**：面板「扩展」页点「复制一份来改」，内置模块的源码会复制到 `modules/<id>/`，改完保存就生效
+- **复制内置模块来改**：面板「已安装」页点「复制一份来改」，内置模块的源码会复制到 `modules/<id>/`，改完保存就生效
 
 ## 目录
 
@@ -46,7 +46,7 @@ export default {
 }
 ```
 
-保存后几秒内自动加载，不用重启。面板「扩展」页能看到它在不在跑、有没有报错。
+保存后几秒内自动加载，不用重启。面板「已安装」页能看到它在不在跑、有没有报错。
 
 - 入口文件叫 `index.mjs`（或 `index.js`，但要是 ES 模块写法）
 - 文件夹名以 `_` 或 `.` 开头的不加载（可以拿来放草稿）
@@ -165,7 +165,7 @@ export default {
 
 | | |
 |---|---|
-| `hub` | 聊天中枢：`deliver(chatId, text)` `sendText` `sendVoice(chatId, 文字)` `sendVoiceFile(chatId, 音频文件)` `sendImage` `sendSticker(chatId, 名字)` `sendSegments` `runSystemTurn(名字, 标题, 提示词)` `pushToSession(...)` `resetChat(chatId)` `groupName(群号)` `turnHasOwner(sessionId)` `chatOfSession(sessionId)` `stats()` `sessions()` `chatLogOf(日期)` `lastChatAt` `lastOwnerChatAt` …… |
+| `hub` | 聊天中枢：`deliver(chatId, text)` `sendText` `sendVoice(chatId, 文字)` `sendVoiceFile(chatId, 音频文件)` `sendImage` `sendSticker(chatId, 名字)` `sendSegments` `runSystemTurn(名字, 标题, 提示词)` `pushToSession(...)` `resetChat(chatId)` `groupName(群号)` `turnHasOwner(sessionId)`（只表示本轮有人是主人，别拿它做权限门，用下面的 `turnSendersAllOwner`） `turnSendersAllOwner(sessionId)` `referenceImage(chat, 'last' 或 'quote')`（取当前聊天最近收到 / 引用的图，返回 Buffer，沿用短期缓存） `chatOfSession(sessionId)` `stats()` `sessions()` `chatLogOf(日期)` `lastChatAt` `lastOwnerChatAt` …… |
 | `onebot` | QQ 网关：`call(action, params, { timeoutMs })`、`state` |
 | `snowluma` | SnowLuma 管理：`running()` `start()` `stop()` `detect()` …… |
 | `local` | 本地接口（「本地接口」页那四项）：`active(slot)` `call(slot, 参数)` |
@@ -261,14 +261,14 @@ api.tool(({ chat, level, sessionId }) => {
 - `required` 不写就是都可选；`execute` 的第二个参数是 DSH 传来的执行信息（一般用不到）
 - 返回 `{ ok: false, message: '原因' }` 时，她会看到失败原因，通常会用自己的话告诉对方没成功；抛出的错误也会变成这样
 - 工具的生成函数每次挂工具时调用（会话第一次用到、工具清单变化时），不是每次调用工具都调
-- 只想给主人用：在 `execute` 里判断 `api.core.hub.turnHasOwner(sessionId)`
+- 只想给主人用：在 `execute` 里判断 `api.core.hub.turnSendersAllOwner(sessionId)`（这一轮说话的人**全是主人**才放行；主人私聊会自动放行）。别用 `turnHasOwner`——它只表示本轮「有人是主人」，主人和群友同轮时别人能借权（H01 的教训）。
 - 工具的名字和描述尽量别经常改：改一次，DeepSeek 的缓存就失效一次
 - 想让她**知道**自己有这个本事，再加一条 `api.rule(() => '你会查天气：别人问天气时用 weather_now')`
 
 ## 面板
 
 **自动表单**：写了 `settings`，面板会多一个这个模块的标签页，自动生成设置表单，用户改完点保存。
-定义里写了 `tab: '内置标签页'`（`voice` `stickers` `imagegen` `diary` `speakup` `mood` `song` `bili` `douyin` `local` `group` `model` `persona` `access` `connect` `overview`），设置和面板就放进那一页的最下面，不单独占一页。比如给翻唱加功能的模块写 `tab: 'song'`。
+定义里写了 `tab: '内置标签页'`（`voice` `stickers` `imagegen` `diary` `speakup` `mood` `song` `bili` `local` `group` `model` `persona` `access` `connect` `overview`），设置和面板就放进那一页的最下面，不单独占一页。比如给翻唱加功能的模块写 `tab: 'song'`。
 
 ```js
 settings: [
@@ -310,23 +310,33 @@ return function Panel({ settings, save, toast }) {
 | `stickers` | 表情包 | `library()` `match(名字)` `pickForReply(文字)` `collect(消息段, chatId)` `addFromBuffer(buf, { name, tags })` `rename(md5, 名字, 标签)` `remove(md5)` `segmentFor(item)` |
 | `voice` | 语音 | `speak(文字) → { file, engine }` |
 | `mood` | 心情 | `state()` `label()` `nudge(变化量, 原因)` `effects()` `contextLine()` |
-| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `topicScore(文字)` `profiles()` `consolidate()` …… |
+| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance, kind, meta })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `noteVia({ via, qq, who, text, at })` `contextVia({ qq, query })` `topicScore(文字)` `profiles()` `consolidate()` …… |
 | `qq-tools` | 基础 QQ 工具 | （只有工具：`qq_chat_history`、`qq_send_message`、`qq_send_file`） |
-| `group-admin` | 群管 | （只有工具：`qq_group_admin`） |
 | `imagegen` | 生图 | `enabled()` `generate(描述) → Buffer` |
 | `diary` | 空间日记 | `writeDiary()` `post(正文, { images, visibility })` `remove(tid)` `history()` `nextTime()` |
 | `qzone-social` | 空间互动 | `run({ force })` `state()` |
 | `speakup` | 主动搭话 | `fire(原因)` `state()` |
 | `bili` | B 站 | `watch(链接)` `comment(链接, 文字)` `run()` `checkReplies()` `account()` `state()` |
-| `douyin` | 刷抖音 | `run` `browse` `watch` `likeVideo` `commentVideo` `confirmOwner` `account` `loginStep` `showWindow` `state`；工具 `douyin_watch` / `douyin_browse` / `douyin_like` / `douyin_comment` |
 | `song` | 翻唱 | `request({ song, pitch, chatId })` `search(关键词)` `status()` `install()` |
+
+平台是工具，同一个人只有一套记忆。模块确认平台账号对应的 QQ 后，可以用 `noteVia` 把双方对话写进同一份私聊流水（`who` 为 `user` 或 `bot`，`at` 是可选的毫秒时间戳），用 `contextVia` 取得这位 QQ 用户的私聊记忆上下文。模块用 `noteVia` 写入流水后，开启的短期状态会自动生效。核对不了身份的账号不要写入，也不要读取记忆。
+
+接 B 站、抖音、帖子、网页等外部内容平台时，看见或分享的内容用 `memory.addEvent({ kind: 'seen', text, meta: { title, author, url, platform, id } })`。它表示「她看过的内容」，不是作者对她说的话，不参与人物事实、画像、相处经验或长期印象的提炼。仍存于 `memories.json` 的 `items`，`source` 仍为 `event`。不要再把内容里的 `remember` 结果另存成普通事实或经历。
+
+`addEvent` 的 `kind` 可省略（原有「做过的事」），或传 `'seen'`。`meta` 可省略，只保留 title / author / url / platform / id 五个可选字符串，分别最多 160 / 80 / 500 / 40 / 100 字符，其他字段丢弃；`id` 也接受数字并转成字符串。`seen` 不挂到某个人名下；`text` 可记感受，省略时用标题。时间轴平台选项从 `meta.platform` 和聊天梗概保留的 `via` 自动汇总，不要求固定平台名。写入真实聊天平台的双方对话则用上面的 `noteVia`，不要用 `seen` 代替聊天流水。
+
+事实 `add` / `update` 支持可选 `validFrom`、`validUntil`（毫秒时间戳或明确年月日），开始时间默认取 `saidAt`。老记录只有 `invalidAt` 时，按它作为结束时间读取；新事实使旧事实过时时，保留 `supersededBy`，结束时间取新事实的 `saidAt`。`related` 是最多 6 个事实 id 的双向引用，由记忆库维护。面板返回的 `validityText`、`displayText`、`relatedItems` 是显示用的派生值，不重复存储。`timeline({ kind?, platform?, chatId?, level?, about? })` 汇总聊天梗概和 `seen`，其中 `kind` 为 `gist` 或 `seen`，平台来自每条返回值的 `platforms`。
 
 聊天中枢需要的时候会去找 `stickers`（发表情、偷表情）、`voice`（发语音）、`mood`（心情影响表情 / 语音频率）、`memory`（群聊插话判断）。
 这几个被关掉，对应的事就不做（想发语音时改发文字）；被替换，就用你的——所以替换时**导出的函数名要和上表一样**。
 
+## 社区模块
+
+插件能从社区库 `dsh-aurabot-qq-mods` 安装模块，装好后就是 `modules/<id>/` 里的一个普通模块，多一个记录来源的 `.aurabot-source.json`。想发布自己的模块，看那个仓库的贡献指南。桌宠、抖音、小黑盒、群管也在社区库里。
+
 ## 替换内置模块
 
-1. 面板「扩展」页，在要替换的内置模块那一行点「复制一份来改」
+1. 面板「已安装」页，在要替换的内置模块那一行点「复制一份来改」
 2. `modules/<id>/` 里出现 `index.mjs` 和它用到的实现文件（比如 `qzone.js`），开头注释写着从哪个版本复制的
 3. 改，保存。几秒内面板显示「用的是你的版本」
 4. 想临时用回内置的：那一行的「用内置的」开关；想彻底不要了：删掉文件夹
@@ -337,7 +347,7 @@ return function Panel({ settings, save, toast }) {
 
 ## 测试
 
-不用上 QQ 也能试：面板「扩展」页的「模拟测试」——
+不用上 QQ 也能试：面板「已安装」页的「模拟测试」——
 
 - **模拟一条消息**：选你是主人还是别人、私聊还是群聊，写一句话，看它会被哪个模块接管、命令回了什么；再写一句「她的回复」，看经过各个模块改写后最后会发出去什么
 - 你的模块加的 `/命令` 在模拟里**会执行**（看 `run` 回了什么）
@@ -358,12 +368,12 @@ return function Panel({ settings, save, toast }) {
 
 - **你的文件**：`modules/` 里的东西插件升级不碰
 - **`api.*` 和内置模块导出表**：同一个扩展接口版本（现在是 v{{API}}）里**只加不改**。哪天不得不改，接口版本升到 2，更新说明里写清楚怎么迁移；插件会拒绝加载版本对不上的模块，并在面板上告诉你原因，不会默默出错
-- **`api.core`、`api.lib`、`api.dsh`**：插件内部和 DSH 的东西，全开放但可能随版本变。用了它们的模块，升级后留意面板「扩展」页的报错
+- **`api.core`、`api.lib`、`api.dsh`**：插件内部和 DSH 的东西，全开放但可能随版本变。用了它们的模块，升级后留意面板「已安装」页的报错
 - **复制出来改的内置模块**：是你的分叉。内置的版本更新了，面板会提示「内置版本更新了」，你可以对照着把新改动合进去，或者删掉文件夹用回内置的
 
 ## 排查问题
 
-- 面板「扩展」页：每个模块在不在跑、用的是内置的还是你的、启动报错、运行中最近的报错
+- 面板「已安装」页：每个模块在不在跑、用的是内置的还是你的、启动报错、运行中最近的报错
 - 面板「日志」页：模块的日志按模块 id 分类
-- **安全模式**：「扩展」页打开后，你写的模块一个都不加载，内置的全部恢复。用来判断「是我的模块的问题还是插件的问题」
-- 不会写？在「扩展」页点「复制给 DSH 的话」，粘给 DSH，写上你想要什么，它会读这份说明帮你写
+- **安全模式**：「已安装」页打开后，你写的模块一个都不加载，内置的全部恢复。用来判断「是我的模块的问题还是插件的问题」
+- 不会写？在「已安装」页点「复制给 DSH 的话」，粘给 DSH，写上你想要什么，它会读这份说明帮你写

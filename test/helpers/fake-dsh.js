@@ -3,6 +3,8 @@
 
 import { randomUUID } from 'node:crypto'
 
+process.env.AURABOT_REGISTRY_URL ||= 'http://127.0.0.1:9/index.json' // 测试不碰真的社区库
+
 export function createFakeDsh({ brain }) {
   const disposers = []
   const listeners = new Map()
@@ -63,7 +65,7 @@ export function createFakeDsh({ brain }) {
             return result
           }
           const reply = await brain({ preset, text, images, ctxText, persona, callTool, toolNames: [...tools.keys()] })
-          turns.push({ sessionId, preset, userText: text, images: images.length, reply, toolCalls: calls, ctxText })
+          turns.push({ source: msg.source, sessionId, preset, userText: text, images: images.length, reply, toolCalls: calls, ctxText })
           emit('session/event', session, { type: 'assistant/message', data: { turn: myTurn, message: { content: [{ type: 'text', text: reply }] } } })
           emit('session/event', session, { type: 'turn/end', data: { turn: myTurn, reason: { kind: 'completed' } } })
         })
@@ -114,8 +116,9 @@ export function createFakeDsh({ brain }) {
     llm: {
       listProviders: () => ['fake'],
       async listModels() { return ['fake-1', 'm-pdef', 'm-gdef', 'm-owner', 'm-g777'].map((id) => ({ id, name: id })) },
-      async *stream() {
-        yield { type: 'text-delta', text: '可爱的小鲸鱼 #开心 #卖萌' }
+      async *stream({ system } = {}) {
+        const text = system?.includes('整理长期记忆') ? '[]' : '可爱的小鲸鱼 #开心 #卖萌'
+        yield { type: 'text-delta', text }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
     },
@@ -140,7 +143,7 @@ export function createFakeDsh({ brain }) {
     },
   }
 
-  async function call(path, body, headers = {}) {
+  async function call(path, body, headers = {}, socket, method) {
     const full = '/aurabot/api' + path.split('?')[0]
     // 先精确匹配，再找最长的前缀路由（和 DSH 的网页服务一样）
     const r = routes.get(full) || [...routes.values()].filter((x) => x.kind === 'prefix' && (full === x.path || full.startsWith(x.path + '/'))).sort((a, b) => b.path.length - a.path.length)[0]
@@ -149,13 +152,21 @@ export function createFakeDsh({ brain }) {
     let status = 200
     const req = {
       url: '/aurabot/api' + path,
-      headers,
+      // 默认带本机 Host：真实场景里本机面板/测试直调都带 127.0.0.1 的 Host，
+      // 而管理面的 Host 允许名单（DNS rebinding 防护）会拒绝没有 Host 的请求。
+      // 测试要模拟异常 Host（rebinding / 反代域名）时在 headers 里显式覆盖。
+      headers: { host: '127.0.0.1:5099', ...headers },
+      // 默认带 body 的调用按 POST 处理；要测别的写方法（PUT/DELETE…）用第五个参数显式给
+      method: method || (body != null ? 'POST' : 'GET'),
       async *[Symbol.asyncIterator]() { if (body) yield JSON.stringify(body) },
     }
+    // 模拟真实连接的来源地址：不传 = 进程内直调（无 socket，插件按本机处理）；
+    // 传 '203.0.113.7' = 外网直连；传 '127.0.0.1' = 本机/反代接入。
+    if (socket) req.socket = { remoteAddress: socket }
     const res = { set statusCode(v) { status = v }, setHeader() {}, end(s) { out = s } }
     await r.handler(req, res)
     return { status, raw: () => out, json: () => JSON.parse(out) }
   }
 
-  return { ctx, routes, variables, agents, workspaces, turns, logs, call, dispose: () => disposers.reverse().forEach((d) => { try { d() } catch (e) {} }) }
+  return { ctx, emit, routes, variables, agents, workspaces, turns, logs, call, dispose: () => disposers.reverse().forEach((d) => { try { d() } catch (e) {} }) }
 }

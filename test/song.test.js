@@ -33,6 +33,15 @@ test('挑歌：钢琴版、伴奏这类排到最后，点歌时本来就要钢�
   assert.ok(studio.VOCAL_MIN_DB < -40)
 })
 
+test('清唱：不带伴奏输入，翻唱照常混音', () => {
+  const dry = studio.mixArgs({ vocals: 'v.wav', vol: 1, iv: 0.8, out: 'o.mp3' })
+  assert.equal(dry.filter((a) => a === '-i').length, 1)
+  assert.ok(!dry.join(' ').includes('amix'))
+  const full = studio.mixArgs({ vocals: 'v.wav', inst: 'i.wav', vol: 1, iv: 0.8, out: 'o.mp3' })
+  assert.equal(full.filter((a) => a === '-i').length, 2)
+  assert.ok(full.join(' ').includes('amix'))
+})
+
 test('音色列表：models 目录里的 .pth，配同名 .index', () => {
   const dir = mkdtempSync(join(tmpdir(), 'voices-'))
   for (const n of ['voiceB.pth', 'voiceA.pth', 'added_IVF_voiceA.index', 'readme.txt']) writeFileSync(join(dir, n), 'x')
@@ -139,17 +148,19 @@ test('导入音色：单个 .pth 直接导入；不是模型、不支持的格�
   assert.deepEqual(studio.listVoices(dir).map((x) => x.id), ['evil'])
 })
 
-test('安装：报错翻译成人话、安装位置检查、列出各个盘', () => {
+test('安装：报错翻译成人话、安装位置检查、列出各个盘', async (t) => {
   assert.match(studio.explainInstallError('spawn uv ENOENT'), /找不到需要的程序（uv）/)
   assert.match(studio.explainInstallError('error sending request for url ... connection reset'), /国内镜像/)
   assert.match(studio.explainInstallError('30 秒没进度'), /超时/)
   assert.match(studio.explainInstallError('No space left on device'), /磁盘空间/)
   assert.equal(studio.checkRoot('rvc').ok, false)
   assert.equal(studio.checkRoot('').ok, true)
-  assert.match(studio.checkRoot('C:\\我的 文件\\rvc').warn, /中文或空格/)
-  assert.ok(studio.checkRoot('C:\\Aurabot\\rvc').freeGB > 0)
-  const drives = studio.listDrives()
-  assert.ok(drives.some((d) => d.drive === 'C:' && d.root === 'C:\\Aurabot\\rvc' && d.totalGB > 0))
+  await t.test('Windows 安装位置检查和盘符列表', { skip: process.platform !== 'win32' && '安装位置检查和盘符列表依赖 Windows 盘符' }, () => {
+    assert.match(studio.checkRoot('C:\\我的 文件\\rvc').warn, /中文或空格/)
+    assert.ok(studio.checkRoot('C:\\Aurabot\\rvc').freeGB > 0)
+    const drives = studio.listDrives()
+    assert.ok(drives.some((d) => d.drive === 'C:' && d.root === 'C:\\Aurabot\\rvc' && d.totalGB > 0))
+  })
   assert.equal(studio.INSTALL_STEPS.length, 6)
 })
 

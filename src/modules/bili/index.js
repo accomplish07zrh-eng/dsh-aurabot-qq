@@ -3,16 +3,17 @@
 import { readFileSync } from 'node:fs'
 import { createBili } from '../../bili/duty.js'
 import { defineTool, str } from '../../tools/tools.js'
-import { profileToolVisible, profilePermits } from '../../chat/access.js'
+import { permOf, profileToolVisible, profilePermits } from '../../chat/access.js'
 import { avatarSource } from '../profile/index.js'
+import { createDanmaku, danmakuPanelRequest } from './danmaku.js'
 
 export default {
   id: 'bili',
   name: 'B站',
   version: '1.1.0',
-  description: '看别人发的 B 站视频；定时自己刷、评论、回评论；抽帧看画面、发截图；按权限改自己的头像 / 签名（bili_watch / bili_comment / qq_send_shot / bili_set_avatar / bili_set_sign）',
+  description: '看别人发的 B 站视频；定时自己刷、评论、回评论；可选发弹幕；抽帧看画面、发截图；按权限改自己的头像 / 签名（bili_watch / bili_comment / bili_danmaku / qq_send_shot / bili_set_avatar / bili_set_sign）',
   tab: 'bili',
-  files: ['bili/duty.js', 'bili/api.js', 'bili/vision.js', 'bili/shots.js'],
+  files: ['bili/duty.js', 'bili/api.js', 'bili/vision.js', 'bili/shots.js', 'bili/danmaku.js', 'bili/login-pause.js'],
   setup(api) {
     const { hub } = api.core
     const lastImage = new Map() // chatId → 最近一张图的网址（给 bili_set_avatar 的 last 用）
@@ -21,7 +22,11 @@ export default {
       if (url && /^https?:\/\//i.test(url)) lastImage.set(msg.chatId, url)
       return false
     })
-    const bili = createBili({ getConfig: api.config, hub, memory: api.lazy('memory'), log: api.log, dsh: api.dsh })
+    const danmaku = createDanmaku(api)
+    const bili = createBili({
+      getConfig: api.config, hub, memory: api.lazy('memory'), log: api.log, dsh: api.dsh,
+      afterBrowse: danmaku.afterBrowse,
+    })
     api.every(60_000, () => bili.tick(), '刷B站')
 
     // 看视频谁发的链接都能看，评论要主人开口
@@ -37,11 +42,14 @@ export default {
         }),
         defineTool({
           name: 'bili_comment',
-          description: '在一个 B 站视频下发评论（只有主人让你发的时候才用）。link 填链接或 BV 号，text 是评论内容。',
+          description: '在一个 B 站视频下发评论（只有主人让你发的时候才用）。link 填链接或 BV 号，text 是评论内容。要 @ 人就写 @完整昵称 并在后面空一格，@主人 会换成主人的 B 站号。',
           properties: { link: str('B 站链接或 BV 号'), text: str('评论内容') },
           required: ['link', 'text'],
           execute: async ({ link, text }) => {
-            if (!hub.turnHasOwner(sessionId)) return { ok: false, message: '只有主人能让我去发评论' }
+            // 评论权限：off / owner / all；owner 模式要求本轮所有说话人都是主人
+            const perm = permOf(api.config(), 'biliComment')
+            if (perm === 'off') return { ok: false, message: '这个操作在面板里关掉了' }
+            if (perm === 'owner' && !hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人能让我去发评论' }
             return bili.comment(String(link || ''), String(text || ''))
           },
         }),
@@ -51,14 +59,20 @@ export default {
           description: '把你在 B 站视频里截到的画面发到当前聊天。主人说「发张截图」「给我看看你刷到的」「刚才那个视频长啥样」这类话时用。query 填视频标题里的词或想看的内容，不填就挑最近的一张。',
           properties: { query: str('可选：视频标题关键词，或想看的内容') },
           required: [],
-          execute: async ({ query }) => bili.sendShot({ chatId: chat.chatId, query: String(query || '') }),
+          execute: async ({ query }) => {
+            if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
+            return bili.sendShot({ chatId: chat.chatId, query: String(query || '') })
+          },
         }),
         defineTool({
           name: 'qq_list_shots',
           description: '看看你手上还有哪些 B 站截图（来自哪个视频、第几秒）。挑截图之前可以先看一眼。',
           properties: { query: str('可选，按视频标题筛选') },
           required: [],
-          execute: async ({ query }) => bili.listShots(String(query || '')),
+          execute: async ({ query }) => {
+            if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '截图只给主人看' }
+            return bili.listShots(String(query || ''))
+          },
         }),
       ]
     })
@@ -108,6 +122,32 @@ export default {
     api.route('/bili/account', async () => bili.account(true))
     api.route('/bili/run', async () => bili.run({ force: true }))
     api.route('/bili/replies', async () => bili.checkReplies())
+    api.route('/bili/danmaku/state', async () => danmaku.state())
+    for (const action of ['inspect', 'send']) {
+      api.route('/bili/danmaku/' + action, async (req) => {
+        if (!danmakuPanelRequest(req)) return { ok: false, message: '请从 B 站面板发起弹幕操作' }
+        return danmaku[action](await api.core.http.body(req))
+      })
+    }
+    api.tool(({ chat, level, sessionId }) => {
+      const cfg = api.config()
+      if (!cfg.bili.enabled || !cfg.bili.danmakuEnabled || level !== 'full'
+        || chat.kind !== 'private' || String(chat.userId) !== String(cfg.ownerQQ)) return []
+      return defineTool({
+        name: 'bili_danmaku',
+        description: '只有主人明确让你发弹幕时才用。link 为视频或番剧链接；seconds 为当前分P内的出现时间（秒），part 为分P或ss链接的选集序号。不要替主人猜时间或内容。',
+        properties: {
+          link: str('B站视频 / 番剧完整链接或 BV、av、ep、ss 编号'), text: str('一行弹幕文字，最多100字'),
+          seconds: { type: 'number', minimum: 0, description: '出现时间（秒）' },
+          part: { type: 'integer', minimum: 1, description: '分P / 选集序号，默认1' },
+        },
+        required: ['link', 'text', 'seconds'],
+        execute: async ({ link, text, seconds, part }) => {
+          if (!hub.turnSendersAllOwner(sessionId)) return { ok: false, message: '只有主人私聊让我发弹幕才行' }
+          return danmaku.send({ video: link, text, seconds, part })
+        },
+      })
+    })
     // 截图库（面板里看全部、手动删）
     api.route('/bili/shots', async () => ({ ...bili.libraryShots(), limit: api.config().bili.shotLibrary }))
     api.route('/bili/shot/image', async (req, res) => {

@@ -1,6 +1,7 @@
 // 直接问一次宿主模型（不进会话）：给表情起备注、心情判断、记忆提炼等后台小任务用。
 
 import { randomUUID } from 'node:crypto'
+import { cleanText } from './text.js'
 
 export function defaultModel(dsh, cfg) {
   if (cfg?.model?.provider && cfg?.model?.model) return { provider: cfg.model.provider, model: cfg.model.model }
@@ -43,12 +44,17 @@ export async function modelVision (dsh, provider, model) {
   return value
 }
 
-/** 当前设置里的模型能看图吗。面板上「视觉能力」可以手动声明，覆盖元数据。null = 不知道。 */
-export async function canSeeImages (dsh, cfg) {
-  const v = cfg && cfg.model && cfg.model.vision
-  if (v === 'on') return true
-  if (v === 'off') return false
-  const t = defaultModel(dsh, cfg)
+/**
+ * 当前设置里的模型能看图吗。面板上「视觉能力」可以手动声明，覆盖元数据。null = 不知道。
+ * target 传了就只看这个模型（表情起名可以单独挑模型，主人对聊天模型的手动声明不该管到它）。
+ */
+export async function canSeeImages (dsh, cfg, target) {
+  if (!(target && target.provider && target.model)) {
+    const v = cfg && cfg.model && cfg.model.vision
+    if (v === 'on') return true
+    if (v === 'off') return false
+  }
+  const t = target && target.provider && target.model ? target : defaultModel(dsh, cfg)
   if (!t) return null
   return modelVision(dsh, t.provider, t.model)
 }
@@ -120,10 +126,18 @@ const isUnsupportedEffort = (error) => {
   return /UNSUPPORTED_REASONING_EFFORT|does not support reasoning effort|reasoning effort/i.test(msg)
 }
 
+/** 最近一次模型一个字没写时流里有什么：排查「模型没返回内容」用。 */
+let lastEmpty = ''
+export const lastEmptyInfo = () => lastEmpty
+
 async function runStream (llm, params) {
   let out = ''
+  const types = {}
+  let finish = ''
   for await (const chunk of llm.stream(params)) {
     if (!chunk) continue
+    types[chunk.type] = (types[chunk.type] || 0) + 1
+    if (chunk.type === 'finish') finish = JSON.stringify(chunk.reason || {}).slice(0, 120)
     if (chunk.type === 'text-delta') out += chunk.text
     if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
       const f = chunk.reason.failure || {}
@@ -132,20 +146,22 @@ async function runStream (llm, params) {
       throw error
     }
   }
+  if (!out.trim()) lastEmpty = `结束原因 ${finish || '无'}，数据块 ${JSON.stringify(types)}`
   return out.trim()
 }
 
 /**
  * @param {object} dsh 宿主 ctx
- * @param {{system:string, text:string, images?:Array<{data:string, mediaType:string}>, maxTokens?:number, temperature?:number, reasoningEffort?:string, cfg?:object}} o
+ * @param {{system:string, text:string, images?:Array<{data:string, mediaType:string}>, maxTokens?:number, temperature?:number, reasoningEffort?:string, cfg?:object, model?:{provider:string, model:string}}} o
  * @returns {Promise<string>}
  */
 export async function askModel (dsh, o) {
   const llm = dsh.llm || dsh.get('llm')
   if (!llm || typeof llm.stream !== 'function') throw new Error('宿主没有 llm 服务')
-  const t = defaultModel(dsh, o.cfg)
+  // o.model 指定了就用它（后台小任务可以单独挑便宜 / 能看图的模型），否则跟随设置
+  const t = o.model && o.model.provider && o.model.model ? { provider: o.model.provider, model: o.model.model } : defaultModel(dsh, o.cfg)
   if (!t) throw new Error('拿不到默认模型')
-  let content = [{ type: 'text', text: o.text }]
+  let content = [{ type: 'text', text: cleanText(o.text) }]
   for (const img of o.images || []) content.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: 'aurabot-image' })
   // 图片要先交给 DSH 的附件服务登记成附件块，模型适配层只认附件
   if (content.length > 1) {
@@ -157,15 +173,20 @@ export async function askModel (dsh, o) {
   const base = {
     provider: t.provider,
     model: t.model,
-    system: o.system || '',
+    system: cleanText(o.system || ''),
     messages,
     maxTokens: o.maxTokens || 600,
     temperature: o.temperature ?? 0.3,
   }
   let effort = await pickReasoningEffort(dsh, t.provider, t.model, o.reasoningEffort === undefined ? 'low' : o.reasoningEffort)
+  let widened = false
   for (let attempt = 0; ; attempt++) {
     try {
-      return await runStream(llm, effort ? { ...base, reasoningEffort: effort } : base)
+      const out = await runStream(llm, effort ? { ...base, reasoningEffort: effort } : base)
+      // 推理模型可能把输出预算全花在思考上，一个字没写：放宽预算再试一次
+      if (out || widened) return out
+      widened = true
+      base.maxTokens = Math.max(base.maxTokens, Math.min(4000, base.maxTokens * 3))
     } catch (error) {
       // 能力探测没查到 / 模型临时不认：去掉思考强度再来一次
       if (attempt === 0 && effort && isUnsupportedEffort(error)) {
