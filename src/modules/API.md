@@ -310,7 +310,7 @@ return function Panel({ settings, save, toast }) {
 | `stickers` | 表情包 | `library()` `match(名字)` `pickForReply(文字)` `collect(消息段, chatId)` `addFromBuffer(buf, { name, tags })` `rename(md5, 名字, 标签)` `remove(md5)` `segmentFor(item)` |
 | `voice` | 语音 | `speak(文字) → { file, engine }` |
 | `mood` | 心情 | `state()` `label()` `nudge(变化量, 原因)` `effects()` `contextLine()` |
-| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance, kind, meta })` `recall(查询, { about, limit })` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `noteVia({ via, qq, who, text, at })` `contextVia({ qq, query })` `topicScore(文字)` `profiles()` `consolidate()` …… |
+| `memory` | 记忆 | `add({ text, about, aboutName, importance, tags, source })` `addEvent({ text, about, tags, importance, kind, meta })` `recall(查询, { about, limit })` `vectorHits(查询)` `vectorStatus()` `vectorTest(文字)` `vectorReset()` `vectorSync()` `rerankStatus()` `rerankTest(文字)` `list(查询)` `remove(id)` `update(id, 改动)` `contextFor(chat, sessionId)` `noteVia({ via, qq, who, text, at })` `contextVia({ qq, query })` `topicScore(文字)` `profiles()` `consolidate()` …… |
 | `qq-tools` | 基础 QQ 工具 | （只有工具：`qq_chat_history`、`qq_send_message`、`qq_send_file`） |
 | `imagegen` | 生图 | `enabled()` `generate(描述) → Buffer` |
 | `diary` | 空间日记 | `writeDiary()` `post(正文, { images, visibility })` `remove(tid)` `history()` `nextTime()` |
