@@ -13,6 +13,50 @@ import { registerSecret } from '../core/redact.js'
 
 export const DOWNLOAD_PAGE = 'https://github.com/SnowLuma/SnowLuma/releases/latest'
 
+// 多个 Aurabot 实例连同一个 SnowLuma：登录令牌全进程共享，登录请求也合并。
+// 否则每个实例启动都各登录一次，很快撞上 SnowLuma 的登录次数上限。
+const AUTH_TTL = 30 * 60_000
+const authTokens = new Map() // base|password -> { token, at }
+const authPending = new Map() // base|password -> Promise<token>
+const authFailures = new Map() // base|password -> { at, message, status }
+const authKey = (base, pw) => `${base}|${pw}`
+function authFailure(key) {
+  const f = authFailures.get(key)
+  if (!f) return null
+  const ttl = f.status === 429 ? 120_000 : 60_000
+  if (Date.now() - f.at < ttl) return f
+  authFailures.delete(key)
+  return null
+}
+const connectionProblems = new Map() // base -> { at, message, status }
+function setConnectionProblem(base, error) {
+  const status = Number(error?.status) || 0
+  const raw = String(error?.message || error || '连接 SnowLuma 失败')
+  const message = status === 401
+    ? `SnowLuma 控制台密码错误：${raw}`
+    : status === 429
+      ? raw
+      : status === 403
+        ? `SnowLuma 拒绝登录：${raw}`
+        : status === 0
+          ? `连不上 SnowLuma：${raw}`
+          : `SnowLuma 连接失败（HTTP ${status}）：${raw}`
+  connectionProblems.set(base, { at: Date.now(), message, status })
+}
+function connectionProblemFor(base) {
+  return connectionProblems.get(base) || null
+}
+function clearConnectionProblemFor(base) {
+  connectionProblems.delete(base)
+  // 手动重试时连失败冷却也一起清掉，否则会拿着旧 429/401 结果立刻再失败
+  for (const k of [...authFailures.keys()]) if (k.startsWith(base + '|')) authFailures.delete(k)
+}
+function clearAuthForBase(base) {
+  for (const k of [...authTokens.keys()]) if (k.startsWith(base + '|')) authTokens.delete(k)
+  for (const k of [...authFailures.keys()]) if (k.startsWith(base + '|')) authFailures.delete(k)
+  for (const k of [...authPending.keys()]) if (k.startsWith(base + '|')) authPending.delete(k)
+}
+
 function readJsonSafe(file) {
   try {
     let t = readFileSync(file, 'utf8')
@@ -191,7 +235,10 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     }
     const r = await fetch(base() + path, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) })
     const j = await r.json().catch(() => ({}))
-    if (r.status === 401 && auth) token = ''
+    if (r.status === 401 && auth) {
+      token = ''
+      authTokens.delete(authKey(base(), cfg().webuiPassword))
+    }
     if (!r.ok) {
       const e = new Error(j.message || `HTTP ${r.status}`)
       e.status = r.status
@@ -203,22 +250,48 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
 
   async function login() {
     const pw = cfg().webuiPassword
+    const baseUrl = base()
+    const key = authKey(baseUrl, pw)
     // 密码换了（比如刚重置）就作废旧令牌重新登录
-    if (token && tokenPw === pw && Date.now() - tokenAt < 30 * 60_000) return token
+    if (token && tokenPw === pw && Date.now() - tokenAt < AUTH_TTL) return token
     if (!pw) throw Object.assign(new Error('还没在面板里填 SnowLuma 控制台密码'), { status: 0, code: 'no-password' })
     registerSecret(pw)
-    const r = await fetch(base() + '/api/login', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ password: pw }), signal: AbortSignal.timeout(15000),
-    })
-    const j = await r.json().catch(() => ({}))
-    if (!j.success || !j.token) throw Object.assign(new Error(j.message || '登录 SnowLuma 控制台失败'), { status: r.status })
-    if (j.mustChangePassword) throw Object.assign(new Error('SnowLuma 要求先在它的控制台里改一次密码'), { status: 403 })
-    registerSecret(j.token)
-    token = j.token
-    tokenPw = pw
-    tokenAt = Date.now()
-    return token
+    const cached = authTokens.get(key)
+    if (cached && Date.now() - cached.at < AUTH_TTL) {
+      token = cached.token; tokenPw = pw; tokenAt = cached.at
+      return token
+    }
+    const failed = authFailure(key)
+    if (failed) throw Object.assign(new Error(failed.message), { status: failed.status })
+    // 同一时刻只发一次登录请求，其他实例复用这次的结果
+    let pending = authPending.get(key)
+    if (!pending) {
+      pending = (async () => {
+        const r = await fetch(baseUrl + '/api/login', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password: pw }), signal: AbortSignal.timeout(15000),
+        })
+        const j = await r.json().catch(() => ({}))
+        if (!j.success || !j.token) throw Object.assign(new Error(j.message || '登录 SnowLuma 控制台失败'), { status: r.status })
+        if (j.mustChangePassword) throw Object.assign(new Error('SnowLuma 要求先在它的控制台里改一次密码'), { status: 403 })
+        registerSecret(j.token)
+        authTokens.set(key, { token: j.token, at: Date.now() })
+        authFailures.delete(key)
+        return j.token
+      })().finally(() => authPending.delete(key))
+      authPending.set(key, pending)
+    }
+    try {
+      const t = await pending
+      const hit = authTokens.get(key)
+      token = t
+      tokenPw = pw
+      tokenAt = hit?.at || Date.now()
+      return token
+    } catch (error) {
+      authFailures.set(key, { at: Date.now(), message: error.message || '登录 SnowLuma 控制台失败', status: Number(error.status) || 0 })
+      throw error
+    }
   }
 
   async function running() {
@@ -231,8 +304,10 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
   }
 
   async function start() {
+    const blocked = connectionProblemFor(base())
+    if (blocked) return { ok: false, message: blocked.message, blocked: true }
     const inst = detectInstall(cfg().dir)
-    if (!inst.installed) return { ok: false, message: inst.reason }
+    if (!inst.installed) { setConnectionProblem(base(), new Error(inst.reason)); return { ok: false, message: inst.reason } }
     if (await running()) return { ok: true, message: 'SnowLuma 已经在运行' }
     // 上一轮 DSH 退出时 SnowLuma 可能还没退干净：先看网关/端口，别在端口没释放时硬启
     // （硬启会 bind 失败，变成"WebUI 起来了但 OneBot 没监听"，之后所有消息都发不出去）
@@ -270,6 +345,7 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
       if (!pw) {
         pw = generatePassword()
         savePassword?.(pw)
+        clearAuthForBase(base())
         log.info('已为 SnowLuma 控制台自动生成密码（存在本机配置里，不显示）')
       }
       registerSecret(pw)
@@ -343,6 +419,11 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
 
   /** 只给机器人号注入；别的号（主人的主号）碰都不碰。 */
   async function attachBot() {
+    const blocked = connectionProblemFor(base())
+    if (blocked) {
+      lastAttach = { at: Date.now(), ok: false, message: blocked.message }
+      return lastAttach
+    }
     const bot = getConfig().botQQ
     let list
     try {
@@ -378,6 +459,32 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
    * OneBot 连上后核对登录的号。uin 是机器人号：核对通过。不是：撤销那次注入（SnowLuma 支持的话），
    * 记住这个进程以后不再碰。返回 true 表示可以用。
    */
+  /** 给某个 UIN 的 OneBot 配置安排唯一端口；多实例不能都占 3000/3001。 */
+  async function ensureOneBotPorts(uin, httpPort, wsPort) {
+    if (!uin) return { ok: false, message: '没有机器人号' }
+    let config
+    try {
+      const j = await api('/api/config/' + encodeURIComponent(String(uin)))
+      config = j.config
+    } catch (error) {
+      return { ok: false, message: '读不到 SnowLuma 的 OneBot 配置：' + error.message }
+    }
+    if (!config || typeof config !== 'object') return { ok: false, message: 'SnowLuma 没有返回 OneBot 配置' }
+    let changed = false
+    for (const s of config.networks?.httpServers || []) {
+      if (Number(s.port) !== Number(httpPort)) { s.port = Number(httpPort); changed = true }
+    }
+    for (const s of config.networks?.wsServers || []) {
+      if (Number(s.port) !== Number(wsPort)) { s.port = Number(wsPort); changed = true }
+    }
+    if (!changed) return { ok: true, changed: false, message: `OneBot 端口已经是 ${httpPort}/${wsPort}` }
+    try {
+      const r = await api('/api/config/' + encodeURIComponent(String(uin)), { method: 'POST', body: config })
+      return { ok: Boolean(r.success !== false), changed: true, message: `OneBot 端口已改成 ${httpPort}/${wsPort}`, result: r }
+    } catch (error) {
+      return { ok: false, changed: false, message: '改 SnowLuma OneBot 端口失败：' + error.message }
+    }
+  }
   async function confirmLogin(uin) {
     const bot = String(getConfig().botQQ)
     const pend = pendingVerify
@@ -442,7 +549,7 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
    */
   async function resetPassword(pw = '') {
     const inst = detectInstall(cfg().dir)
-    if (!inst.installed) return { ok: false, message: inst.reason }
+    if (!inst.installed) { setConnectionProblem(base(), new Error(inst.reason)); return { ok: false, message: inst.reason } }
     if (child) {
       try { child.kill() } catch (error) {}
     } else if (await running()) {
@@ -454,6 +561,7 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     try { unlinkSync(join(inst.dir, 'config', 'webui.json')) } catch (error) {}
     savePassword?.(pw || generatePassword(), !pw)
     token = ''
+    clearAuthForBase(base())
     const r = await start()
     return r.ok ? { ok: true, message: pw ? '控制台密码改好了，SnowLuma 已重新启动' : '控制台密码已改成自动管理，SnowLuma 已重新启动' } : r
   }
@@ -472,6 +580,7 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
         await api('/api/auth/change-password', { method: 'POST', body: { oldPassword: old, newPassword: pw } })
         savePassword?.(pw, false)
         token = ''
+        clearAuthForBase(base())
         log.info('SnowLuma 控制台密码改好了（主人自己设的）')
         return { ok: true, message: '控制台密码改好了' }
       } catch (error) {
@@ -499,7 +608,11 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     stop,
     processes,
     attachBot,
+    ensureOneBotPorts,
     confirmLogin,
+    connectionProblem: () => connectionProblemFor(base()),
+    clearConnectionProblem: () => clearConnectionProblemFor(base()),
+    blockConnection: (message) => setConnectionProblem(base(), new Error(message)),
     /** 手动点「接入机器人号」时清掉之前核对失败的记录，让主人能重试 */
     clearRejected: () => rejected.clear(),
     agreements,
@@ -525,3 +638,15 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     },
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+

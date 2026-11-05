@@ -1,8 +1,8 @@
-﻿// 账号注册表：一个 Aurabot 插件实例下可以有多个 QQ 号。
+// 账号注册表：一个 Aurabot 插件实例下可以有多个 QQ 号。
 // 默认账号沿用老目录（plugins-data/aurabot/），新账号放 accounts/<id>/。
 // 这里只管账号的元数据和配置初始化；运行时的 OneBot/SnowLuma 由 host 按账号启动。
 
-import { mkdirSync, existsSync, writeFileSync, copyFileSync } from 'node:fs'
+import { mkdirSync, existsSync, writeFileSync, readdirSync, copyFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { baseDataDir, accountDir, withAccount, readJson, writeJson, ensureDir } from './store.js'
@@ -11,7 +11,7 @@ import { loadConfig, saveConfig, DEFAULTS } from './config.js'
 const ACCOUNT_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
 
 const accountsFile = () => baseDataDir('accounts.json')
-const defaultAccount = () => ({ id: 'default', name: '大肥鱼', enabled: true, createdAt: 0, primary: true, slot: 'aurabot' })
+const defaultAccount = () => ({ id: 'default', name: '若娜瓦', enabled: true, createdAt: 0, primary: true, slot: 'aurabot' })
 
 export function normalizeAccountId(raw) {
   const id = String(raw || '').trim().toLowerCase()
@@ -27,7 +27,7 @@ export function loadAccounts() {
     const id = normalizeAccountId(item?.id)
     if (!id || seen.has(id)) continue
     seen.add(id)
-    out.push({ id, name: String(item.name || id), enabled: item.enabled !== false, createdAt: Number(item.createdAt) || 0, primary: false, slot: String(item.slot || (id === 'default' ? 'aurabot' : '')) })
+    out.push({ id, name: String(item.name || id), enabled: item.enabled !== false, locked: id === 'default' ? true : Boolean(item.locked), createdAt: Number(item.createdAt) || 0, primary: false, slot: String(item.slot || (id === 'default' ? 'aurabot' : '')) })
   }
   if (!seen.has('default')) out.unshift(defaultAccount())
   else out.sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : 0))
@@ -39,6 +39,7 @@ export function saveAccounts(accounts) {
     id: normalizeAccountId(a.id) || 'default',
     name: String(a.name || a.id || 'default'),
     enabled: a.enabled !== false,
+    locked: Boolean(a.locked),
     createdAt: Number(a.createdAt) || 0,
     slot: String(a.slot || (a.id === 'default' ? 'aurabot' : '')),
   }))
@@ -86,10 +87,11 @@ export function createAccount({ id, name, persona } = {}) {
   cfg.botQQ = ''
   cfg.snowluma = {
     ...JSON.parse(JSON.stringify(DEFAULTS.snowluma)),
-    dir: '',
+    webuiPort: 5100,
+    dir: String(template.snowluma?.dir || ''),
     autoStart: false,
     autoAttach: false,
-    webuiPassword: '',
+    webuiPassword: String(template.snowluma?.webuiPassword || ''),
     passwordAuto: false,
     httpUrl: '',
     wsUrl: '',
@@ -112,10 +114,15 @@ export function createAccount({ id, name, persona } = {}) {
   } catch (error) {}
   withAccount(accountId, () => saveConfig(cfg))
   const used = new Set(accounts.map((a) => a.slot).filter(Boolean))
-  const slot = ['aurabot', 'aurabot-2'].find((s) => !used.has(s))
-  if (!slot) throw new Error('实例槽位已满（当前支持 2 个），先删一个再建')
+  let slot = 'aurabot'
+  if (used.has(slot)) {
+    let n = 2
+    while (used.has("aurabot-" + n)) n++
+    slot = "aurabot-" + n
+  }
   const slotNo = Math.max(1, Number(String(slot).split('-')[1] || 1))
-  cfg.snowluma = { ...(cfg.snowluma || {}), webuiPort: 5099 + slotNo - 1 }
+  // SnowLuma 是同一个进程管多个 QQ；新账号只接入，不自己再拉一个进程。
+  cfg.snowluma = { ...(cfg.snowluma || {}), autoStart: false }
   withAccount(accountId, () => saveConfig(cfg))
   const settingsPath = join(accountDir(accountId), 'modules-data', 'persona-memory', 'settings.json')
   if (!existsSync(settingsPath)) {
@@ -128,6 +135,8 @@ export function createAccount({ id, name, persona } = {}) {
   saveAccounts(next)
   return { account: loadAccounts().find((a) => a.id === accountId), config: cfg }
 }
+
+
 
 
 
