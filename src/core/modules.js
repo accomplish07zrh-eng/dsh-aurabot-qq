@@ -214,6 +214,9 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
   const modCfg = (id) => getConfig().modules?.[id] || {}
   const isEnabled = (id) => modCfg(id).enabled !== false
   const isUserOn = () => !getConfig().safeMode
+  // 接口挂在哪：内置模块（以及从内置搬到社区库的那几个）沿用原来的根路径，别的模块挂在自己的 /ext/<id>/ 下。
+  // 面板里的 call('/x') 要用同一份判断决定基址（见 status().routesAtRoot），两边不能各算各的。
+  const routesAtRoot = (id) => builtinDefs.has(id) || STABLE_ROUTES.has(id)
 
   // ---------- 给模块的 api ----------
   function makeApi(id, source, rec) {
@@ -246,7 +249,7 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       return off
     }
     // 内置模块和替换它的版本用原来的路径（内置的面板页照常能用）；新模块放在 /ext/模块id/ 下
-    const prefix = builtinDefs.has(id) || STABLE_ROUTES.has(id) ? '' : `/ext/${id}`
+    const prefix = routesAtRoot(id) ? '' : `/ext/${id}`
     const def = rec.def
     // 模块拿到的 core：hub 换成「宿主按模块身份封装」的白名单副本（三审 #177：原型链斩断，
     // 模块摸不到原始 runSubagentTurn / subagentFor）；core 本体用 Proxy 转发，
@@ -738,7 +741,12 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
         routes: [...routes].filter(([, r]) => r.id === id).map(([p]) => p.replace('/aurabot/api', '')),
         settings: rec?.source === 'user' || (!rec && u) ? (def.settings || []) : [],
         defaults: def.defaults || {},
-        panel: Boolean(rec?.source === 'user' && def.panel),
+        // 内置模块也能带面板：内置和用户模块走同一条加载链路，面板只按「定义里有没有声明 panel」判断。
+        // 不再要求 rec.source === 'user'，否则内置模块写了 panel.js 也永远显示不出来。
+        // 仍然要求模块在跑（rec 存在），没跑起来的模块没有面板代码可读。
+        panel: Boolean(rec && def.panel),
+        // 接口是不是挂在根路径（内置模块的老路径）；面板里的 call() 靠它决定加不加 /ext/<id> 前缀
+        routesAtRoot: routesAtRoot(id),
         tab: def.tab || '',
         flag: typeof def.flag === 'string' ? def.flag : (def.settings || []).some((f) => f?.key === 'enabled') ? 'enabled' : '',
         keepPanel: Boolean(def.keepPanel),
@@ -763,13 +771,23 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
     return Boolean(rel) && !rel.startsWith('..') && !isAbsolute(rel)
   }
 
-  /** 自己写的模块的面板代码（panel.js），面板拿去执行。 */
+  /**
+   * 模块的面板代码（panel.js），面板拿去执行。
+   * 内置模块也允许带面板：两者本来就是同一条加载链路，面板只需要「定义里声明了 panel」。
+   * 面板文件从模块自己的文件夹读：用户模块在数据目录 modules/<id>，内置模块在 src/modules/<id>；
+   * 两边都要求落在各自的根目录里，防止 panel 写成 ../../xxx 去读根目录外面的文件。
+   */
   function panelSource(id) {
     const rec = live.get(id)
-    if (!rec || rec.source !== 'user' || !rec.def.panel) return null
-    const u = userSeen.get(id)
-    const file = typeof rec.def.panel === 'string' ? resolve(u.dir, rec.def.panel) : join(u.dir, 'panel.js')
-    if (!inside(u.dir, file) || !existsSync(file)) return null
+    if (!rec || !rec.def.panel) return null
+    // 内置模块的根目录是 src/modules/<id>；id 先按 ID_RE 校验，别让奇怪的名字把根目录带到外面去。
+    const builtin = rec.source !== 'user'
+    const root = builtin
+      ? (ID_RE.test(String(id)) ? join(BUILTIN_DIR, id) : '')
+      : (rec.dir || userSeen.get(id)?.dir || '')
+    if (!root) return null
+    const file = resolve(root, typeof rec.def.panel === 'string' ? rec.def.panel : 'panel.js')
+    if (!inside(root, file) || !existsSync(file)) return null
     return readFileSync(file, 'utf8')
   }
 
