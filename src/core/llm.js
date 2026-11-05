@@ -68,12 +68,27 @@ export async function canSeeImages (dsh, cfg, target) {
 const REASONING_TTL = 10 * 60_000
 const reasoningCache = new Map() // `provider::model` → { at, value }
 
+// 部分 OpenAI 兼容模型不接受 temperature（例如推理模型直接报 Unsupported parameter）。
+// 只记录「明确被拒过」的模型；没被拒过的模型仍照常带默认温度，不改变原行为。
+const temperatureCache = new Map() // `provider::model` → { at }
+
 export function clearReasoningCache () {
   reasoningCache.clear()
+  temperatureCache.clear()
 }
 
 function cacheReasoning (provider, model, value) {
   reasoningCache.set(`${provider}::${model}`, { at: Date.now(), value })
+}
+
+function temperatureUnsupported (provider, model) {
+  const hit = temperatureCache.get(`${provider}::${model}`)
+  if (!hit) return false
+  if (Date.now() - hit.at > REASONING_TTL) {
+    temperatureCache.delete(`${provider}::${model}`)
+    return false
+  }
+  return true
 }
 
 /**
@@ -126,6 +141,11 @@ const isUnsupportedEffort = (error) => {
   return /UNSUPPORTED_REASONING_EFFORT|does not support reasoning effort|reasoning effort/i.test(msg)
 }
 
+const isUnsupportedTemperature = (error) => {
+  const msg = String((error && (error.message || error.code)) || '')
+  return /unsupported parameter[^\n]*temperature|temperature[^\n]*(?:not supported|unsupported|does not support)/i.test(msg)
+}
+
 /** 最近一次模型一个字没写时流里有什么：排查「模型没返回内容」用。 */
 let lastEmpty = ''
 export const lastEmptyInfo = () => lastEmpty
@@ -176,19 +196,29 @@ export async function askModel (dsh, o) {
     system: cleanText(o.system || ''),
     messages,
     maxTokens: o.maxTokens || 600,
-    temperature: o.temperature ?? 0.3,
   }
+  let temperature = o.temperature ?? 0.3
   let effort = await pickReasoningEffort(dsh, t.provider, t.model, o.reasoningEffort === undefined ? 'low' : o.reasoningEffort)
   let widened = false
+  let temperatureTried = false
   for (let attempt = 0; ; attempt++) {
+    const params = { ...base }
+    if (temperature !== undefined && !temperatureUnsupported(t.provider, t.model)) params.temperature = temperature
+    if (effort) params.reasoningEffort = effort
     try {
-      const out = await runStream(llm, effort ? { ...base, reasoningEffort: effort } : base)
+      const out = await runStream(llm, params)
       // 推理模型可能把输出预算全花在思考上，一个字没写：放宽预算再试一次
       if (out || widened) return out
       widened = true
       base.maxTokens = Math.max(base.maxTokens, Math.min(4000, base.maxTokens * 3))
     } catch (error) {
       // 能力探测没查到 / 模型临时不认：去掉思考强度再来一次
+      if (!temperatureTried && temperature !== undefined && isUnsupportedTemperature(error)) {
+        temperatureTried = true
+        temperatureCache.set(`${t.provider}::${t.model}`, { at: Date.now() })
+        temperature = undefined
+        continue
+      }
       if (attempt === 0 && effort && isUnsupportedEffort(error)) {
         cacheReasoning(t.provider, t.model, null)
         effort = undefined

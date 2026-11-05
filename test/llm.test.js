@@ -116,3 +116,27 @@ test('宿主没有能力查询接口（老版本 DSH）：维持老行为，照�
   await askModel(dsh, { cfg: CFG, text: '在吗', reasoningEffort: 'max' })
   assert.equal(calls[0].reasoningEffort, 'max', '查不了就别偷偷丢掉用户配置')
 })
+
+test('温度参数被模型明确拒绝：去掉 temperature 重试一次并缓存', async () => {
+  clearReasoningCache()
+  let n = 0
+  const { dsh, calls } = fakeDsh({
+    reasoning: null,
+    stream: async function * (params) {
+      if ('temperature' in params && n++ === 0) {
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: "Unsupported parameter: 'temperature' is not supported with this model." } } }
+        return
+      }
+      yield { type: 'text-delta', text: '温度降级成功' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  })
+  const text = await askModel(dsh, { cfg: CFG, text: '在吗' })
+  assert.equal(text, '温度降级成功')
+  assert.equal(calls.length, 2, '应该去掉 temperature 重试一次')
+  assert.ok('temperature' in calls[0], '第一次带默认温度')
+  assert.equal('temperature' in calls[1], false, '第二次不带温度')
+  const before = calls.length
+  await askModel(dsh, { cfg: CFG, text: '在吗' })
+  assert.equal('temperature' in calls[before], false, '同模型后续直接不带温度')
+})
