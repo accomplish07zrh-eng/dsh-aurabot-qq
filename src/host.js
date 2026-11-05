@@ -9,8 +9,9 @@
 //
 // ⚠ 安全默认：总开关关、试运行开。不手动打开，一句都不会真的发到 QQ。
 
-import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync, mkdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync, mkdirSync, appendFileSync, readdirSync, rmSync, lstatSync } from 'node:fs'
+import { join, dirname, relative, isAbsolute, sep } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { loadConfig, saveConfig, publicConfig, mergeFromPanel } from './core/config.js'
@@ -24,7 +25,8 @@ import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
 import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
 import { mimeOf } from './chat/inbound.js'
-import { dataDir, ensureDir } from './core/store.js'
+import { setInstance, instanceName, dataDir, ensureDir, withAccount, accountDir } from './core/store.js'
+import { loadAccounts, saveAccounts, createAccount, loadConfigFor } from './core/accounts.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
@@ -47,7 +49,13 @@ const PKG = (() => {
   try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) } catch (error) { return { version: '?' } }
 })()
 const VERSION = PKG.version
-const PREFIX = '/aurabot/api'
+const DEFAULT_INSTANCE = 'aurabot'
+const INSTANCE_RE = /^[a-z][a-z0-9-]{1,31}$/
+const normalizeInstance = (raw) => {
+  const name = String(raw || '').trim().toLowerCase()
+  return INSTANCE_RE.test(name) ? name : DEFAULT_INSTANCE
+}
+
 
 /**
  * 这个 DSH 会话是不是 Aurabot 的 QQ 聊天会话（私聊/群聊各对应一个 DSH 会话）。
@@ -57,15 +65,161 @@ export function isChatSession(hub, session) {
   try { return Boolean(session?.id && hub?.chatOfSession?.(session.id)) } catch (error) { return false }
 }
 
-export function apply(ctx) {
+const dynamicPresetDisposers = new Map()
+function presetSuffix(instance) {
+  return instance === 'aurabot' ? '' : '_' + String(instance).replace(/^aurabot-?/, '').replace(/-/g, '_')
+}
+function dynamicPresetDefs(instance) {
+  const sfx = presetSuffix(instance)
+  const persona = `aurabot_persona${sfx}`
+  const priv = `aurabot_rules_private${sfx}`
+  const social = `aurabot_rules_social${sfx}`
+  const label = instance === 'aurabot' ? '' : `（${instance.replace(/^aurabot-?/, '')}）`
+  const compaction = (withPruner = true) => ({
+    id: 'compaction', name: 'cordis:group', group: true,
+    isolate: withPruner ? { compaction: true, toolResultPruner: true } : { compaction: true },
+    config: [
+      { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic' },
+      { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact' },
+      ...(withPruner ? [{ id: 'tool-result-pruner', name: '@deepseek-ai/dsh-compaction-tool-result-pruner', config: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 } }] : []),
+    ],
+  })
+  const fsTools = [
+    { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash', disabled: process.platform === 'win32' },
+    { id: 'tool-pwsh', name: '@deepseek-ai/dsh-tool-pwsh', disabled: process.platform !== 'win32' },
+    { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
+    { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', config: { sampleOverCapGlobResults: false } },
+  ]
+  return [
+    {
+      id: `${instance}-private`, name: `Aurabot · 主人私聊${label}`,
+      description: '主人私聊：人格 + 完整工具',
+      plugins: [
+        { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: `{{${persona}}}\n\n{{${priv}}}`, complete: true } },
+        { id: 'time-context', name: '@deepseek-ai/dsh-time-context' },
+        ...fsTools, compaction(true),
+        { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: true, searchTimeoutMs: 60000 } },
+      ],
+    },
+    {
+      id: `${instance}-private-long`, name: `Aurabot · 主人私聊${label}（长任务）`,
+      description: '主人私聊 + 后台任务和定时任务',
+      plugins: [
+        { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: `{{${persona}}}\n\n{{${priv}}}`, complete: true } },
+        { id: 'time-context', name: '@deepseek-ai/dsh-time-context' },
+        ...fsTools, compaction(true),
+        { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: true, searchTimeoutMs: 60000 } },
+        { id: 'tool-jobs', name: '@deepseek-ai/dsh-tool-jobs' },
+        { id: 'tool-schedule', name: '@deepseek-ai/dsh-tool-schedule' },
+      ],
+    },
+    {
+      id: `${instance}-subagent`, name: `Aurabot · 子智能体${label}`,
+      description: '派子任务用：无 QQ 人格，带本机工具',
+      plugins: [
+        { id: 'time-context', name: '@deepseek-ai/dsh-time-context' },
+        ...fsTools, compaction(true),
+      ],
+    },
+    {
+      id: `${instance}-social`, name: `Aurabot · 群聊${label}`,
+      description: '群聊/陌生人私聊：只有 QQ 社交工具',
+      plugins: [
+        { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: `{{${persona}}}\n\n{{${social}}}`, complete: true } },
+        { id: 'time-context', name: '@deepseek-ai/dsh-time-context' },
+        compaction(false),
+      ],
+    },
+  ]
+}
+async function agentPresetService(ctx) {
+  return await new Promise((resolve) => {
+    let done = false
+    const finish = (v) => { if (done) return; done = true; resolve(v) }
+    const timer = setTimeout(() => finish(null), 4000)
+    timer.unref?.()
+    try { ctx.inject(['agentPresets'], (child) => finish(child.agentPresets)) } catch (error) { finish(null) }
+  })
+}
+
+async function workspaceRegistryService(ctx) {
+  return await new Promise((resolve) => {
+    let done = false
+    const finish = (v) => { if (done) return; done = true; resolve(v) }
+    const timer = setTimeout(() => finish(null), 4000)
+    timer.unref?.()
+    try { ctx.inject(['workspaceRegistry'], (child) => finish(child.workspaceRegistry)) } catch (error) { finish(null) }
+  })
+}
+async function registerSlotPresets(ctx, instance) {
+  if (instance === 'aurabot' || instance === 'aurabot-2') return true
+  if (dynamicPresetDisposers.has(instance)) return true
+  const service = await agentPresetService(ctx)
+  if (!service || typeof service.register !== 'function') return false
+  const offs = []
+  try {
+    for (const def of dynamicPresetDefs(instance)) offs.push(await service.register(def))
+    dynamicPresetDisposers.set(instance, offs)
+    return true
+  } catch (error) {
+    for (const off of offs) { try { await off() } catch (e) {} }
+    try { console.error(`[aurabot] 注册 ${instance} preset 失败：`, error?.message || error) } catch (e) {}
+    return false
+  }
+}
+async function unregisterSlotPresets(instance) {
+  const offs = dynamicPresetDisposers.get(instance)
+  if (!offs) return
+  dynamicPresetDisposers.delete(instance)
+  for (const off of offs) { try { await off() } catch (error) {} }
+}
+/** 同一个 SnowLuma 安装只有一个控制台密码；新/第二实例没填时沿用默认实例的。 */
+function sharedSnowLumaConfig() {
+  try {
+    const accounts = loadAccounts()
+    for (const a of accounts) {
+      const s = loadConfigFor(a.id).snowluma || {}
+      if (s.webuiPassword) return s
+    }
+  } catch (error) {}
+  return null
+}
+function createRuntime(ctx, config = {}) {
+  const instance = normalizeInstance(config.instance)
+  const ACCOUNT_ID = String(config.account?.id || config.accountId || 'default')
+  const run = typeof config.run === 'function' ? config.run : (fn) => fn()
+  // 基础目录固定 aurabot；账号上下文由 ALS 决定，不能在这里 setInstance 成 slot。
+  setInstance('aurabot')
+  const INST = instance
+  // 默认实例保持原来的 /aurabot/api，老面板/书签/外部接口都不用改；后续实例各自一段前缀。
+  const PREFIX = INST === DEFAULT_INSTANCE ? '/aurabot/api' : `/${INST}/api`
+  try { appendFileSync('C:/Users/Administrator/Aurabot/qq-chats/_aurabot_boot.log', `${new Date().toISOString()} enter ${INST}\n`) } catch (error) {}
+
   const logger = createLogger({ dsh: ctx })
   const log = logger.child('core')
+  log.info(`实例 ${INST}｜数据目录 ${dataDir()}`)
   // 恢复备份必须在读配置之前：读完配置后内存里的旧状态会写回去
   try {
     const restored = applyPendingRestore()
     if (restored) log.info(`已恢复备份：${restored} 个文件，原来的文件在 backups/ 里留了底`)
   } catch (error) { log.error('恢复备份失败：', error.message) }
   let cfg = loadConfig()
+  if (ACCOUNT_ID !== 'default' || !cfg.snowluma?.webuiPassword) {
+    try {
+      const shared = sharedSnowLumaConfig()
+      if (shared) {
+        const sameDir = !cfg.snowluma?.dir || !shared.dir || String(cfg.snowluma.dir).toLowerCase() === String(shared.dir).toLowerCase()
+        if (sameDir) {
+          let dirty = false
+          if (!cfg.snowluma.dir && shared.dir) { cfg.snowluma.dir = shared.dir; dirty = true }
+          if (!cfg.snowluma.webuiPort && shared.webuiPort) { cfg.snowluma.webuiPort = shared.webuiPort; dirty = true }
+          if (cfg.snowluma.webuiPassword !== shared.webuiPassword) { cfg.snowluma.webuiPassword = shared.webuiPassword; dirty = true }
+          if (cfg.snowluma.passwordAuto) { cfg.snowluma.passwordAuto = false; dirty = true }
+          if (dirty) cfg = saveConfig(cfg)
+        }
+      }
+    } catch (error) {}
+  }
   let mods = null
   let bridge = null
   const getConfig = () => cfg
@@ -89,19 +243,21 @@ export function apply(ctx) {
   seedPersonas()
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
+  const varSuffix = INST === DEFAULT_INSTANCE ? '' : '_' + INST.replace(/^aurabot-?/, '').replace(/-/g, '_')
+  const varName = (base) => base + varSuffix
   const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => captureSystemPrompt(n, cleanText(fn(...args)))), `aurabot: 变量 ${n}`)
   const rulesOpts = (kind) => (mods ? { off: mods.builtinOff(), extra: mods.rules(kind) } : {})
   // 扩展模块能整段改写人格和规则（同步：提示词变量不能等）
   const rewrite = (event, text, ...args) => { const r = mods ? mods.filterSync(event, text, ...args) : text; return typeof r === 'string' ? r : r === null ? '' : text }
-  variable('aurabot_persona', () => rewrite('persona', currentPersonaText(cfg.persona.current)))
-  variable('aurabot_rules_private', () => {
+  variable(varName('aurabot_persona'), () => rewrite('persona', currentPersonaText(cfg.persona.current)))
+  variable(varName('aurabot_rules_private'), () => {
     const base = rewrite('rules', rulesText('private', cfg, rulesOpts('private')), 'private')
     // 危险命令确认开着时补一句：被拦下要如实告诉主人，别绕着写
     return base + (cfg.security && cfg.security.dangerConfirm
       ? '\n【危险命令】终端命令如果被安全策略拦下（删根目录/格式化/关机/下载后直接执行等），把命令原文和原因如实告诉主人，等主人回复「确认」后再重试；不要换一种写法绕过。'
       : '')
   })
-  variable('aurabot_rules_social', () => rewrite('rules', rulesText('social', cfg, rulesOpts('social')), 'social'))
+  variable(varName('aurabot_rules_social'), () => rewrite('rules', rulesText('social', cfg, rulesOpts('social')), 'social'))
 
   // ---------- QQ 网关 ----------
   const snowluma = createSnowLumaManager({
@@ -166,7 +322,8 @@ export function apply(ctx) {
     }
   }
   /** 核对通过后的事件都在这里处理（onEvent 直接调，核对期间攒下的也会补到这里）。 */
-  function handleEvent(ev) {
+  function handleEvent(ev) { return run(() => handleEventRaw(ev)) }
+  function handleEventRaw(ev) {
     if (!hub) return
     // 模块能看到所有原始事件（加群、撤回、好友申请……），只看不拦
     mods?.emit('onebot', ev)
@@ -195,14 +352,14 @@ export function apply(ctx) {
   const onebot = createOneBotClient({
     endpoint,
     log: logger.child('onebot'),
-    onState: (s, d) => {
+    onState: (s, d) => run(() => {
       onebotState = s
       if (s !== 'connected') { loginOk = false; pendingEvents = [] }
       else checkLogin().catch((error) => log.warn('核对登录号出错：', error.message))
       logger.child('onebot').info(`QQ 网关：${s}${d ? '（' + d + '）' : ''}`)
       mods?.emit('onebot/state', s)
-    },
-    onEvent: (ev) => {
+    }),
+    onEvent: (ev) => run(() => {
       // 还没核对是机器人号：核对期间先攒着，核对通过后补处理
       if (!loginOk) {
         if (verifying) {
@@ -211,8 +368,8 @@ export function apply(ctx) {
         }
         return
       }
-      handleEvent(ev)
-    },
+      handleEventRaw(ev)
+    }),
   })
   const groupRoles = createGroupRoles({ onebot, getConfig, log: logger.child('chat') })
   const local = createLocal({ getConfig, log: logger })
@@ -264,6 +421,8 @@ export function apply(ctx) {
     localApi: local,
     dsh: ctx,
     getConfig,
+    instance: INST,
+    run,
     log: logger.child('chat'),
     onebot,
     stickers,
@@ -505,6 +664,8 @@ export function apply(ctx) {
   // ---------- 模块 ----------
   const core = {
     hub, onebot, snowluma, local, groupRoles, mutes, logger, bridge: null,
+    instance: INST,
+    prefix: PREFIX,
     root: ROOT,
     ask: (opts) => askModel(ctx, { cfg: getConfig(), ...opts }),
     listModels,
@@ -513,8 +674,8 @@ export function apply(ctx) {
     personas: { list: listPersonas, read: readPersona, current: () => currentPersonaText(cfg.persona.current) },
     getConfig, setConfig,
   }
-  mods = createModules({ ctx, core, getConfig, setConfig, logger, version: VERSION, builtins: BUILTINS })
-  bridge = createBridge({ ctx, getConfig, setConfig, hub, mods, log: logger.child('bridge'), version: VERSION, apiVersion: API_VERSION, overview: () => overview() })
+  mods = createModules({ ctx, core, getConfig, setConfig, logger, version: VERSION, builtins: BUILTINS, instance: INST, prefix: PREFIX, run, accountId: ACCOUNT_ID })
+  bridge = createBridge({ ctx, getConfig, setConfig, hub, mods, log: logger.child('bridge'), version: VERSION, apiVersion: API_VERSION, instance: INST, prefix: PREFIX, overview: () => overview() })
   core.bridge = bridge
   core.modules = mods
   // 危险命令确认（可选保护）：DSH 在真正执行终端工具前会走 tools/pre-execute；
@@ -573,6 +734,7 @@ export function apply(ctx) {
   mods.listen('module/start', (id) => { if (id === 'pet') injectPetPort() })
 
   let unloaded = false
+  let stopped = false
   const community = createCommunity({ mods, getConfig, setConfig, log, version: VERSION, alive: () => !unloaded })
   const booted = mods.boot()
   booted.then(() => injectPetPort()).catch(() => {})
@@ -600,7 +762,7 @@ export function apply(ctx) {
     try {
       const reg = ctx.workspaceRegistry || ctx.get?.('workspaceRegistry')
       const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
-      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig())))
+      const ws = (reg?.list?.() || []).find((w) => norm(w.path) === norm(workspaceDirOf(getConfig(), INST)))
       return Boolean(ws?.sessionIds?.some((sid) => String(sid) === String(session.id)))
     } catch (error) {
       return false
@@ -653,6 +815,7 @@ export function apply(ctx) {
 
   // ---------- 启动 / 看门狗 ----------
   async function watchdog() {
+    if (unloaded || stopped) return
     if (!cfg.enabled) {
       if (onebot.state !== 'stopped') onebot.stop()
       return
@@ -662,6 +825,7 @@ export function apply(ctx) {
     if (own && inst.installed && cfg.snowluma.autoStart && !(await snowluma.running())) {
       const r = await snowluma.start()
       log.info('SnowLuma：', r.message)
+      if (!r.ok) { snowluma.blockConnection(r.message); return }
     }
     // 上次连上的不是机器人号：等主人手动点「接入机器人号」或改设置再连
     if (wrongAccount) return
@@ -671,6 +835,7 @@ export function apply(ctx) {
       if (Date.now() - last.at > 60_000) {
         const r = await snowluma.attachBot()
         log.info('接入机器人号：', r.message)
+        if (!r.ok) snowluma.blockConnection(r.message)
       }
     }
   }
@@ -719,7 +884,7 @@ export function apply(ctx) {
       apiVersion: API_VERSION,
       config: publicConfig(cfg),
       onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem() },
-      snowluma: { ...inst, running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
+      snowluma: { ...inst, running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, problem: snowluma.connectionProblem?.() || null, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
       stats: hub.stats(),
       // 模块关着时给个空壳，面板照常显示
       mood: use('mood')?.state?.() ?? { value: 0, label: '心情模块关着', reason: '', history: [] },
@@ -734,8 +899,8 @@ export function apply(ctx) {
       voice: { edgeInstalled: use('voice')?.edgeInstalled?.() ?? false },
       song: use('song')?.status?.() ?? null,
       sessions: hub.sessions(),
-      workspaceDir: workspaceDirOf(cfg),
-      workspaceReal: realWorkspace(workspaceDirOf(cfg)),
+      workspaceDir: workspaceDirOf(cfg, INST),
+      workspaceReal: realWorkspace(workspaceDirOf(cfg, INST)),
       personas: listPersonas(),
       modules: mods.status(),
       bridge: { dshTools: cfg.bridge.dshTools, http: cfg.bridge.http, hasToken: Boolean(cfg.bridge.token), tools: bridge.deniedTools(), toolsService: Boolean(ctx.get?.('tools')) },
@@ -795,13 +960,23 @@ export function apply(ctx) {
     const changedModel = before.model.provider !== cfg.model.provider || before.model.model !== cfg.model.model
     if (changedModel) { clearReasoningCache(); clearVisionCache() }
     if (changedConn || before.botQQ !== cfg.botQQ) wrongAccount = ''
+    // 多开：每个号的 OneBot HTTP/WS 端口必须是这一槽位专属的，不能都占 3000/3001
+    let portFix = null
+    if (cfg.gateway === 'snowluma' && cfg.botQQ) {
+      const slotNo = INST === 'aurabot' ? 1 : (Number(String(INST).split('-')[1]) || 1)
+      const httpPort = 3000 + (slotNo - 1) * 10
+      try {
+        portFix = await snowluma.ensureOneBotPorts(cfg.botQQ, httpPort, httpPort + 1)
+        if (portFix.changed && onebot.state !== 'stopped') onebot.restart()
+      } catch (error) { log.debug('同步 OneBot 端口失败：', error.message) }
+    }
     if (changedConn && onebot.state !== 'stopped') onebot.restart()
     if (!before.enabled && cfg.enabled) setTimeout(safe(watchdog, '看门狗'), 100)
     if (before.enabled && !cfg.enabled) onebot.stop()
     log.info(`设置已保存｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun ? '开' : '关'}`)
     await mods.sync().catch(() => {})
     if (pw && !pw.ok) return { ...(await overview()), ok: false, message: '其他设置保存了，但控制台密码没改：' + pw.message }
-    return { ...(await overview()), message: '保存好了' + (pw ? '，' + pw.message : '') }
+    return { ...(await overview()), message: '保存好了' + (pw ? '，' + pw.message : '') + (portFix?.changed ? '；' + portFix.message : '') }
   })
 
   // ---------- 面板代理：目的引擎 / 桌宠 ----------
@@ -1174,7 +1349,12 @@ export function apply(ctx) {
   })
 
   // SnowLuma
-  route('/snowluma/start', async () => snowluma.start())
+  route('/snowluma/start', async () => {
+    snowluma.clearConnectionProblem()
+    const r = await snowluma.start()
+    if (!r.ok) snowluma.blockConnection(r.message)
+    return r
+  })
   route('/snowluma/stop', async () => snowluma.stop())
   route('/snowluma/attach', async () => {
     wrongAccount = ''
@@ -1182,6 +1362,14 @@ export function apply(ctx) {
     const r = await snowluma.attachBot()
     if (cfg.enabled && onebot.state === 'stopped') onebot.start()
     return r
+  })
+  route('/snowluma/retry', async () => {
+    snowluma.clearConnectionProblem()
+    const r = await snowluma.start()
+    if (!r.ok) return r
+    const a = await snowluma.attachBot()
+    if (!a.ok) snowluma.blockConnection(a.message)
+    return { ok: Boolean(a.ok), message: a.message, start: r, attach: a }
   })
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
@@ -1202,12 +1390,48 @@ export function apply(ctx) {
     consentCache = { at: 0, value: null }
     return snowluma.consent(b.version)
   })
-  route('/snowluma/reset-password', async () => snowluma.resetPassword())
+  route('/snowluma/reset-password', async () => {
+    snowluma.clearConnectionProblem()
+    const owner = (config.siblings || []).find((rt) => rt.__slot === 'aurabot')
+    const target = owner?.snowluma || snowluma
+    if (target !== snowluma) target.clearConnectionProblem?.()
+    const r = await target.resetPassword()
+    if (!r.ok) { snowluma.blockConnection(r.message); return r }
+    const pw = target.password()
+    for (const rt of [...(config.siblings || []), { getConfig, setConfig }]) {
+      try {
+        const c = rt.getConfig()
+        c.snowluma = { ...(c.snowluma || {}), webuiPassword: pw, passwordAuto: true }
+        rt.setConfig(c)
+      } catch (error) {}
+    }
+    return r
+  })
   // 控制台密码：看一眼（打开 SnowLuma 自己的控制台要用）、自己设一个
   route('/snowluma/password', async () => ({ ok: true, password: snowluma.password(), auto: cfg.snowluma.passwordAuto }))
-  route('/snowluma/set-password', async (req) => snowluma.setPassword(String((await readBody(req)).password || '')))
+  route('/snowluma/set-password', async (req) => {
+    const pw = String((await readBody(req)).password || '')
+    // 一个 SnowLuma 只有一个控制台密码；从第二个实例改也交给默认实例的 manager，
+    // 避免“有进程在跑但不是自己启动的”导致重置失败。
+    snowluma.clearConnectionProblem()
+    const owner = (config.siblings || []).find((rt) => rt.__slot === 'aurabot')
+    const target = owner?.snowluma || snowluma
+    if (target !== snowluma) target.clearConnectionProblem?.()
+    const r = await target.setPassword(pw)
+    if (!r.ok) { snowluma.blockConnection(r.message); return r }
+    // 同步所有实例的内存配置和磁盘配置
+    const targets = [...(config.siblings || []), { getConfig, setConfig }]
+    for (const rt of targets) {
+      try {
+        const c = rt.getConfig()
+        c.snowluma = { ...(c.snowluma || {}), webuiPassword: pw, passwordAuto: false }
+        rt.setConfig(c)
+      } catch (error) {}
+    }
+    return { ...r, message: r.message + '（已同步到所有实例）' }
+  })
   route('/workspace/move', async (req) => {
-    const r = moveWorkspace(workspaceDirOf(cfg), (await readBody(req)).to)
+    const r = moveWorkspace(workspaceDirOf(cfg, INST), (await readBody(req)).to)
     if (r.ok) {
       await grantOwner(r.target, log)
       log.info(r.message)
@@ -1357,7 +1581,7 @@ export function apply(ctx) {
   route('/backup/create', backupAction(async () => {
     if (backupJob?.running) return { ok: false, message: '上一个备份还在打包' }
     backupJob = { running: true, done: 0, total: 0 }
-    createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()), onProgress: (p) => { backupJob = { ...backupJob, ...p } } })
+    createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig(), INST), onProgress: (p) => { backupJob = { ...backupJob, ...p } } })
       .then((result) => { backupJob = { running: false, result }; log.info(`备份完成：${result.name}，${result.files} 个文件`) })
       .catch((error) => { backupJob = { running: false, error: error.message }; log.error('备份失败：', error.message) })
     return { ok: true, message: '开始打包了' }
@@ -1575,13 +1799,306 @@ export function apply(ctx) {
     }
   })
 
-  log.info(`Aurabot v${VERSION} 已加载｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun ? '开' : '关'}｜工作区 ${workspaceDirOf(cfg)}`)
+  log.info(`Aurabot v${VERSION} 已加载｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun ? '开' : '关'}｜工作区 ${workspaceDirOf(cfg, INST)}`)
 
   return {
     hub, onebot, snowluma, getConfig, setConfig, logger, modules: mods, bridge, ready: booted,
+    shutdown: () => { stopped = true },
     get stickers() { return use('stickers') },
     get qzone() { return use('diary') },
     get mood() { return use('mood') },
     get memory() { return use('memory') },
   }
 }
+
+
+
+
+/** 把 DSH 的插件 ctx 包一层：所有会晚执行的入口都回到对应账号的 ALS 上下文。 */
+function makeAccountCtx(ctx, run) {
+  const routeDisposers = []
+  const wrap = (fn) => (typeof fn === 'function' ? (...args) => run(() => fn(...args)) : fn)
+  const wrapTools = (tools) => {
+    if (!tools || typeof tools !== 'object') return tools
+    return new Proxy(tools, {
+      get(target, prop) {
+        if (prop === 'register') {
+          return (tool) => {
+            const next = tool && typeof tool.execute === 'function'
+              ? { ...tool, execute: (...args) => run(() => tool.execute(...args)) }
+              : tool
+            return target.register(next)
+          }
+        }
+        const value = Reflect.get(target, prop, target)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+  }
+  const accountCtx = new Proxy(ctx, {
+    get(target, prop) {
+      if (prop === 'on') return (event, fn) => target.on(event, wrap(fn))
+      if (prop === 'effect') return (fn, label) => target.effect(() => run(fn), label)
+      if (prop === 'interval') return (fn, ms, label) => target.interval(wrap(fn), ms, label)
+      if (prop === 'setTimeout') return (fn, ms, ...rest) => target.setTimeout(wrap(fn), ms, ...rest)
+      if (prop === 'webServer') {
+        return new Proxy(target.webServer, {
+          get(ws, key) {
+            if (key === 'register') return (opts) => {
+              const off = ws.register({ ...opts, handler: wrap(opts.handler) })
+              if (typeof off === 'function') routeDisposers.push(off)
+              return off
+            }
+            const value = Reflect.get(ws, key, ws)
+            return typeof value === 'function' ? value.bind(ws) : value
+          },
+        })
+      }
+      if (prop === 'systemPrompt') {
+        return new Proxy(target.systemPrompt, {
+          get(sp, key) {
+            if (key === 'variable') return (name, provider) => sp.variable(name, wrap(provider))
+            if (key === 'context') return (opts) => sp.context({ ...opts, text: wrap(opts.text) })
+            const value = Reflect.get(sp, key, sp)
+            return typeof value === 'function' ? value.bind(sp) : value
+          },
+        })
+      }
+      if (prop === 'get') return (name) => (name === 'tools' ? wrapTools(target.get(name)) : target.get(name))
+      const value = Reflect.get(target, prop, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  accountCtx.__disposeRoutes = () => { for (const off of routeDisposers.splice(0)) { try { off() } catch (error) {} } }
+  return accountCtx
+}
+export function apply(ctx) {
+  let accounts = []
+  try { accounts = loadAccounts() } catch (error) {
+    try { appendFileSync('C:/Users/Administrator/Aurabot/qq-chats/_aurabot_boot.log', `${new Date().toISOString()} accounts load failed: ${error?.stack || error}\n`) } catch (e) {}
+    accounts = [{ id: 'default', slot: 'aurabot', enabled: true }]
+  }
+  const runtimes = []
+  const startRuntime = (account) => {
+    const slot = account.slot || (account.id === 'default' ? 'aurabot' : '')
+    if (!slot) throw new Error(`账号 ${account.id} 没有可用槽位`)
+    // 3 号及以后的槽位没有静态 preset，启动前异步补注册（静态 1/2 直接返回）。
+    void registerSlotPresets(ctx, slot)
+    const cfg = loadConfigFor(account.id)
+    const botQQ = String(cfg.botQQ || '')
+    if (botQQ) {
+      const clash = runtimes.find((rt) => String(rt.getConfig().botQQ || '') === botQQ)
+      if (clash) throw new Error(`QQ ${botQQ} 已经被另一个账号使用`)
+    }
+    const run = (fn) => withAccount(account.id, fn)
+    const pctx = makeAccountCtx(ctx, run)
+    const rt = run(() => createRuntime(pctx, { instance: slot, account, run, siblings: runtimes }))
+    rt.__accountId = account.id
+    rt.__slot = slot
+    rt.__disposeRoutes = pctx.__disposeRoutes
+    runtimes.push(rt)
+    return rt
+  }
+
+  const stopRuntime = (accountId) => {
+    const i = runtimes.findIndex((r) => r.__accountId === accountId)
+    if (i < 0) return
+    const rt = runtimes[i]
+    runtimes.splice(i, 1)
+    try { rt.onebot?.stop?.() } catch (error) {}
+    // SnowLuma 是两个账号共用的，删一个账号不能把另一个也停掉。
+    try { rt.hub?.dispose?.() } catch (error) {}
+    try { rt.bridge?.dispose?.() } catch (error) {}
+    try { rt.modules?.dispose?.() } catch (error) {}
+    try { rt.__disposeRoutes?.() } catch (error) {}
+    void unregisterSlotPresets(rt.__slot || '')
+  }
+
+  const accountInfo = async (account) => {
+    const rt = runtimes.find((r) => r.__accountId === account.id) || null
+    const cfg = loadConfigFor(account.id)
+    const snow = rt?.snowluma?.detect?.() || {}
+    const snowRunning = rt?.snowluma?.running ? await rt.snowluma.running().catch(() => false) : false
+    return {
+      id: account.id,
+      name: account.name,
+      slot: account.slot,
+      prefix: account.slot === 'aurabot' ? '/aurabot/api' : `/${account.slot}/api`,
+      enabled: account.enabled !== false && cfg.enabled === true,
+      locked: account.id === 'default' ? true : Boolean(account.locked),
+      configured: Boolean(cfg.botQQ && cfg.setupDone),
+      botQQ: cfg.botQQ,
+      online: rt ? rt.onebot?.state === 'connected' : false,
+      onebot: rt?.onebot?.state || 'stopped',
+      snowluma: { installed: Boolean(snow.installed), running: snowRunning, version: snow.version || '', webui: rt?.snowluma?.webuiUrl?.() || '', port: cfg.snowluma?.webuiPort || 0, dir: snow.dir || cfg.snowluma?.dir || '' },
+      persona: cfg.persona?.current || '',
+      workspace: cfg.workspaceDir || '',
+    }
+  }
+
+  const listAccounts = async () => Promise.all(loadAccounts().map(accountInfo))
+  const json = (res, status, body) => {
+    try { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)) } catch (error) {}
+  }
+  const readJson = async (req) => {
+    let text = ''
+    try { for await (const chunk of req) text += chunk } catch (error) {}
+    try { return JSON.parse(text || '{}') } catch (error) { return {} }
+  }
+  const routeExact = (path, handler) => {
+    try {
+      ctx.effect(() => ctx.webServer.register({
+        kind: 'exact',
+        path,
+        handler: (req, res) => {
+          Promise.resolve(handler(req, res)).catch((error) => json(res, 500, { ok: false, message: error.message }))
+        },
+      }), `aurabot: 账号接口 ${path}`)
+    } catch (error) {
+      try { appendFileSync('C:/Users/Administrator/Aurabot/qq-chats/_aurabot_boot.log', `${new Date().toISOString()} route ${path} failed: ${error?.message || error}\n`) } catch (e) {}
+    }
+  }
+
+  routeExact('/aurabot-accounts/api/accounts', async (req, res) => {
+    if (req.method === 'POST') {
+      const body = await readJson(req)
+      const created = createAccount({
+        name: String(body.name || '').trim() || '新账号',
+        modules: body.modules && typeof body.modules === 'object' ? body.modules : {},
+        persona: body.persona ? String(body.persona) : undefined,
+      })
+      const next = loadAccounts().map((a) => (a.id === created.account.id ? { ...a, enabled: true } : a))
+      saveAccounts(next)
+      const account = loadAccounts().find((a) => a.id === created.account.id)
+      try {
+        if (!(await registerSlotPresets(ctx, account.slot))) throw new Error('这个槽位的 agent preset 注册失败')
+        startRuntime(account)
+      } catch (error) {
+        saveAccounts(loadAccounts().map((a) => (a.id === account.id ? { ...a, enabled: false } : a)))
+        return json(res, 500, { ok: false, message: `账号配置已建，但运行时没起来：${error.message}`, account: await accountInfo(account) })
+      }
+      return json(res, 200, { ok: true, account: await accountInfo(account), list: await listAccounts() })
+    }
+    const userModules = (() => {
+      try {
+        return readdirSync(dataDir('modules'), { withFileTypes: true })
+          .filter((d) => d.isDirectory() && !d.name.startsWith('_') && !d.name.startsWith('.'))
+          .map((d) => ({ id: d.name, name: d.name, user: true }))
+      } catch (error) { return [] }
+    })()
+    return json(res, 200, { ok: true, list: await listAccounts(), modules: [...BUILTINS.map((m) => ({ id: m.id, name: m.name || m.id })), ...userModules] })
+  })
+
+  routeExact('/aurabot-accounts/api/accounts/delete', async (req, res) => {
+    if (req.method !== 'POST') return json(res, 405, { ok: false, message: '只支持 POST' })
+    const body = await readJson(req)
+    const id = String(body.id || '')
+    if (!id) return json(res, 400, { ok: false, message: '缺少账号 id' })
+    if (id === 'default') return json(res, 400, { ok: false, message: '默认账号不能删除' })
+    const account = loadAccounts().find((a) => a.id === id)
+    if (!account) return json(res, 404, { ok: false, message: '账号不存在' })
+    if (account.locked) return json(res, 403, { ok: false, message: '实例已锁定，请先解锁再删除' })
+    const cfg = loadConfigFor(id)
+    stopRuntime(id)
+    const warnings = []
+
+    // 1) 只允许删 accounts 根目录下的直接子目录，绝不扫别的账号
+    const accountsRoot = join(accountDir('default'), 'accounts')
+    const targetDir = accountDir(id)
+    const rel = relative(accountsRoot, targetDir)
+    const safeTarget = rel && !rel.startsWith('..') && !isAbsolute(rel) && !rel.includes('\\') && !rel.includes('/') && id !== 'default'
+    if (!safeTarget) return json(res, 400, { ok: false, message: '拒绝删除：账号目录不在 accounts 根目录下' })
+    stopRuntime(id)
+
+    // 2) 工作区必须精确等于这个账号配置的路径，且没有被别的账号共用
+    try {
+      const reg = await workspaceRegistryService(ctx)
+      const dir = workspaceDirOf(cfg, account.slot || '').trim()
+      const shared = dir && loadAccounts().some((a) => a.id !== id && workspaceDirOf(loadConfigFor(a.id), a.slot || '').trim().toLowerCase() === dir.toLowerCase())
+      if (dir && !shared) {
+        const ws = reg?.list ? reg.list().find((w) => String(w.path || '').toLowerCase() === dir.toLowerCase()) : null
+        if (ws && typeof reg.delete === 'function') await reg.delete(ws.id)
+        // 只清 Aurabot 根目录下的这个工作区；不碰其他账号、也不碰外层根目录
+        const botRoot = join(homedir(), 'Aurabot')
+        const inBotRoot = dir.toLowerCase().startsWith(botRoot.toLowerCase() + sep) && dir.toLowerCase() !== botRoot.toLowerCase()
+        if (inBotRoot && existsSync(dir)) {
+          try {
+            if (lstatSync(dir).isSymbolicLink()) warnings.push('工作区是链接，已跳过文件删除')
+            else rmSync(dir, { recursive: true, force: true })
+          } catch (error) { warnings.push('工作区文件没删干净：' + error.message) }
+        }
+      } else if (shared) warnings.push('工作区被其他账号共用，已跳过工作区删除')
+    } catch (error) { warnings.push('工作区没删掉：' + error.message) }
+
+    // 3) 只删这个账号自己的数据目录，不做“孤儿目录清扫”
+    try {
+      if (existsSync(targetDir) && lstatSync(targetDir).isSymbolicLink()) return json(res, 400, { ok: false, message: '拒绝删除：账号目录是链接' })
+      if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true })
+    } catch (error) {
+      return json(res, 500, { ok: false, message: '删除账号数据失败：' + error.message })
+    }
+    saveAccounts(loadAccounts().filter((a) => a.id !== id))
+    return json(res, 200, { ok: true, list: await listAccounts(), warnings })
+  })
+
+  routeExact('/aurabot-accounts/api/accounts/lock', async (req, res) => {
+    if (req.method !== 'POST') return json(res, 405, { ok: false, message: '只支持 POST' })
+    const body = await readJson(req)
+    const id = String(body.id || '')
+    const locked = body.locked !== false
+    if (!id) return json(res, 400, { ok: false, message: '缺少账号 id' })
+    const account = loadAccounts().find((a) => a.id === id)
+    if (!account) return json(res, 404, { ok: false, message: '账号不存在' })
+    if (id === 'default' && !locked) return json(res, 400, { ok: false, message: '默认账号必须锁定' })
+    saveAccounts(loadAccounts().map((a) => (a.id === id ? { ...a, locked } : a)))
+    return json(res, 200, { ok: true, list: await listAccounts() })
+  })
+
+  for (const account of accounts) {
+    if (account.enabled === false) continue
+    try {
+      startRuntime(account)
+    } catch (error) {
+      try { appendFileSync('C:/Users/Administrator/Aurabot/qq-chats/_aurabot_boot.log', `${new Date().toISOString()} runtime ${account.id} failed: ${error?.stack || error}\n`) } catch (e) {}
+      if (account.id === 'default') throw error
+    }
+  }
+  const primary = runtimes[0] || {}
+  return Object.assign(primary, { accounts, runtimes, startRuntime, listAccounts })
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
