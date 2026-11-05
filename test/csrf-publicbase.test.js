@@ -175,6 +175,64 @@ test('Host 允许名单：IPv6 回环带端口的 Host 必须放行（复审 3·
   assert.equal(evil.status, 403, '异常 Host 依旧拒绝')
 })
 
+test('Host 允许名单：publicHostname 可配多个（对外域名与内网地址并存）', async () => {
+  // 反代部署常见两个入口同时开面板：对外域名走反代、内网/直连地址走另一条路。
+  // 旧实现只认一个值，第二个入口打开面板后管理接口一律 403（连 /state 都读不到）。
+  api.setConfig({ ...api.getConfig(), security: { ...api.getConfig().security, publicHostname: 'panel.example.com, 192.0.2.10' } })
+  const byDomain = await fake.call('/state', null, { host: 'panel.example.com' }, '127.0.0.1')
+  assert.equal(byDomain.status, 200, '第一个主机放行')
+  const bySecond = await fake.call('/state', null, { host: '192.0.2.10:5099' }, '127.0.0.1')
+  assert.equal(bySecond.status, 200, '第二个主机（带端口）放行')
+  // 归一化没退化：大小写、结尾点、方括号都按主机名比
+  const sloppy = await fake.call('/state', null, { host: 'Panel.Example.COM.' }, '127.0.0.1')
+  assert.equal(sloppy.status, 200, '大小写与结尾点不影响匹配')
+  // Origin 同源校验同样认第二个主机（CSRF 闸与 Host 闸共用同一份名单）
+  const save = await fake.call('/save', { ownerName: '主人' }, {
+    host: '192.0.2.10:5099',
+    origin: 'https://192.0.2.10',
+    'sec-fetch-site': 'same-origin',
+    'content-type': 'application/json',
+  }, '127.0.0.1')
+  assert.equal(save.status, 200, '第二个主机的 Origin 算同源')
+  // 白名单之外照旧拒绝
+  const evil = await fake.call('/state', null, { host: 'evil.example' }, '127.0.0.1')
+  assert.equal(evil.status, 403, '未列出的主机仍拒绝（不能配多个就放宽成通配）')
+  // 列表是精确主机名，不是域名后缀：子域名不能借父域名混进来
+  const sub = await fake.call('/state', null, { host: 'evil.panel.example.com' }, '127.0.0.1')
+  assert.equal(sub.status, 403, '子域名不算白名单（精确匹配）')
+  // 手滑写成通配也不生效：列表里就是字面主机名，不做后缀或通配匹配
+  api.setConfig({ ...api.getConfig(), security: { ...api.getConfig().security, publicHostname: '*.example.com, *' } })
+  const wildcard = await fake.call('/state', null, { host: 'evil.example.com' }, '127.0.0.1')
+  assert.equal(wildcard.status, 403, '通配符不生效（写 *.example.com 不会放行整个域）')
+  // 清空配置回到「只有回环」
+  api.setConfig({ ...api.getConfig(), security: { ...api.getConfig().security, publicHostname: '' } })
+  const cleared = await fake.call('/state', null, { host: 'panel.example.com' }, '127.0.0.1')
+  assert.equal(cleared.status, 403, '清空后旧主机也拒绝（空配置行为不变）')
+})
+
+test('Host 允许名单：白名单项自带端口也能匹配（与请求 Host 同一口径）', async () => {
+  // 内网直连地址平时都带端口，用户很可能照直填进 publicHostname。
+  // Host 侧一直剥端口再比，白名单项不剥的话这一项会永不匹配、且很难自查（上游复审建议）。
+  api.setConfig({ ...api.getConfig(), security: { ...api.getConfig().security, publicHostname: 'panel.example.com, 192.0.2.10:5099' } })
+  const byPortItem = await fake.call('/state', null, { host: '192.0.2.10:5099' }, '127.0.0.1')
+  assert.equal(byPortItem.status, 200, '白名单项带端口，Host 带同样端口放行')
+  // 端口不参与主机身份：Host 的端口和白名单项里写的端口不同，仍是同一个主机
+  const otherPort = await fake.call('/state', null, { host: '192.0.2.10:8080' }, '127.0.0.1')
+  assert.equal(otherPort.status, 200, '端口不参与主机身份（请求 Host 与白名单项都先剥端口再比）')
+  // 剥端口不改变精确匹配口径：相邻 IP 照样拒绝
+  const otherHost = await fake.call('/state', null, { host: '192.0.2.11:5099' }, '127.0.0.1')
+  assert.equal(otherHost.status, 403, '相邻 IP 即使端口相同也进不来')
+  // Origin 侧共用同一份列表：带端口的白名单项也要让第二个主机的 Origin 算同源
+  const save = await fake.call('/save', { ownerName: '主人' }, {
+    host: '192.0.2.10:5099',
+    origin: 'https://192.0.2.10',
+    'sec-fetch-site': 'same-origin',
+    'content-type': 'application/json',
+  }, '127.0.0.1')
+  assert.equal(save.status, 200, '白名单项带端口时第二个主机的 Origin 仍算同源')
+  api.setConfig({ ...api.getConfig(), security: { ...api.getConfig().security, publicHostname: '' } })
+})
+
 test('Host 允许名单：反代场景缺 XFF 从 fail-open 兜成 fail-closed（复审 2·P1-1）', async () => {
   // socket 是回环且没配 trustedProxy → 本机直连，正常放行
   const direct = await fake.call('/state', null, { host: '127.0.0.1:5099' }, '127.0.0.1')
