@@ -16,6 +16,7 @@ import { decideGroupReply, engagedHint, pickAutoReply, policyFor, sameNameNote, 
 import { checkAllowed, levelFor, presetFor, isOwner } from './access.js'
 import { fetchImage, segmentBytes } from '../core/net.js'
 import { toMono16k } from '../voice/wav.js'
+import { asrConfigured, transcribeAudio } from '../voice/asr.js'
 import { mimeOf } from './inbound.js'
 import { forwardBody, readForward } from './forward.js'
 import { findFfmpeg, findSharp, shrinkImage, shrinkWithSharp } from '../core/img.js'
@@ -1389,19 +1390,25 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return Boolean(q && q.ok && q.isBot)
   }
 
+  /** QQ 语音是 silk：让网关转成 wav，再统一成 16kHz 单声道 PCM16。 */
+  async function recordWav(rec) {
+    const info = await onebot.call('get_record', { file: rec.data?.file, out_format: 'wav' }, { timeoutMs: 30000 })
+    const raw = info?.base64 ? Buffer.from(info.base64, 'base64') : await fetchImage(info?.file || info?.url, { maxBytes: 30 * 1024 * 1024 })
+    return toMono16k(raw)
+  }
+
   async function transcribe(msg) {
     for (const rec of msg.records) {
       // 本地接口接管：用用户自己的识别服务（最先试）
       if (localApi?.active('asr')) {
         try {
-          const info = await onebot.call('get_record', { file: rec.data?.file, out_format: 'wav' }, { timeoutMs: 30000 })
-          const raw = info?.base64 ? Buffer.from(info.base64, 'base64') : await fetchImage(info?.file || info?.url, { maxBytes: 30 * 1024 * 1024 })
+          const wav = await recordWav(rec)
           const { writeFileSync, mkdirSync } = await import('node:fs')
           const { join } = await import('node:path')
           const dir = localApi.dir() + '/out'
           mkdirSync(dir, { recursive: true })
           const file = join(dir, `asr-${Date.now()}.wav`)
-          writeFileSync(file, toMono16k(raw))
+          writeFileSync(file, wav)
           const r = await localApi.call('asr', { file })
           const text = String(typeof r === 'string' ? r : r?.text || '').trim()
           if (text) return `[语音] ${text}`
@@ -1409,11 +1416,36 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
           log.debug('本地接口语音识别失败：', error.message)
         }
       }
-      try {
-        const r = await onebot.call('fetch_ptt_text', { message_id: Number(msg.messageId) || msg.messageId }, { timeoutMs: 20000 })
-        if (r?.text) return `[语音] ${r.text}`
-      } catch (error) {
-        log.debug('QQ 语音转文字失败：', error.message)
+      const voiceCfg = getConfig().voice
+      const viaCloud = async () => {
+        if (!asrConfigured(voiceCfg)) return ''
+        try { return await transcribeAudio(await recordWav(rec), voiceCfg, log) } catch (error) {
+          log.debug('云端语音识别失败：', error.message)
+          return ''
+        }
+      }
+      const viaQq = async () => {
+        try {
+          const r = await onebot.call('fetch_ptt_text', { message_id: Number(msg.messageId) || msg.messageId }, { timeoutMs: 20000 })
+          return String(r?.text || '').trim()
+        } catch (error) {
+          log.debug('QQ 语音转文字失败：', error.message)
+          return ''
+        }
+      }
+      // 默认 QQ 优先（快、免费），云端做兜底；实测硅基 SenseVoice 一次约 14 秒，
+      // 所以只有用户显式把 prefer 设成 cloud 才提前。
+      if (voiceCfg.asrApi?.prefer === 'cloud') {
+        const text = await viaCloud()
+        if (text) return `[语音] ${text}`
+      }
+      {
+        const text = await viaQq()
+        if (text) return `[语音] ${text}`
+      }
+      if (voiceCfg.asrApi?.prefer !== 'cloud') {
+        const text = await viaCloud()
+        if (text) return `[语音] ${text}`
       }
       try {
         const text = await localTranscribe(rec)
@@ -1441,9 +1473,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       try { stt.prepare(pid) } catch (error) {}
       throw new Error(`识别模型还在准备（${prov.preparation.phase}）`)
     }
-    const info = await onebot.call('get_record', { file: rec.data?.file, out_format: 'wav' }, { timeoutMs: 30000 })
-    const raw = info?.base64 ? Buffer.from(info.base64, 'base64') : await fetchImage(info?.file || info?.url, { maxBytes: 30 * 1024 * 1024 })
-    const spec = stt.resolve({ audio: new Uint8Array(toMono16k(raw)) })
+    const spec = stt.resolve({ audio: new Uint8Array(await recordWav(rec)) })
     const r = await stt.transcribe(spec, AbortSignal.timeout(60000))
     const text = typeof r === 'string' ? r : r?.text || r?.transcript
     return text ? String(text).trim() : ''
@@ -1497,7 +1527,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     let groupEntry = null
     if (msg.kind === 'group') {
       const buf = groupBuf.get(msg.groupId) || []
-      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: msg.text, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId, images: msg.images, stickers: msg.stickers }
+      const entryText = msg.text || (!cfg.voice.asr && msg.records.length ? '[发来一条语音]' : '')
+      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: entryText, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId, images: msg.images, stickers: msg.stickers, voicePromise: null, voiceText: '' }
       buf.push(groupEntry)
       while (buf.length > 40) buf.shift()
       groupBuf.set(msg.groupId, buf)
@@ -1581,6 +1612,24 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       return
     }
 
+    // 群里的语音：先异步转写，结果补进 groupBuf。以前只有「这一条要回」时才转，
+    // 所以没 @ 的语音永远是空文本，后面的 @ 也看不到它（#197）。
+    // 不阻塞这一条消息的群聊判断；真要交给她时（groupPrompt / 这一条要回）再等结果。
+    if (msg.kind === 'group' && groupEntry && cfg.voice.asr && msg.records.length) {
+      groupEntry.voicePromise = transcribe(msg)
+        .then((t) => {
+          if (t) {
+            groupEntry.text = groupEntry.text ? `${groupEntry.text} ${t}` : t
+            groupEntry.voiceText = t
+          }
+          return t
+        })
+        .catch((error) => {
+          log.debug('群语音转写失败：', error.message)
+          return ''
+        })
+    }
+
     // 扩展模块可以先接管这条消息（关键词回复、转给自己的服务……）
     if (hooks?.message) {
       try {
@@ -1605,6 +1654,12 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const pol0 = policyFor(cfg.group, cfg.group.overrides, msg.groupId)
       // 心情好更爱插话，心情差少插话
       const pol = { ...pol0, interjectChance: Math.min(1, pol0.interjectChance * mood().chatty) }
+      // 这一条要是语音，最多等 2 秒看能不能转出来：她名字/话题在语音里时也能被叫动；
+      // 转得慢（比如云端兜底）就先走群聊判断，groupPrompt 时再等完整结果。
+      if (groupEntry?.voicePromise) {
+        await Promise.race([groupEntry.voicePromise, sleep(2000)])
+        if (groupEntry.voiceText) msg.wakeText = groupEntry.voiceText
+      }
       // 群里最近在聊的（窗口内最后几条）和她有多相关
       const recentTexts = (groupBuf.get(msg.groupId) || []).filter((x) => now - x.t < pol.activeWindowSec * 1000).slice(-6).map((x) => x.text)
       let memScore = 0
@@ -1664,7 +1719,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         if (last) last.text = text
       }
     }
-    const voiceText = cfg.voice.asr && msg.records.length ? await transcribe(msg) : msg.records.length ? '[发来一条语音]' : ''
+    const voiceText = cfg.voice.asr && msg.records.length
+      ? (groupEntry?.voicePromise ? await groupEntry.voicePromise : await transcribe(msg))
+      : msg.records.length ? '[发来一条语音]' : ''
     if (disposed) return
     if (voiceText) text = (text ? text + ' ' : '') + voiceText
     if (voiceText && msg.kind === 'private' && onMemoryCommand) {
@@ -1815,6 +1872,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     // 时间戳可能同一毫秒：直接取上一轮之后的消息，避免紧接着到达的消息丢失。
     const fresh = buf.filter((x) => !x.fed).slice(-20)
     const older = buf.filter((x) => x.fed).slice(-8)
+    // 这一段里还没转完的群语音：等它一下，免得交给她时那条还是「（图片/表情）」（#197）
+    const pendingVoices = fresh.filter((x) => x.voicePromise && !x.voiceText).map((x) => x.voicePromise)
+    if (pendingVoices.length) await Promise.all(pendingVoices)
     for (const x of buf) x.fed = true
     // 引用内容只在这一段真要交给她时才取（缓存在 quoteCache 里，取失败也会记一笔）
     const need = fresh.filter((x) => x.replyId && !('quote' in x))

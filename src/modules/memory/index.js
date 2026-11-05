@@ -24,7 +24,7 @@ export default {
       try {
         if (!info || !info.chat || info.chat.kind === 'system' || !Array.isArray(content)) return content
         const hits = memory.shouldAutoRecall(info.queryText || '') ? await memory.vectorHits(info.queryText || '', { respectForget: true }) : []
-        const hint = memory.recallHint(info.chat, info.queryText || '', info.prevText || '', info.sessionId, info.speakers || [], hits)
+        const hint = await memory.recallHintAsync(info.chat, info.queryText || '', info.prevText || '', info.sessionId, info.speakers || [], hits)
         if (!hint) return content
         return [{ type: 'text', text: hint }, ...content]
       } catch (error) { return content }
@@ -87,7 +87,7 @@ export default {
             const onlyAbout = owner ? undefined : speakers
             const about = owner ? chat.userId : (chat.kind === 'group' ? speakers : chat.userId)
             const vectorHits = await memory.vectorHits(query)
-            const hits = memory.recall(String(query || ''), { about, onlyAbout, requireAbout: !owner, excludeAbout: owner ? '' : api.config().ownerQQ, includeGroup: owner, groupChatId: chat.kind === 'group' ? current : '', limit: 8, where: current + '（翻记忆）', vectorHits })
+            const hits = await memory.recallAsync(String(query || ''), { about, onlyAbout, requireAbout: !owner, excludeAbout: owner ? '' : api.config().ownerQQ, includeGroup: owner, groupChatId: chat.kind === 'group' ? current : '', limit: 8, where: current + '（翻记忆）', vectorHits })
             return hits.length ? { ok: true, message: hits.map((h) => memoryLine(h.it)).join('；') } : { ok: true, message: '没想起相关的事' }
           },
         }),
@@ -170,6 +170,23 @@ export default {
       const b = await http.body(req)
       // 立即整理一次：连今天的也提炼（今天的聊天流水不删，写日记还要用）
       return memory.consolidate({ includeToday: b.includeToday !== false })
+    })
+    // 语义检索（Embedding RAG）：状态 / 连通性测试 / 清空重建
+    api.route('/memory/vector/status', async () => ({ ok: true, ...memory.vectorStatus() }))
+    api.route('/memory/vector/test', async (req) => {
+      const b = await http.body(req)
+      try { return { ok: true, ...(await memory.vectorTest(String(b.text || '今天想吃白米饭'))) } } catch (error) { return { ok: false, message: error.message } }
+    })
+    api.route('/memory/vector/rebuild', async () => {
+      if (!memory.vectorReset()) return { ok: false, message: '先开启向量检索并填好服务地址、模型和 Key' }
+      await memory.vectorSync()
+      return { ok: true, message: '本机向量已清空，正在按当前记忆重新同步', ...memory.vectorStatus() }
+    })
+    // 重排（Reranker）：状态 / 连通性测试
+    api.route('/memory/rerank/status', async () => ({ ok: true, ...memory.rerankStatus() }))
+    api.route('/memory/rerank/test', async (req) => {
+      const b = await http.body(req)
+      try { return { ok: true, ...(await memory.rerankTest(String(b.text || '今天想吃白米饭'))) } } catch (error) { return { ok: false, message: error.message } }
     })
 
     return memory

@@ -17,7 +17,7 @@ function setup(t, fetchImpl) {
   const dir = mkdtempSync(join(tmpdir(), 'aurabot-vector-'))
   const old = process.env.AURABOT_DATA_DIR
   process.env.AURABOT_DATA_DIR = dir
-  const cfg = normalize({ ownerQQ: OWNER, memory: { dailyConsolidate: false, vector: { enabled: true, baseUrl: 'http://localhost:1234/v1/', model: 'fake', apiKey: '秘密密钥' } } })
+  const cfg = normalize({ ownerQQ: OWNER, memory: { dailyConsolidate: false, vector: { enabled: true, baseUrl: 'http://localhost:1234/v1/', model: 'fake', apiKey: '秘密密钥', batchSize: 32, queryTimeoutMs: 2000 } } })
   const hub = { chatLogDays: () => [], chatLogOf: () => [], speakersOf: () => [FRIEND] }
   const calls = []
   const fake = fetchImpl || (async (url, options) => {
@@ -43,7 +43,17 @@ const items = () => [
 
 test('默认关闭，配置不全时不请求；密钥遮罩并在面板保存时保留', async (t) => {
   const s = setup(t)
-  assert.deepEqual(normalize({}).memory.vector, { enabled: false, baseUrl: '', model: '', apiKey: '' })
+  assert.deepEqual(normalize({}).memory.vector, {
+    enabled: false,
+    provider: 'siliconflow',
+    baseUrl: '',
+    model: '',
+    apiKey: '',
+    dimensions: 0,
+    batchSize: 10,
+    queryTimeoutMs: 3000,
+    headers: '',
+  })
   const index = s.index()
   s.cfg.memory.vector.enabled = false
   await index.sync(items())
@@ -370,6 +380,44 @@ test('自动回忆和 recall_memory 工具都使用向量，失败时保留关�
   s.cfg.memory.vector.enabled = false
   assert.equal(mem.stats().vector, 2, '关闭检索后仍显示已同步数量')
   assert.match((await tool.execute({ query: '杭州' })).message, /护士/)
+})
+
+test('服务地址误填完整 /embeddings 时自动去掉，不拼成双路径', async (t) => {
+  const s = setup(t)
+  s.cfg.memory.vector.baseUrl = 'http://localhost:1234/v1/embeddings'
+  await s.index().embed(['x'])
+  assert.equal(s.calls.at(-1).url, 'http://localhost:1234/v1/embeddings')
+})
+
+test('自定义请求头、维度、批量、base64 向量；状态/测试/重建', async (t) => {
+  const s = setup(t)
+  const v = s.cfg.memory.vector
+  v.headers = 'X-Api-Key: header-key\nAuthorization: Custom token'
+  v.dimensions = 3
+  v.batchSize = 2
+  const calls = []
+  const fake = async (url, options) => {
+    const body = JSON.parse(options.body)
+    calls.push({ url, options, body })
+    const vec = Buffer.from(new Float32Array([1, 0, 0]).buffer).toString('base64')
+    return { ok: true, json: async () => ({ data: body.input.map((_, index) => ({ index, embedding: vec })) }) }
+  }
+  const vector = createVectorIndex({ getConfig: () => s.cfg, log, fetchImpl: fake })
+  const facts = [1, 2, 3].map((i) => ({ id: String(i), text: '小猫' + i }))
+  await vector.sync(facts)
+  assert.equal(calls[0].body.input.length, 2, '按 batchSize 分批')
+  assert.equal(calls[0].body.dimensions, 3)
+  assert.equal(calls[0].options.headers['X-Api-Key'], 'header-key')
+  assert.equal(calls[0].options.headers.Authorization, 'Custom token', '自定义 Authorization 优先')
+  assert.equal(vector.validIds(facts).length, 2)
+  await vector.sync(facts)
+  assert.equal(vector.validIds(facts).length, 3)
+  assert.equal(vector.status(facts).indexed, 3)
+  assert.equal(vector.status(facts).dims, 3)
+  const tested = await vector.test('测试')
+  assert.equal(tested.dims, 3)
+  assert.equal(vector.reset(), true)
+  assert.equal(vector.validIds(facts).length, 0)
 })
 
 test('错误响应只记 debug，接口失败时自动回忆仍能按关键词找到记忆', async (t) => {
