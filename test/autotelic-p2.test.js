@@ -77,11 +77,13 @@ test('执行器：回合炸了不抛出，返回失败观察（步骤按 failed 
 
 // ---------- reflect ----------
 
-test('反思文本：三段齐全，缺的写（没写）', () => {
-  const full = reflectionText(task, { hypothesis: 'h', evidence: 'e', lesson: 'l' })
-  assert.match(full, /假设——h/)
-  assert.match(full, /证据——e/)
-  assert.match(full, /教训——l/)
+test('反思文本：结论先行、200 字内装得下全文（修「记忆被截断」）', () => {
+  // 教训优先当结论；依据跟着；总长必须在 200 字内（memory.addEvent 硬截 200）
+  const full = reflectionText(task, { hypothesis: 'h-假设内容', evidence: 'e-证据内容', lesson: 'l-教训内容' })
+  assert.match(full, /【自驱】/)
+  assert.match(full, /l-教训内容/, '结论（教训）在最前面')
+  assert.match(full, /e-证据内容/, '依据要带证据')
+  assert.ok(full.length <= 200, `全文 200 字内（memory 硬截 200），实得 ${full.length}`)
   const bare = reflectionText(task, {})
   assert.match(bare, /（没写）/)
 })
@@ -187,7 +189,7 @@ const fakeSettings = (over = {}) => ({
   ...over,
 })
 
-function mkRuntime(t, { settings = {}, act, memory, auditNote, auditStat, evalTurn } = {}) {
+function mkRuntime(t, { settings = {}, act, memory, auditNote, auditStat, evalTurn, screenTurn } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'aurabot-p2-'))
   const ledgerFile = join(root, 'ledger.json')
   const logs = []
@@ -199,6 +201,9 @@ function mkRuntime(t, { settings = {}, act, memory, auditNote, auditStat, evalTu
     memoryOf: () => memStore,
     ledgerFile,
     evalTurn: evalTurn || null,
+    // 立项前预审（2026-11-05 少爷定）：生产口径是模块壳必接线，测试默认给「一律值得」，
+    // 只关心其它行为的用例不必每处自己造；要测预审本身请显式传 screenTurn。
+    screenTurn: screenTurn === undefined ? async () => '[{"i":1,"worth":true}]' : screenTurn,
     act,
     journal: createJournal(root),
     auditNote,
@@ -211,7 +216,7 @@ function mkRuntime(t, { settings = {}, act, memory, auditNote, auditStat, evalTu
 
 const goodAct = { runStep: async () => ({ ok: true, observation: '看了几篇教程，结论是裁切最省事', memo: { hypothesis: 'h', evidence: 'e', lesson: 'l' }, hadTools: true }) }
 
-test('tick 全链：立项 → 推进一步 → 任务办完写反思 → 每日一页落盘', async (t) => {
+test('tick 全链：立项 → 单步办完写反思 → 每日一页落盘', async (t) => {
   const saved = []
   const notes = []
   const { rt, root } = mkRuntime(t, {
@@ -223,11 +228,12 @@ test('tick 全链：立项 → 推进一步 → 任务办完写反思 → 每日
   const r = await rt.tick()
   assert.equal(r.outcome, 'proposed')
   assert.equal(r.acted.outcome, 'step-done', '立项后立刻推进一步')
-  const tasks = rt.book().list()
-  assert.equal(tasks[0].status, 'done', '一步的 todo 办完任务就 done')
+  // 2026-11-05 三修：任务书回归单步（少爷反馈「一个兴趣处理三四次没必要」）——
+  // 一轮内办完判断/发言/写记忆，办完任务即 done
+  assert.equal(rt.book().list()[0].status, 'done', '单步任务书：一轮办完任务即 done')
+  await rt.tick() // 任务完结后走一拍，让挂在 tick 尾部的复盘看见它
   assert.equal(saved.length >= 1, true, '任务到终态写了反思进记忆')
-  assert.match(saved[0].text, /【自驱·反思】/)
-  assert.match(saved[0].text, /教训——l/)
+  assert.match(saved[0].text, /【自驱】/)
   assert.equal(notes.some((n) => n.kind === 'autotelic/daily'), true, '每日一页触发也进审计')
   assert.ok(rt.book().meta().actions >= 1, '带工具的做事回合记了动作预算（L1 记账）')
   const dailyPath = join(root, 'daily', `${dayKey()}.md`)

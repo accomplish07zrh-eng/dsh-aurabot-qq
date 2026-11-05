@@ -188,7 +188,7 @@ const fakeHub = {
 const fakeCfg = { ownerQQ: '123' }
 const fakeSettings = (over = {}) => ({ enabled: true, minCuriosity: 0.1, maxTasksActive: 8, maxSteps: 8, budgetActionsPerHour: 12, evalModel: '', ...over })
 
-function mkRuntime(t, { settings = {}, evalTurn = null } = {}) {
+function mkRuntime(t, { settings = {}, evalTurn = null, screenTurn } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'aurabot-runtime-'))
   const ledgerFile = join(root, 'ledger.json')
   t.after(() => rmSync(root, { recursive: true, force: true }))
@@ -200,6 +200,9 @@ function mkRuntime(t, { settings = {}, evalTurn = null } = {}) {
     memoryOf: () => ({ list: () => [] }),
     ledgerFile,
     evalTurn,
+    // 立项前预审（2026-11-05 少爷定）：生产口径模块壳必接线，这里默认「一律值得」；
+    // 专门测预审的用例请显式传 screenTurn。
+    screenTurn: screenTurn === undefined ? async () => '[{"i":1,"worth":true}]' : screenTurn,
     log: { info: (...v) => logs.push(v.join(' ')), warn: (...v) => logs.push(v.join(' ')), debug: () => {} },
   })
   return { root, ledgerFile, rt, logs }
