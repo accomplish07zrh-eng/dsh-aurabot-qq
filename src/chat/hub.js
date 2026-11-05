@@ -422,7 +422,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
   function titleFor(chat) {
     const owner = getConfig().ownerName || '主人'
-    if (chat.kind === 'system') return `QQ · ${chat.title || '后台'}`
+    if (chat.kind === 'system') {
+      // 扩展模块传进来的 title 可能自带「QQ · 」前缀，别再拼一次
+      const t = String(chat.title || '后台')
+      return t.startsWith('QQ · ') ? t : `QQ · ${t}`
+    }
     if (chat.kind === 'group') return `QQ 群 · ${groupNames.get(chat.groupId) || chat.groupId}`
     return chat.userId === getConfig().ownerQQ ? `QQ · ${owner}私聊` : `QQ 私聊 · ${chat.nickname || chat.userId}`
   }
@@ -476,9 +480,23 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       assertActive()
       const reg = dsh.workspaceRegistry || dsh.get('workspaceRegistry')
       if (sid && reg && (reg.archivedSessionIds || []).includes(sid)) {
-        log.info(`会话 ${sid.slice(-8)} 被归档了，换一个新的`)
-        sid = ''
-        agent = null
+        // 「被归档」不等于「这间房废了」：先解归档接着用，免得每次主动搭话都开一间新房
+        let restored = false
+        try {
+          if (reg.unarchiveSession) {
+            await reg.unarchiveSession(sid)
+            restored = true
+          }
+        } catch (error) {
+          log.debug(`会话 ${sid.slice(-8)} 解归档失败：${error.message}`)
+        }
+        if (restored) {
+          log.info(`会话 ${sid.slice(-8)} 被归档了，已解归档，继续用这间`)
+        } else {
+          log.info(`会话 ${sid.slice(-8)} 被归档了，换一个新的`)
+          sid = ''
+          agent = null
+        }
       }
     }
     if (!sid) {
