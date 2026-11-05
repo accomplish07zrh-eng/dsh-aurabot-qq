@@ -2017,20 +2017,23 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       '把这一段当成整体来回：一般说一两句就好，回给最需要回的那个人或者整个话题，不要一条一条地挨个回。\n' +
       '大多数时候直接说就行。只有想专门接其中某一条、而直接说别人会看不出你在回谁时（比如那条已经被后面的话刷上去了、或者你在回某个人随口一提的事），才在那句话开头写 <reply:编号>，会以「引用回复」发出；一次最多引用一条。\n' +
       '要 @ 某个人（对方会收到提醒），写 <at:QQ号>，QQ 号就是上面名字后面括号里的数字。'
-    // 引用里的图 / 表情包：有空位就带上（最多 2 张）
+    // 引用里的图 / 表情包：有空位就带上（最多 2 张）。走和这一段图片同一个路由：
+    // 聊天模型能看图就交附件，配了识图模型就先换成描述（群聊这条路径不能漏传 route）
     const quotedImages = []
+    let route = null
     if (imageRoom > 0) {
+      route = await visionRoute(chat)
       for (const x of fresh) {
         if (!x.quote?.ok || (!x.quote.images.length && !x.quote.stickers.length)) continue
         const take = Math.min(2, imageRoom - quotedImages.length)
         if (take <= 0) break
-        quotedImages.push(...await quoteImages(x.quote, take))
+        quotedImages.push(...await quoteImages(x.quote, take, route))
       }
     }
     // 这一段里群友发的图也给她看；看不了图就明说有几张，别让她照着占位编（#181）
     const mediaNow = Date.now()
     const mediaEntries = fresh.filter((x) => !x.mediaPending && (x.images?.length || x.stickers?.length) && x.t && mediaNow - x.t < GROUP_IMAGE_WINDOW_MS)
-    const route = imageRoom > 0 || mediaEntries.length ? await visionRoute(chat) : null
+    if (!route && mediaEntries.length) route = await visionRoute(chat)
     let mediaNote = ''
     let extraImages = []
     if (mediaEntries.length) {
