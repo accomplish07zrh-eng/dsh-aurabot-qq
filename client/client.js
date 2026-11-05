@@ -2494,7 +2494,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           ? h(Row, { label: '投递账本', hint: '由宿主代发的条目当前分布' },
             h('span', { className: 'ab-muted ab-small' }, d.ledger.map((x) => x.label + ' ' + x.count).join(' · ')))
           : null,
->>>>>>> 8feb746 (feat(autotelic): 面板单开「自驱引擎」页（少爷定：不属于主动搭话）)
       )
     }
 
