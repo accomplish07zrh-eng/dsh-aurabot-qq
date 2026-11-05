@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const REPO = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
-const { visionModelOf, canUnderstandImages, askModel, clearVisionCache } = await import(`file:///${REPO}/src/core/llm.js`)
+const { visionModelOf, canUnderstandImages, askModel, clearVisionCache, clearReasoningCache } = await import(`file:///${REPO}/src/core/llm.js`)
 const { normalize, mergeFromPanel } = await import(`file:///${REPO}/src/core/config.js`)
 
 // ---------- 纯函数 / askModel ----------
@@ -42,6 +42,31 @@ test('askModel 只在带图时改用识图模型', async () => {
   assert.equal(calls[1].provider, 'p')
   assert.equal(calls[1].model, 'vision', '带图交给识图模型')
   assert.ok(calls[1].messages[0].content.some((c) => c.type === 'image'), '识图模型要真的收到图片')
+})
+
+test('识图模型跟随「思考强度」设置；模型不支持时自动省略', async () => {
+  const calls = []
+  const meta = {
+    'vision-high': { inputModalities: ['text', 'image'], reasoning: { efforts: [{ id: 'low' }, { id: 'high' }, { id: 'max' }], defaultEffort: 'low' } },
+    'vision-blind': { inputModalities: ['text', 'image'] }, // 没有推理元数据
+  }
+  const dsh = {
+    attachments: { admitPromptContent: async (c) => c },
+    llm: {
+      resolveModelInfo: async (p, m) => meta[m] || { inputModalities: ['text'] },
+      async *stream (p) { calls.push(p); yield { type: 'text-delta', text: '看到了' }; yield { type: 'finish', reason: { kind: 'stop' } } },
+    },
+  }
+  const images = [{ data: 'AA==', mediaType: 'image/png' }]
+  clearReasoningCache()
+  await askModel(dsh, { cfg: { model: { provider: 'p', model: 'chat', reasoningEffort: 'high', visionModel: { provider: 'p', model: 'vision-high' } } }, text: '看图', images })
+  assert.equal(calls.at(-1).model, 'vision-high')
+  assert.equal(calls.at(-1).reasoningEffort, 'high', '识图模型用面板「思考强度」的档位')
+
+  clearReasoningCache()
+  await askModel(dsh, { cfg: { model: { provider: 'p', model: 'chat', reasoningEffort: 'max', visionModel: { provider: 'p', model: 'vision-blind' } } }, text: '看图', images })
+  assert.equal(calls.at(-1).model, 'vision-blind')
+  assert.equal('reasoningEffort' in calls.at(-1), false, '模型没有推理元数据就不传档位')
 })
 
 test('面板保存：识图模型写进去、没动它时保留', () => {

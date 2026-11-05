@@ -199,9 +199,10 @@ export async function askModel (dsh, o) {
   // o.model 指定了就用它（后台小任务可以单独挑便宜 / 能看图的模型），否则：
   // 带图的后台任务（表情起名、头像、B 站抽帧……）优先交给面板上选的识图模型 ——
   // 聊天模型可能是个便宜的纯文本模型，硬塞图片会让整轮请求被拒。
+  const vision = o.images && o.images.length ? visionModelOf(o.cfg) : null
   const t = o.model && o.model.provider && o.model.model
     ? { provider: o.model.provider, model: o.model.model }
-    : ((o.images && o.images.length ? visionModelOf(o.cfg) : null) || defaultModel(dsh, o.cfg))
+    : (vision || defaultModel(dsh, o.cfg))
   if (!t) throw new Error('拿不到默认模型')
   let content = [{ type: 'text', text: cleanText(o.text) }]
   for (const img of o.images || []) content.push({ type: 'image', data: img.data, mediaType: img.mediaType, name: 'aurabot-image' })
@@ -219,8 +220,14 @@ export async function askModel (dsh, o) {
     messages,
     maxTokens: o.maxTokens || 600,
   }
+  // 温度参数的落点按上游 #249：默认温度放进每轮的 params，模型明确拒绝时再去掉重试。
   let temperature = o.temperature ?? 0.3
-  let effort = await pickReasoningEffort(dsh, t.provider, t.model, o.reasoningEffort === undefined ? 'low' : o.reasoningEffort)
+  // 识图模型跟随面板「思考强度」：和聊天模型用同一档；模型不支持时 pickReasoningEffort 会收敛或省略。
+  const usingVision = Boolean(vision && (!o.model || (o.model.provider === vision.provider && o.model.model === vision.model)))
+  const wantEffort = o.reasoningEffort !== undefined
+    ? o.reasoningEffort
+    : (usingVision ? (o.cfg?.model?.reasoningEffort || 'low') : 'low')
+  let effort = await pickReasoningEffort(dsh, t.provider, t.model, wantEffort)
   let widened = false
   let temperatureTried = false
   for (let attempt = 0; ; attempt++) {
