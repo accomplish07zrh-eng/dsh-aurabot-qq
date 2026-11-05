@@ -30,6 +30,29 @@ export function stripMarkdown(text) {
     .trim()
 }
 
+// 模型偶尔把自己那边的内部语法漏进正文，这些都不能发到 QQ，得在解析入口洗掉：
+//   - 工具调用的收尾标记，比如 </｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>（全角竖线包着关键字）
+//   - 上下文插件给历史消息挂的编号（m00896 / m00896b），提示词里说了不许抄，但它会抄
+// 编号是 5 位起（补零写法 m00xxx）；4 位的 m1005、m1136 是打印机型号，不能误伤。
+const SPECIAL_TOKEN = /<\/?[｜|]{1,2}\s*[A-Za-z_]+\s*[｜|]{1,2}[^<>]*>/g
+const CONTEXT_REF = '(?:m0\\d{3,5}|m[1-9]\\d{4,6})[a-z]{0,2}'
+const REF_AT_HEAD = new RegExp(`^[ \\t]*(?:${CONTEXT_REF})[ \\t]*[，,：:、]?[ \\t]*`)
+const REF_INLINE = new RegExp(`(?<![A-Za-z0-9])(?:${CONTEXT_REF})(?![A-Za-z0-9])`, 'g')
+const REF_IN_BAD_TAG = new RegExp(`<reply\\s*[:：]\\s*(?:${CONTEXT_REF})\\s*>`, 'gi')
+
+/** 洗掉模型漏出来的内部标记与消息编号：行首连标点一起清，行中行尾留个空格；洗完是空的就当「这次不说话」。 */
+export function stripModelArtifacts(text) {
+  return String(text || '')
+    .replace(SPECIAL_TOKEN, '')
+    .replace(REF_IN_BAD_TAG, '')
+    .split('\n')
+    .map((line) => line.replace(REF_AT_HEAD, '').replace(REF_INLINE, ''))
+    .join('\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 /** 是不是「这次不说话」。 */
 export function isSilence(text) {
   const t = String(text || '').trim()
@@ -323,7 +346,7 @@ export function cleanOutboundSegments(message, options) {
 /** 解析一轮回复；在拆气泡/语音前清洗，避免协议里的竖线被误作气泡分隔符。 */
 export function parseReply(text, options) {
   // 模型偶尔把换行写成 HTML `<br>`：当真正的换行处理；代码示例里的字面量保留。
-  const cleaned = cleanOutboundText(text, options)
+  const cleaned = stripModelArtifacts(cleanOutboundText(text, options))
   const code = codeRanges(cleaned)
   const raw = cleaned.replace(/<br\s*\/?>/gi, (tag, offset) => insideCode(code, offset, offset + tag.length) ? tag : '\n').trim()
   if (isSilence(raw)) return { silent: true, items: [] }
