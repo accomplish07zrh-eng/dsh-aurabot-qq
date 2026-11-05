@@ -1,15 +1,19 @@
 // QQ 系统表情（小黄脸）：名字 ↔ 编号。她在回复里写 <face:捂脸>，发的时候换成 QQ 自带的表情，和文字在同一条消息里。
 // 目录从网关现取（SnowLuma 的 fetch_sys_faces，缓存一天）；接的是别的 OneBot、取不到时用下面这份常用的兜底。
 
-/** 常用的系统表情（名字 → 编号），取不到网关目录时用。 */
-export const COMMON_FACES = {
-  惊讶: 0, 撇嘴: 1, 色: 2, 发呆: 3, 得意: 4, 害羞: 6, 闭嘴: 7, 睡: 8, 大哭: 9, 尴尬: 10, 发怒: 11, 调皮: 12, 呲牙: 13, 微笑: 14,
-  难过: 15, 酷: 16, 抓狂: 18, 吐: 19, 偷笑: 20, 可爱: 21, 白眼: 22, 傲慢: 23, 困: 25, 惊恐: 26, 流汗: 27, 憨笑: 28, 奋斗: 30,
-  疑问: 32, 嘘: 33, 晕: 34, 再见: 39, 玫瑰: 63, 爱心: 66, 心碎: 67, 赞: 76, 擦汗: 97, 抠鼻: 98, 鼓掌: 99, 坏笑: 101, 哈欠: 104,
-  鄙视: 105, 委屈: 106, 快哭了: 107, 阴险: 108, 可怜: 111, 抱拳: 118, OK: 124, 无奈: 174, 斜眼笑: 178, 笑哭: 182, 点赞: 201,
-  托腮: 212, 捂脸: 264, 哦哟: 266, 头秃: 267, 暗中观察: 269, emm: 270, 吃瓜: 271, 我酸了: 273, 汪汪: 277, 敬礼: 282, 摸鱼: 285,
-  睁眼: 289, 拜托: 353, 裂开: 357,
-}
+import { FACE_TABLE } from './face-table.js'
+
+/**
+ * 系统表情（名字 → 编号），取不到网关目录时用。
+ * 以前这里只兜底 65 个常用表情，别人贴了个表里没有的，回应就只剩一个数字编号；
+ * 现在直接用 QQ 的整张表（329 条），同名的取第一个，优先客户端还显示的那些。
+ */
+export const COMMON_FACES = (() => {
+  const out = {}
+  for (const f of FACE_TABLE) if (!f.hide && out[f.name] === undefined) out[f.name] = Number(f.id)
+  for (const f of FACE_TABLE) if (out[f.name] === undefined) out[f.name] = Number(f.id)
+  return out
+})()
 
 /** 给她看的几个例子（提示词里用，别太长）。 */
 export const FACE_EXAMPLES = ['微笑', '呲牙', '偷笑', '捂脸', '斜眼笑', '笑哭', '吃瓜', '白眼', '委屈', '裂开', '摸鱼', '抱拳', '赞', 'OK']
@@ -41,7 +45,9 @@ export function buildFaceIndex(catalog) {
 
 const COMMON_INDEX = (() => {
   const byName = new Map(Object.entries(COMMON_FACES))
-  const byId = new Map(Object.entries(COMMON_FACES).map(([n, id]) => [String(id), n]))
+  // 编号 → 名字用整张表（含客户端已不显示的老表情），被贴了冷门表情也能翻出名字
+  const byId = new Map(FACE_TABLE.map((f) => [String(f.id), f.name]))
+  for (const [n, id] of Object.entries(COMMON_FACES)) if (!byId.has(String(id))) byId.set(String(id), n)
   return { byName, byId }
 })()
 

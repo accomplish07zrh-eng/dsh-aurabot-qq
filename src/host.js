@@ -24,6 +24,8 @@ import { createLocal, fileOf, toImageBuffer } from './local/local.js'
 import { createGroupRoles } from './chat/group-roles.js'
 import { defaultModel, askModel, modelReasoning, modelVision, clearReasoningCache, clearVisionCache } from './core/llm.js'
 import { mimeOf } from './chat/inbound.js'
+import { buildFaceIndex } from './chat/faces.js'
+import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
 import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
@@ -1498,6 +1500,40 @@ export function apply(ctx) {
     const src = mods.panelSource(String(query(req).id || ''))
     if (src === null) return send(res, 404, '')
     send(res, 200, src, 'text/javascript; charset=utf-8')
+  })
+
+  // 贴表情：面板要展示「当前有哪些表情可以贴」——内置常用 + 网关系统表情目录（取不到就只用内置）
+  // emoji 走 Unicode 码点，QQ 老表情走它自己那套编号，两套在 set_msg_emoji_like 里都能直接用。
+  const REACT_EMOJIS = [
+    { char: '👍', name: '赞', id: '128077' },
+    { char: '❤️', name: '爱心', id: '10084' },
+    { char: '😂', name: '笑哭', id: '128514' },
+    { char: '😭', name: '大哭', id: '128557' },
+    { char: '🤔', name: '思考', id: '129300' },
+    { char: '😅', name: '冷汗', id: '128517' },
+    { char: '😳', name: '脸红', id: '128563' },
+    { char: '🥺', name: '委屈', id: '129402' },
+    { char: '🎉', name: '庆祝', id: '127881' },
+    { char: '🌹', name: '玫瑰', id: '127801' },
+    { char: '🍬', name: '糖', id: '127852' },
+    { char: '✨', name: '闪', id: '10024' },
+    { char: '🔥', name: '火', id: '128293' },
+    { char: '🙏', name: '拜托', id: '128591' },
+  ]
+  route('/panel/faces', async () => {
+    // 先用内置整表（329 条）打底：网关取不到目录时，面板也不会只剩 65 个常用表情
+    let byId = new Map(FACE_TABLE.map((f) => [String(f.id), f.name]))
+    try {
+      const r = await onebot.call('fetch_sys_faces', {}, { timeoutMs: 8000 })
+      const built = buildFaceIndex(r?.packs ? r : r?.data)
+      if (built.byId.size) byId = new Map([...byId, ...built.byId])
+    } catch (error) {
+      logger.child('faces').debug('取系统表情目录失败，只用内置的：', error.message)
+    }
+    const faces = [...byId.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => Number(a.id) - Number(b.id))
+    return { ok: true, faces, emojis: REACT_EMOJIS }
   })
 
   // 联动

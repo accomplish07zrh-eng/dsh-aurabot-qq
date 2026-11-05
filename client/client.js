@@ -87,6 +87,8 @@ window.__ModuleLoader__.load({
       return Object.fromEntries(Object.keys(MEMORY_CAPACITY_DEFAULT).map((key, i) => [key, limits[i]]))
     }
     const pct = (v) => Math.round((Number(v) || 0) * 100)
+    // 和 src/features/companion.js 的 moodEffects 严丝合缝：心情区间 → 贴表情系数
+    const REACT_MOOD_BANDS = [['85 以上', 1.6], ['70–84', 1.25], ['50–69', 1], ['35–49', 0.5], ['35 以下', 0.3]]
     const cx = (...a) => a.filter(Boolean).join(' ')
     // 音调存的是 '+20Hz' 这种字符串，滑条要数字；合法范围 ±80Hz（再往上 edge-tts 服务端会夹）
     const pitchNum = (s) => {
@@ -639,6 +641,83 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         h('b', null, o.icon || null, o.label), o.desc ? h('small', null, o.desc) : null)))
     }
 
+    /** 贴表情的映射表：QQ 系统表情（自己的编号）＋ emoji（Unicode 码点），两种都能直接填给 set_msg_emoji_like。 */
+    /** QQ 系统表情的预览图：社区维护的 QFace 图库按 id 取 png；取不到就把图藏起来，只留名字。 */
+    const QFACE_IMG = (id) => 'https://koishi.js.org/QFace/assets/qq_emoji/' + id + '/png/' + id + '.png'
+
+    function FaceMapCard() {
+      const [data, setData] = useState(null)
+      const [q, setQ] = useState('')
+      const [kind, setKind] = useState('all')
+      const [copied, setCopied] = useState('')
+      useEffect(() => {
+        let alive = true
+        get('/panel/faces')
+          .then((r) => { if (alive && r && r.ok !== false) setData(r) })
+          .catch(() => {})
+        return () => { alive = false }
+      }, [])
+      const faces = data ? data.faces || [] : []
+      const emojis = data ? data.emojis || [] : []
+      const all = [
+        ...faces.map((x) => ({ kind: 'face', name: String(x.name), id: String(x.id), label: String(x.name) })),
+        ...emojis.map((x) => ({ kind: 'emoji', name: String(x.name), id: String(x.id), label: x.char + ' ' + x.name })),
+      ]
+      const key = String(q || '').trim().toLowerCase()
+      const rows = all.filter((x) => (kind === 'all' || x.kind === kind) &&
+        (!key || x.name.toLowerCase().includes(key) || x.id.includes(key) || x.label.toLowerCase().includes(key)))
+      const copy = (x) => {
+        try { navigator.clipboard.writeText(x.id) } catch (e) {}
+        setCopied(x.id)
+        setTimeout(() => setCopied(''), 1200)
+      }
+      return h(Card, {
+        title: '可用映射' + (all.length ? '（' + all.length + ' 条）' : ''),
+        desc: '两种编号混着用都行。点一行复制编号，填进贴表情或让她自己挑。',
+      },
+        h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' } },
+          h(Seg, {
+            value: kind,
+            options: [
+              { value: 'all', label: '全部' },
+              { value: 'face', label: 'QQ 表情 ' + faces.length },
+              { value: 'emoji', label: 'emoji ' + emojis.length },
+            ],
+            onChange: setKind,
+          }),
+          h('input', {
+            className: 'ab-input sm',
+            placeholder: '搜名字或编号',
+            value: q,
+            onChange: (e) => setQ(e.target.value),
+            style: { width: 180 },
+          }),
+          copied ? h('span', { className: 'ab-small', style: { color: 'var(--ab-ok)' } }, '已复制 ' + copied) : null),
+        data === null
+          ? h('div', { className: 'ab-muted ab-small' }, '正在读表情目录…')
+          : rows.length === 0
+            ? h('div', { className: 'ab-muted ab-small' }, '没有匹配的')
+            : h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(148px, 1fr))', gap: 6, maxHeight: 260, overflow: 'auto', paddingRight: 4 } },
+                rows.map((x) => h('button', {
+                  key: x.kind + x.id,
+                  type: 'button',
+                  title: '复制 ' + x.id,
+                  onClick: () => copy(x),
+                  style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', font: 'inherit', fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(127,127,127,.22)', background: 'rgba(127,127,127,.06)', color: 'inherit', cursor: 'pointer', textAlign: 'left' },
+                },
+                  h('span', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+                    x.kind === 'face'
+                      ? h('img', {
+                          src: QFACE_IMG(x.id), alt: '', width: 18, height: 18, loading: 'lazy',
+                          style: { flex: '0 0 auto', width: 18, height: 18, objectFit: 'contain' },
+                          onError: (e) => { e.currentTarget.style.visibility = 'hidden' },
+                        })
+                      : null,
+                    h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, x.kind === 'emoji' ? x.label : x.name)),
+                  h('span', { style: { fontFamily: 'ui-monospace, Consolas, monospace', opacity: 0.75 } }, x.id)))),
+      )
+    }
+
     /** 滑块 + 数值，比纯数字框直观。 */
     function Range({ value, min, max, step, onChange, fmt }) {
       return h('div', { className: 'ab-range' },
@@ -692,7 +771,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       { id: 'group', label: '聊天', flag: 'group' },
       { id: 'model', label: '模型' },
       { id: 'voice', label: '语音', flag: 'voice.enabled' },
-      { id: 'stickers', label: '表情包', flag: 'stickers.enabled' },
+      { id: 'stickers', label: '表情', flag: 'stickers.enabled' },
       { id: 'imagegen', label: '生图', flag: 'imageGen.enabled' },
       { id: 'diary', label: '空间日记', flag: 'diary.enabled' },
       { id: 'speakup', label: '主动搭话', flag: 'speakUp.enabled' },
@@ -1947,6 +2026,39 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: cx('ab-stickers', picking && 'picking') },
               items.map((it) => h(StickerCell, { key: it.md5, it, onChanged: load, toast, picking, selected: picked.includes(it.md5), onToggle: toggle }))),
         ),
+        h(Card, {
+          title: '贴表情',
+          right: f.sw('stickers.react'),
+          desc: '默认关。打开后看到谁的消息，就可能贴个表情——不一定回话，只在旁边看着也行。emoji 直接给 Unicode 码点（🍬 127852、👍 128077），QQ 老表情是另一套编号（❓ 10068），两种混着用都行。',
+        },
+          h(Row, { label: '主动贴表情的概率', hint: '默认 15%，和「表情包」那张卡里的自动配表情各算各的，互不影响；心情好会更频繁' },
+            h(Range, {
+              min: 0,
+              max: 100,
+              value: pct(draft.stickers.reactChance ?? 0.15),
+              onChange: (v) => setDraft(setPath(draft, 'stickers.reactChance', v / 100)),
+              fmt: (v) => v + '%',
+            })),
+          h(Row, { label: '概率表', hint: '实际概率 = 拖拽条的值 × 心情系数（心情越高越爱贴；超过 100% 就是必贴）' },
+            (() => {
+              const base = Number(draft.stickers.reactChance ?? 0.15) || 0
+              const cell = (key, text, extra) => h('td', { key, style: Object.assign({ padding: '3px 16px 3px 0' }, extra) }, text)
+              return h('table', { style: { borderCollapse: 'collapse', fontSize: 12, marginTop: 2 } },
+                h('thead', null, h('tr', null,
+                  cell('h0', '心情', { opacity: 0.55, fontWeight: 500 }),
+                  cell('h1', '系数', { opacity: 0.55, fontWeight: 500, textAlign: 'right' }),
+                  cell('h2', '实际概率', { opacity: 0.55, fontWeight: 500, textAlign: 'right', paddingRight: 0 }),
+                )),
+                h('tbody', null, REACT_MOOD_BANDS.map(([label, mult]) => h('tr', { key: label },
+                  cell('m', label, { opacity: 0.8 }),
+                  cell('k', mult + '×', { opacity: 0.55, textAlign: 'right' }),
+                  cell('p', Math.min(100, Math.round(base * mult * 1000) / 10) + '%', { textAlign: 'right', paddingRight: 0, fontVariantNumeric: 'tabular-nums' }),
+                ))),
+              )
+            })()),
+          h(Row, { label: '每小时上限', hint: '每个会话单独算，免得在热闹的群里刷屏' }, f.range('stickers.reactMaxPerHour', 0, 60, 1, (v) => v + ' 次')),
+        ),
+        h(FaceMapCard, null),
       )
     }
 

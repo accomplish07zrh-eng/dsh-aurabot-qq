@@ -187,6 +187,47 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return next
   }
   const faces = createFaces({ onebot, log }) // QQ 系统表情：<face:名字> ↔ 编号
+  // 主动贴表情：看到消息就可能贴一个，跟「回不回复」无关——她可以只窥屏、不出声。
+  // 概率跟 stickers.autoChance 同源（reactChance 留空即完全跟随），同样吃心情系数；
+  // 每个会话每小时有上限（reactMaxPerHour），免得在热闹的群里变成刷屏。
+  // 自己被禁言（isMuted）时不贴；自己发的消息在入口就 filtered 掉了。
+  const reactStamps = new Map() // chatId → [时间戳]
+  const REACT_POOL = ['呲牙', '偷笑', '调皮', '赞', '爱心', '笑哭', '捂脸', '玫瑰']
+  async function maybeReact(msg) {
+    try {
+      const cfg = getConfig()
+      // 贴表情也是「对外做了个动作」，必须和发消息走同一套闸（#216 review）：
+      // 总开关关掉就什么都不做；试运行开着只记一笔，不真往对方消息上贴。
+      if (cfg.enabled === false) return
+      if (cfg.dryRun) {
+        log.debug?.(`${msg.chatId}：试运行模式，不真贴表情`)
+        return
+      }
+      if (cfg.stickers?.enabled === false || cfg.stickers?.react === false) return
+      const chance = cfg.stickers?.reactChance ?? 0
+      if (!(chance > 0) || !msg.messageId || msg.messageId === '0') return
+      if (Math.random() >= chance * mood().sticker) return
+      const cap = cfg.stickers?.reactMaxPerHour ?? 10
+      const ts = Date.now()
+      const recent = (reactStamps.get(msg.chatId) || []).filter((t) => ts - t < 3600_000)
+      if (cap <= 0 || recent.length >= cap) { reactStamps.set(msg.chatId, recent); return }
+      const name = REACT_POOL[Math.floor(Math.random() * REACT_POOL.length)]
+      const id = faces.idOf(name)
+      if (!id) return
+      // NapCat 只按位数猜类型（data length > 3 → emoji 码点，否则系统表情）：
+      // 四位以上的编号（EMCode 那种）会被当成码点送出去，QQ 收下但不渲染，贴出来是空白，直接不贴。
+      if (String(id).length > 3) {
+        log.debug?.(`跳过「${name}」（${id}）：编号超过三位，贴出去会是空白`)
+        return
+      }
+      await onebot.call('set_msg_emoji_like', { message_id: String(msg.messageId), emoji_id: String(id), set: true }, { timeoutMs: 10000 })
+      recent.push(ts)
+      reactStamps.set(msg.chatId, recent)
+      log.info(`${msg.chatId}：给这条消息贴了个「${name}」（${id}）`)
+    } catch (error) {
+      log.debug?.('贴表情失败：', error?.message || error)
+    }
+  }
   const titleFilter = createTitleFilter({ getConfig, onebot, log }) // 勾选的群里，头衔是某个词的成员（别的机器人）不理
   const groupMembers = new Map() // groupId → { at, list }  群成员（真 @ 时按名字找人，缓存 10 分钟）
   const noticesFor = new Map() // chatId → [一句话]  下次交给她时带上的群事件（撤回、禁言、进群……）
@@ -301,7 +342,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       } catch (error) { names.set(String(qq), `QQ 用户(${qq})`) }
     }
     if (disposed) return
-    const note = noticeText(ev, { botQQ: cfg.botQQ, name: (qq) => names.get(String(qq)) || String(qq), ownMessage: (id) => sentIds.has(String(id)) })
+    const note = noticeText(ev, { botQQ: cfg.botQQ, name: (qq) => names.get(String(qq)) || String(qq), ownMessage: (id) => sentIds.has(String(id)), faceName: faces.nameOf })
     if (!note) return
     logChat(note.chatId, '系统', `【系统】${note.text}`)
     noticesFor.set(note.chatId, [...(noticesFor.get(note.chatId) || []), note.text].slice(-8))
@@ -1521,6 +1562,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     if (disposed) return
 
+    // 贴表情和「回不回复」分家：她可以只看不说话，顺手给这条消息贴一个表情。
+    // 放在群聊「要不要插话」的判定之前，所以不回复也会贴；闭嘴（isMuted）时不贴。
+    void maybeReact(msg)
+    if (disposed) return
+
     let mode = 'must'
     if (msg.kind === 'group') {
       const pol0 = policyFor(cfg.group, cfg.group.overrides, msg.groupId)
@@ -2467,6 +2513,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     onPoke,
     onGroupFile,
     onSessionEvent,
+    /** 主动贴表情（内部实现，导出给回归测试用：#216 review 要求 dry-run 有测试兜底） */
+    maybeReact,
     deliver,
     sendText,
     sendVoice,
