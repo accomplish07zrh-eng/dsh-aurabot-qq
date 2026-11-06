@@ -185,3 +185,45 @@
                 name: '@deepseek-ai/dsh-compaction-basic'
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
+    # 自驱引擎专用：她自己的后台会话（system:autotelic*）用（docs/AUTOTELIC-PLAN.md §3 P0.1）。
+    # 必须插在 preset-aurabot-social 之后：test/subagent-delegation.test.js 从 subagent 切到
+    # 第一个 social，插前面会打挂那条切片断言。首期不给 bash / pwsh（lethal trifecta，§4.7 选 A）：
+    # 只留 fs / fs-search / compaction，不带任何 QQ 社交工具。人格照 social（她还是她，只是换了手）。
+    - id: preset-aurabot-autotelic
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: aurabot-autotelic
+        name: Aurabot · 自驱
+        description: 自驱引擎后台会话专用：人格 + 本机只读文件工具；没有 shell、没有 QQ 社交工具
+        order: 63
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: "{{aurabot_persona}}\n\n{{aurabot_rules_social}}"
+              complete: true
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
