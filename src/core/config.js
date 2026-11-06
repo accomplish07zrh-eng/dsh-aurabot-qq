@@ -39,7 +39,7 @@ export const DEFAULTS = {
   //   X-Forwarded-For 的最后一跳作为真实来源。留空 = 从不相信任何转发头（最安全）。
   // publicHostname：面板经反代对外时的域名（如 panel.example.com）；CSRF 同源校验把
   //   这个域名的 Origin 也算同源。留空 = 只有回环 Origin 算同源。
-  security: { dangerConfirm: false, ssrfMode: 'strict', panelRemoteAccess: false, trustedProxy: '', publicHostname: '' },
+  security: { dangerConfirm: true, ssrfMode: 'strict', panelRemoteAccess: false, trustedProxy: '', publicHostname: '' },
   // DeepSeek 峰谷省钱模式（默认关，现有行为不变）：打开后只把「不着急的后台模型调用」尽量挪到谷时，
   // 聊天回复/工具/审批/定时任务本身不变。offPeakHolidays 是中国法定节假日（北京时间日期 'YYYY-MM-DD'）。
   cost: { offPeak: false, offPeakHolidays: [] },
@@ -387,7 +387,7 @@ export function normalize(raw) {
   // 发文件：开关、大小上限、额外允许的目录（只认绝对路径；空行忽略）
   if (!isObj(c.files)) c.files = {}
   if (!isObj(c.security)) c.security = {}
-  c.security.dangerConfirm = bool(c.security.dangerConfirm, false)
+  c.security.dangerConfirm = bool(c.security.dangerConfirm, true)
   c.security.ssrfMode = c.security.ssrfMode === 'loose' ? 'loose' : 'strict'
   // 远端管理开关与可信反代：放 security 段（顶层对象，不会被下面「ext 只留对象」的规则删掉）
   c.security.panelRemoteAccess = bool(c.security.panelRemoteAccess, false)
