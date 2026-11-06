@@ -232,6 +232,32 @@ export function createLocalVectorIndex({ dataDir, log }) {
       running: false,
       error: lastError || '',
     }),
+    /**
+     * 与在线版（memory-vector.js）对齐的状态接口。
+     * 没有它的话 memory.vectorStatus() 会走兜底分支，返回
+     * 「enabled:false、lastError:模型还没就绪」——本地模式下明明可用，
+     * 面板却显示没开，点「测试」和「重建索引」都会失败（实测踩到）。
+     */
+    status: (items) => ({
+      ok: true,
+      enabled: true,
+      configured: Boolean(resolveAssets(dataDir)),
+      mode: 'local',
+      provider: 'local',
+      model: LOCAL_MODEL,
+      dims: 0,
+      indexed: count(items),
+      total: Array.isArray(items) ? items.length : store.size,
+      ready: ready(),
+      lastError: lastError || '',
+    }),
+    /** 面板「测试」按钮：真算一条，回报维度和耗时。 */
+    test: async (text) => {
+      if (!ready()) return { ok: false, message: lastError || '本地向量不可用' }
+      const t0 = Date.now()
+      const vec = await queryVector(String(text || '今天想吃白米饭'))
+      return { ok: true, mode: 'local', model: LOCAL_MODEL, dims: vec.length, ms: Date.now() - t0 }
+    },
     get error() {
       return lastError
     },
