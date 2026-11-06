@@ -5,6 +5,8 @@ import { createBili } from '../../bili/duty.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { permOf, profileToolVisible, profilePermits } from '../../chat/access.js'
 import { avatarSource } from '../profile/index.js'
+import { resolvePainting } from '../../features/paintings.js'
+import { segmentBytes } from '../../core/net.js'
 import { createDanmaku, danmakuPanelRequest } from './danmaku.js'
 
 export default {
@@ -84,20 +86,47 @@ export default {
       const tools = []
       if (profileToolVisible(cfg, 'biliAvatar', chat)) tools.push(defineTool({
         name: 'bili_set_avatar',
-        description: '换你自己 B 站账号的头像。image 填图片网址；填 last 就用这个聊天里刚才别人发的那张图（最大 2MB）。',
-        properties: { image: str('图片网址（http/https），或 last 表示刚才发的那张图') },
+        description: '换你自己 B 站账号的头像。image 填图片网址；填 last 就用这个聊天里刚才别人发的那张图；填「画作 #1」就用你自己刚画的那张（画完时会告诉你编号）。图超过 2MB 会自动缩小。',
+        properties: { image: str('图片网址（http/https）／last（刚才那张图）／画作编号（如 #1）') },
         required: ['image'],
         execute: async ({ image }) => {
           const c = api.config()
           if (!c.bili.enabled) return { ok: false, message: 'B 站没打开' }
           const p = profilePermits(c, 'biliAvatar', chat, hub.turnSendersAllOwner(sessionId))
           if (!p.ok) return p
+          const chatId = hub.chatOfSession?.(sessionId) || chat.chatId
           const raw = String(image || '').trim()
-          const useLast = !raw || /^(last|刚才|上一张|最近)/i.test(raw)
-          const previous = lastImage.get(hub.chatOfSession?.(sessionId) || chat.chatId)
-          if (useLast && !previous) return { ok: false, message: '这个聊天里还没人发过可用的图片网址' }
-          // QQ 头像模块现在只校验网址；B站的 last 在这里解析，避免与画作编号混用。
-          const src = avatarSource(useLast ? previous : raw)
+          // ① 自己画的图：按编号取文件（不让她接触路径）
+          const looksLikePath = /^https?:\/\//i.test(raw) || /^[a-zA-Z]:[\\/]|^\/(?!\/)|^file:|^base64:/i.test(raw)
+          const pref = /^画作/i.test(raw) ? (raw.replace(/^画作\s*[:：#]?\s*/i, '').trim() || '画作') : raw
+          const isPainting = !looksLikePath && (/^#?\d{1,2}$/.test(pref) || /^画作$/i.test(pref) || /\.(png|jpe?g|webp|gif)$/i.test(pref))
+          if (isPainting) {
+            const painting = resolvePainting(chatId, pref)
+            if (!painting) return { ok: false, message: `找不到画作 ${raw}（编号可能过期了，先让我画一张？）` }
+            let buf
+            try {
+              buf = readFileSync(painting.path)
+            } catch (error) {
+              return { ok: false, message: '这张画的文件读不到了：' + error.message }
+            }
+            return bili.setAvatar(buf)
+          }
+          // ② 刚才那张图：优先取图片字节，拿不到再退回记下的网址
+          if (!raw || /^(last|刚才|上一张|最近)/i.test(raw)) {
+            const media = hub.recentMedia?.(chatId) || []
+            const pick = media.filter((x) => !x.sticker).at(-1) || media.at(-1)
+            if (pick) {
+              try {
+                const buf = await segmentBytes(pick.seg, api.core.onebot, { maxBytes: 10 * 1024 * 1024 })
+                if (buf && buf.length) return bili.setAvatar(buf)
+              } catch (error) { /* 退回网址 */ }
+            }
+            const previous = lastImage.get(chatId)
+            if (!previous) return { ok: false, message: '最近半小时这个聊天里没人发过图片，先把图发过来' }
+            return bili.setAvatar(previous)
+          }
+          // ③ 显式网址
+          const src = avatarSource(raw)
           if (!src.ok) return src
           return bili.setAvatar(src.file)
         },

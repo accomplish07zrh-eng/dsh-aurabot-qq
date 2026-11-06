@@ -232,18 +232,31 @@ export function createBiliApi({ getCookie, log, fetchImpl = fetch }) {
     await req('https://api.bilibili.com/x/member/web/sign/update', { method: 'POST', form: { user_sign: sign, csrf } })
   }
 
-  /** 换头像：先把图片下载下来（≤2MB，只收图片），再按网页端的方式 multipart 上传。要登录。 */
-  async function setFace(imageUrl) {
+  /**
+   * 换头像：image 可以是图片网址，也可以是图片 Buffer（她画的图 / 聊天里收到的图）。
+   * 网址会先下载（≤2MB，只收图片）；Buffer 直接按文件头认类型。最后都走 multipart 上传。要登录。
+   */
+  async function setFace(image) {
     const csrf = parseCookie(getCookie()).bili_jct
     if (!csrf) throw new Error('没登录 B 站（Cookie 里要有 bili_jct）')
-    const r = await fetchImpl(imageUrl, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(20000) })
-    if (r.ok === false || (typeof r.status === 'number' && (r.status < 200 || r.status >= 300))) throw new Error('图片下载失败：HTTP ' + r.status)
-    let type = String(r.headers?.get?.('content-type') || '').split(';')[0].trim()
-    const buf = Buffer.from(await r.arrayBuffer())
-    if (!buf.length) throw new Error('图片是空的')
-    if (buf.length > FACE_MAX) throw new Error('图片超过 2MB，B 站不收')
-    if (!/^image\//i.test(type)) type = sniffImageType(buf)
-    if (!type) throw new Error('这个网址不是图片')
+    let buf
+    let type = ''
+    if (Buffer.isBuffer(image)) {
+      buf = image
+      if (!buf.length) throw new Error('图片是空的')
+      if (buf.length > FACE_MAX) throw new Error('图片超过 2MB，B 站不收')
+      type = sniffImageType(buf)
+      if (!type) throw new Error('这不是图片')
+    } else {
+      const r = await fetchImpl(image, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(20000) })
+      if (r.ok === false || (typeof r.status === 'number' && (r.status < 200 || r.status >= 300))) throw new Error('图片下载失败：HTTP ' + r.status)
+      type = String(r.headers?.get?.('content-type') || '').split(';')[0].trim()
+      buf = Buffer.from(await r.arrayBuffer())
+      if (!buf.length) throw new Error('图片是空的')
+      if (buf.length > FACE_MAX) throw new Error('图片超过 2MB，B 站不收')
+      if (!/^image\//i.test(type)) type = sniffImageType(buf)
+      if (!type) throw new Error('这个网址不是图片')
+    }
     const fd = new FormData()
     fd.append('dopost', 'save')
     fd.append('DisplayRank', '10000')
