@@ -13,6 +13,7 @@ import { readFileSync, existsSync, writeFileSync, unlinkSync, statSync, mkdirSyn
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
+import net from 'node:net'
 import { loadConfig, saveConfig, publicConfig, mergeFromPanel } from './core/config.js'
 import { createLogger } from './core/logger.js'
 import { registerSecret, redact } from './core/redact.js'
@@ -1227,6 +1228,58 @@ export function apply(ctx) {
   route('/snowluma/processes', async () => {
     try { return { ok: true, list: await snowluma.processes() } } catch (error) { return { ok: false, message: error.message, list: [] } }
   })
+  /** 本机端口有没有人在听（诊断用）。 */
+  function tcpOpen(port, host = '127.0.0.1', timeoutMs = 800) {
+    return new Promise((resolve) => {
+      const socket = new net.Socket()
+      let done = false
+      const finish = (value) => {
+        if (done) return
+        done = true
+        try { socket.destroy() } catch (error) {}
+        resolve(value)
+      }
+      socket.setTimeout(timeoutMs)
+      socket.once('connect', () => finish(true))
+      socket.once('timeout', () => finish(false))
+      socket.once('error', () => finish(false))
+      socket.connect(port, host)
+    })
+  }
+  /** 一键诊断：把「连不上 QQ」卡在哪一步逐项列出来，用户发截图就能定位。 */
+  route('/snowluma/diagnose', async () => {
+    const items = []
+    const add = (id, label, ok, detail, hint = '') => items.push({ id, label, ok: Boolean(ok), detail: String(detail || ''), hint })
+    const inst = snowluma.detect()
+    add('installed', 'SnowLuma 目录', inst.installed, inst.installed ? `${inst.dir}${inst.version ? '（v' + inst.version + '）' : ''}` : inst.reason, '在向导第 2 步填解压目录：纯英文路径，目录里能直接看到 index.mjs')
+    const running = await snowluma.running()
+    add('running', 'SnowLuma 运行状态', running, running ? '控制台有响应：' + snowluma.webuiUrl() : '控制台没有响应', '点「启动 SnowLuma」；仍然起不来就看「日志」页的 snowluma 段')
+    let consoleState = { ok: false, message: '控制台没在跑，跳过' }
+    if (running) consoleState = await snowluma.canLogin()
+    add('console', '控制台登录', consoleState.ok, consoleState.ok ? '用插件保存的密码登录成功' : consoleState.message, '在「连接」页点「重置控制台密码」；端口不一致时把 webuiPort 对齐（默认 15099）')
+    const ep = endpoint()
+    const hasOneBot = Boolean(ep.httpUrl || ep.wsUrl)
+    add('onebot-config', 'OneBot 网络', hasOneBot, hasOneBot ? `HTTP ${ep.httpUrl || '—'} / WS ${ep.wsUrl || '—'}` : 'SnowLuma 里还没启用 OneBot', '打开 SnowLuma 控制台 → OneBot → 启用 HTTP（13000）和 WebSocket（13001），保存后重启 SnowLuma')
+    for (const [kind, url, label] of [['http', ep.httpUrl, 'OneBot HTTP'], ['ws', ep.wsUrl, 'OneBot WebSocket']]) {
+      if (!url) continue
+      let port = 0
+      try { port = Number(new URL(url).port || 80) } catch (error) {}
+      if (!port) continue
+      const open = await tcpOpen(port)
+      add(`${kind}-port`, `${label} 端口 ${port}`, open, open ? '端口正在监听' : '端口没有监听', '先重启 SnowLuma 让它重新监听；端口被别的程序占用时去 SnowLuma 控制台改端口')
+    }
+    let procs = []
+    if (consoleState.ok) {
+      try { procs = await snowluma.processes() } catch (error) {}
+    }
+    const bots = procs.filter((p) => p.isBot)
+    add('processes', 'QQ 进程', procs.length > 0, procs.length ? `看到 ${procs.length} 个 QQ，其中机器人号 ${bots.length} 个${bots.length ? '（pid ' + bots.map((p) => p.pid).join('/') + '）' : ''}` : consoleState.ok ? 'SnowLuma 没看到 QQ 进程' : '控制台没登录，没查', '先把机器人号的 QQ 登录上（别用管理员运行），再点「接入机器人号」')
+    if (snowluma.lowIntegrity) add('integrity', 'SnowLuma 完整性级别', false, 'SnowLuma 以「低完整性」运行，看不到 QQ 进程', '把 SnowLuma 重新解压到普通目录（例如 D:\\SnowLuma），在「连接」页改好目录再启动')
+    const connected = onebotState === 'connected'
+    add('gateway', '插件 ↔ OneBot 网关', connected, connected ? '已连接' : String(onebotState || '未连接'), '连不上时看上面几项，或者点「接入机器人号」重试')
+    const problem = connected ? '' : await connectionProblem()
+    return { ok: items.every((item) => item.ok), items, problem }
+  })
   /** 连不上 QQ 网关时，按顺序找卡在哪一步，给一句人话。 */
   async function connectionProblem() {
     if (!cfg.enabled) return '总开关关着（右上角），打开后才会连'
@@ -1242,9 +1295,12 @@ export function apply(ctx) {
     if (inst.installed && !(await snowluma.running())) return 'SnowLuma 没在运行：点上面的「启动」'
     if (snowluma.lowIntegrity) return 'SnowLuma 以「低完整性」运行，看不到 QQ 进程（多半是解压在了下载目录这类带安全标签的地方）：把它重新解压到一个普通目录（比如 D:\SnowLuma），在「连接」页改好目录再启动'
     const ep = endpoint()
-    if (!ep.wsUrl && !ep.httpUrl) return 'SnowLuma 还没给机器人号开 OneBot 端口，也就是机器人号还没接入：确认机器人号的 QQ 已经登录，再点「接入机器人号」'
-    if (wrongAccount) return `连上的是 ${wrongAccount}，不是机器人号 ${cfg.botQQ}，已经断开：只登着机器人号那个 QQ，再点「接入机器人号」`
     const la = snowluma.lastAttach
+    if (!ep.wsUrl && !ep.httpUrl) {
+      if (la && la.at && la.ok) return '机器人号已经接入，但 SnowLuma 里没启用 OneBot 网络：打开 SnowLuma 控制台 → OneBot → 启用 HTTP（13000）和 WebSocket（13001），保存后重启 SnowLuma，再点一次「接入机器人号」'
+      return 'SnowLuma 还没给机器人号开 OneBot 端口，也就是机器人号还没接入：确认机器人号的 QQ 已经登录（别用管理员运行），再点「接入机器人号」；如果 QQ 已经登着，去 SnowLuma 控制台 → OneBot 启用 HTTP（13000）/ WebSocket（13001）'
+    }
+    if (wrongAccount) return `连上的是 ${wrongAccount}，不是机器人号 ${cfg.botQQ}，已经断开：只登着机器人号那个 QQ，再点「接入机器人号」`
     if (la && la.at && !la.ok && la.message) return '接入机器人号没成功：' + la.message
     return `连 ${ep.wsUrl || ep.httpUrl} 没连上：确认机器人号的 QQ 开着、已经登录，并且 SnowLuma 控制台里这个号显示已接入`
   }

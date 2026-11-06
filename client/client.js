@@ -5148,6 +5148,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const login = st.onebot.login
       const [procs, setProcs] = useState(null)
       const [live, setLive] = useState('dry')
+      // 接入机器人号：按钮 busy、45 秒还没连上就提示、以及一键诊断结果
+      const [attachBusy, setAttachBusy] = useState(false)
+      const [attachAt, setAttachAt] = useState(0)
+      const [slowAttach, setSlowAttach] = useState(false)
+      const [diag, setDiag] = useState(null)
+      const [diagBusy, setDiagBusy] = useState(false)
       const qqOk = /^\d{5,11}$/.test(draft.botQQ || '') && /^\d{5,11}$/.test(draft.ownerQQ || '') && draft.botQQ !== draft.ownerQQ
       const external = draft.gateway === 'onebot'
       const verified = conn && login && String(login.uin) === String(st.config.botQQ) && !st.onebot.problem
@@ -5161,6 +5167,34 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         const r = await post('/setup/done', { existingConnection: true })
         toast(r.message, r.ok ? 'ok' : 'err')
         if (r.ok) { try { localStorage.removeItem('aurabot.wiz') } catch (e) {} reload(); onClose && onClose() }
+      }
+      // 点了接入之后每 2 秒刷新一次状态；45 秒还没好就提示去看诊断
+      useEffect(() => {
+        if (!attachAt || verified) return undefined
+        const slow = setTimeout(() => setSlowAttach(true), 45000)
+        const timer = setInterval(() => reload(), 2000)
+        return () => { clearTimeout(slow); clearInterval(timer) }
+      }, [attachAt, verified])
+      const attach = async () => {
+        if (attachBusy) return
+        setAttachBusy(true)
+        setAttachAt(Date.now())
+        setSlowAttach(false)
+        try {
+          const r = await Promise.race([
+            post('/snowluma/attach'),
+            new Promise((resolve) => setTimeout(() => resolve({ ok: false, message: '接入超时（35 秒）：SnowLuma 控制台或 QQ 可能卡住了，点「一键诊断」看看' }), 35000)),
+          ])
+          toast(r.message, r.ok ? 'ok' : 'err')
+        } catch (e) { toast('接入失败：' + (e.message || e), 'err') }
+        setAttachBusy(false)
+        reload()
+      }
+      const diagnose = async () => {
+        setDiagBusy(true)
+        const r = await get('/snowluma/diagnose')
+        setDiagBusy(false)
+        setDiag(r)
       }
       const body = [
         // 0. QQ 号
@@ -5200,12 +5234,25 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           external ? h('div', { className: 'ab-flex' },
             h(Btn, { kind: 'primary', small: true, onClick: async () => { const r = await post('/onebot/reconnect'); toast(r.message, r.ok ? 'ok' : 'err'); reload() } }, '连接'),
             h(Btn, { small: true, onClick: async () => { const r = await get('/onebot/test'); toast(r.message) } }, '测试连接')) :
-          h('div', { className: 'ab-flex' },
-            h(Btn, { kind: 'primary', small: true, onClick: async () => { const r = await post('/snowluma/attach'); toast(r.message); setTimeout(reload, 1500) } }, '接入机器人号'),
+          h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8 } },
+            h(Btn, { kind: 'primary', small: true, disabled: attachBusy, onClick: attach }, attachBusy ? '接入中…' : '接入机器人号'),
+            h(Btn, { small: true, disabled: diagBusy, onClick: diagnose }, diagBusy ? '诊断中…' : '一键诊断'),
             h(Btn, { small: true, onClick: async () => { const r = await get('/snowluma/processes'); setProcs(r.list || []); if (!r.ok) toast(r.message) } }, '看看有哪些 QQ 进程'),
             h(Btn, { small: true, onClick: async () => { const r = await get('/onebot/test'); toast(r.message) } }, '测试连接')),
           sl.lastAttach && sl.lastAttach.at ? h('div', { className: 'ab-small', style: { marginTop: 8, color: sl.lastAttach.ok ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, sl.lastAttach.message) : null,
-          conn && login ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, login.uin === st.config.botQQ ? '✓ 连上了：' + login.nickname + '（' + login.uin + '）' : '⚠ 连上的是 ' + login.uin + '，不是机器人号') : h('div', { className: 'ab-muted ab-small', style: { marginTop: 10 } }, '接入后需要十几秒识别登录状态，稍等一下会自动刷新。'),
+          conn && login
+            ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, login.uin === st.config.botQQ ? '✓ 连上了：' + login.nickname + '（' + login.uin + '）' : '⚠ 连上的是 ' + login.uin + '，不是机器人号')
+            : h('div', null,
+              st.onebot.problem ? h('div', { className: 'ab-note warn', style: { marginTop: 10 } }, h('b', null, '还连不上的原因：'), st.onebot.problem,
+                slowAttach ? h('div', { className: 'ab-small', style: { marginTop: 6 } }, '已经等了 45 秒还没连上：先按上面的原因排查，或者点「一键诊断」。') : null) : null,
+              h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } }, '接入后一般十几秒内会连上；连不上时这里会直接写出卡在哪一步。')),
+          diag ? h('div', { className: 'ab-note', style: { marginTop: 10 } },
+            h('div', { className: 'ab-small' }, '诊断结果：' + (diag.ok ? '全部正常' : '有问题，看下面带 ✗ 的项')),
+            (diag.items || []).map((it) => h('div', { key: it.id, className: 'ab-small', style: { padding: '5px 0', borderTop: '1px solid var(--ab-line)' } },
+              h('span', { style: { color: it.ok ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, it.ok ? '✓ ' : '✗ '),
+              h('b', null, it.label + '：'), it.detail,
+              !it.ok && it.hint ? h('div', { className: 'ab-muted' }, '→ ' + it.hint) : null)),
+            diag.problem ? h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, '当前提示：' + diag.problem) : null) : null,
           procs ? h('table', { className: 'ab-table', style: { marginTop: 10 } }, h('tbody', null, procs.map((p) => h('tr', { key: p.pid }, h('td', null, p.pid), h('td', null, p.uin || '识别不出'), h('td', null, p.nickname || ''), h('td', null, p.isBot ? h('span', { className: 'ab-badge' }, '机器人号') : h('span', { className: 'ab-muted ab-small' }, '不会碰')))))) : null),
         // 4. 完成
         h('div', null,
