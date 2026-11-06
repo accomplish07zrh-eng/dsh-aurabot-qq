@@ -78,6 +78,23 @@ export function createEmbedder(assetsDir) {
   let dim = 512
   let failed = ''
 
+  /**
+   * 同步探测运行时能不能用（不加载模型，只看 onnxruntime-node 装没装）。
+   * ready() 必须靠它：createEmbedder 是懒加载的，不主动探一下的话
+   * embedder.error 永远是空的，面板就会显示「已就绪」、
+   * 结果真正算向量时才抛「运行时没装好」——用户看到的是「开着但没效果」。
+   */
+  function probe() {
+    if (failed) return failed
+    try {
+      require('onnxruntime-node')
+      return ''
+    } catch (error) {
+      failed = '向量运行时没装好（onnxruntime-node 装不上时联想不可用，记忆仍按关键词检索）：' + error.message
+      return failed
+    }
+  }
+
   function tokenizerOf() {
     if (tokenizer) return tokenizer
     tokenizer = buildTokenizer(join(assetsDir, 'vocab.txt'))
@@ -141,6 +158,8 @@ export function createEmbedder(assetsDir) {
 
   return {
     embed,
+    // 同步探测运行时（不加载模型）；ready() 用它，避免「显示就绪、一算就失败」
+    probe,
     get error() {
       return failed
     },

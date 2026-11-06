@@ -11,7 +11,6 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createVecStore } from './vector-store.js'
 import { createEmbedder } from './vector-embed.js'
-import { createModelDownloader } from './vector-model.js'
 
 export const LOCAL_MODEL = 'bge-small-zh-v1.5-int8'
 
@@ -44,11 +43,12 @@ export function createLocalVectorIndex({ dataDir, log }) {
   const store = createVecStore(file, { model: LOCAL_MODEL })
   let assets = resolveAssets(dataDir)
   let embedder = assets ? createEmbedder(assets) : null
-  // 没模型时准备一个下载器：真正要算向量了再拉，别拖慢启动
-  const downloader = assets ? null : createModelDownloader({ dataDir, log })
 
-  let lastError = assets ? '' : '本地向量模型还没下载（首次使用时会自动下载）'
-  let pulling = null
+  // 模型随插件一起发布（仓库 models/ 目录，package.json 的 files 已包含它），
+  // **不再联网自动下载**。早期版本去 GitHub Release 拉 assets，但那个 Release
+  // 从来没有上传过资源（实测 404），只会让面板一直显示「下载失败」。
+  // 现在模型不在时直接给一句能看懂的说明，让人知道该把文件放哪。
+  let lastError = assets ? '' : '本地向量模型缺失：models/ 目录里应该有 model_int8.onnx 和 vocab.txt（插件包自带；手动安装时把它们放进数据目录的 models/ 也可以）'
 
   // 条目签名：文字 + 改写时间，变了就重算
   /**
@@ -68,25 +68,28 @@ export function createLocalVectorIndex({ dataDir, log }) {
 
   function ready() {
     if (!embedder) return false
-    if (embedder.error) return false
+    // 必须真探一下运行时：createEmbedder 是懒加载的，只看 embedder.error 会得到空字符串，
+    // 于是 onnxruntime-node 没装也报告「就绪」，面板显示打开却算不出向量。
+    if (typeof embedder.probe === 'function') {
+      const why = embedder.probe()
+      if (why) { lastError = why; return false }
+    } else if (embedder.error) return false
     return true
   }
 
-  /** 模型不在就下载一次（并发只跑一个），成功后重新装好 embedder。 */
+  /**
+   * 重新查一次模型目录。
+   * 不做联网下载（以前那个 Release 地址是 404，assets 一直是空的）：
+   * 只重新扫一遍磁盘，用户把模型文件放进去之后下次 tick 就能用上。
+   */
   async function ensureModel() {
     if (ready()) return true
-    if (!downloader) return false
-    if (!pulling) {
-      pulling = (async () => {
-        const dir = await downloader.ensure()
-        if (!dir) { lastError = downloader.status().error || '模型下载失败'; return false }
-        assets = dir
-        embedder = createEmbedder(assets)
-        lastError = embedder.error || ''
-        return ready()
-      })().finally(() => { pulling = null })
-    }
-    return pulling
+    const dir = resolveAssets(dataDir)
+    if (!dir) return false
+    assets = dir
+    embedder = createEmbedder(assets)
+    lastError = embedder.error || ''
+    return ready()
   }
 
   async function embed(texts) {
@@ -223,8 +226,12 @@ export function createLocalVectorIndex({ dataDir, log }) {
     neighbors,
     ready,
     model: LOCAL_MODEL,
-    /** 面板看模型状态用：有没有、在不在下、下载进度 */
-    modelStatus: () => (downloader ? downloader.status() : { present: true, running: false, error: '' }),
+    /** 面板看模型状态用：模型在不在、为什么不可用（不再有「下载中」这种状态） */
+    modelStatus: () => ({
+      present: Boolean(resolveAssets(dataDir)),
+      running: false,
+      error: lastError || '',
+    }),
     get error() {
       return lastError
     },
