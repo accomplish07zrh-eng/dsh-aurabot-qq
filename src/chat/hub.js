@@ -35,6 +35,7 @@ import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../
 import { noticeText } from './notices.js'
 import { createConversationArchive, packEvidence } from './conversation-context.js'
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
+import { currentTimeLine } from './time-context.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
 // 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
@@ -2229,7 +2230,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const lines = earlier.map((x) => `${new Date(x.at).toTimeString().slice(0, 5)} 你：${x.text}`)
       content = [{ type: 'text', text: `【你之前在这个聊天里主动说过（是在别处安排下发的，这里的人都看到了）】\n${lines.join('\n')}\n` }, ...content]
     }
-    content = cleanContent(content)
+    // 群聊、私聊、图片、主动搭话和插话都从这里经过；时间只进本轮内容。
+    content = cleanContent([...content, { type: 'text', text: currentTimeLine() }])
     // 这一轮还在跑、这句是排队给下一轮的：额外记到 pendingSenders，等上一轮 turn/end 时接过去（#90）
     // ⚠ 不能用 busy：flush 一开始就把 busy 置上了，否则会把这一批自己的说话人塞进下一轮，
     //    主人和群友混在一起会让「仅主人」判断误拒（sticker-owner 回归抓到过）。
@@ -2250,7 +2252,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     for (const s of opts.extraSenders || []) addSender(s)
     // 上一句也留着：这一句太短（「嗯嗯」「然后呢」）时一起拿去想起相关的事
     if (st.lastText) st.prevText = st.lastText
-    st.lastText = String(opts.queryText ?? content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')).slice(-600)
+    st.lastText = userText.slice(-600)
     st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
     if (opts.wantVoice) st.wantVoice = true
     if (!opts.steer) {
@@ -2280,10 +2282,12 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND, speaker: { role: speakerRole, chat: chat.kind } } }
     // 正在跑的这一轮：steer = 下一步就看到这句（DSH 界面插话走的也是它）；空闲时照旧 followup 开新一轮
     outputSources.set(chat.chatId, sources)
-    if (opts.steer && typeof agent.steer === 'function') {
+    // agentFor / prompt 挂钩 / 附件处理期间上一轮可能已经结束；空闲 agent 的 steer 不会开启新一轮。
+    if (opts.steer && running.has(chat.chatId) && typeof agent.steer === 'function') {
       log.info(`${chat.chatId}：她还在忙，这句直接插进当前这一轮（steer）`)
       await withPromptCapture(sources, () => agent.steer(message))
     } else {
+      if (opts.steer) busy.set(chat.chatId, Date.now())
       running.add(chat.chatId)
       await withPromptCapture(sources, () => agent.followup(message))
     }
@@ -2392,7 +2396,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       Promise.resolve().then(() => {
         assertActive()
         const sources = sourcesFor(chat.chatId)
-        return withPromptCapture(sources, () => agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: cleanText(prompt) }], source: { kind: SOURCE_KIND, speaker: { role: 'none' } } }))
+        return withPromptCapture(sources, () => agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: cleanText(prompt) + '\n' + currentTimeLine() }], source: { kind: SOURCE_KIND, speaker: { role: 'none' } } }))
       }).catch((error) => {
         if (st.system === system && system.timedOutAt == null) { st.system = null; system.reject(error) }
       })

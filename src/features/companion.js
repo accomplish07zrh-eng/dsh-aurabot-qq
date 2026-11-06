@@ -5,6 +5,7 @@ import { askModel } from '../core/llm.js'
 import { cleanText, clipText } from '../core/text.js'
 import { shouldDeferBackground } from '../core/offpeak.js'
 import { followUpHint } from './memory.js'
+import { moodReason } from './mood-context.js'
 
 // ---------------- 心情 ----------------
 // 0~100，基线 60。聊天里的话按关键词推一推，随时间按半衰期回到基线。
@@ -93,6 +94,7 @@ export function createMood({ getConfig, dsh, log }) {
     s.at = Date.now()
     reason = cleanText(reason)
     s.reason = reason
+    s.reasonAt = s.at
     // 保留 200 条：20 条只够两小时，出问题查不到原因（实测需要回溯半天以上）
     s.history = [{ at: Date.now(), from: before, to: Math.round(s.value), reason }, ...(s.history || [])].slice(0, 200)
     save(s)
@@ -156,7 +158,7 @@ export function createMood({ getConfig, dsh, log }) {
       const label = moodLabel(v)
       const style = MOOD_STYLE[label]
       if (!style) return ''
-      return `（你现在${label}${s.reason ? '，因为' + cleanText(s.reason) : ''}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
+      return `（你现在${label}${moodReason(s, v, base())}。这会自然地影响你说话：${style}。不用说出来自己心情如何。）`
     },
   }
 }

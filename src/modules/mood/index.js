@@ -9,10 +9,15 @@ export default {
   version: '1.0.0',
   description: '她的心情：会随聊天起伏，影响表情 / 语音频率和回复快慢',
   tab: 'mood',
-  files: ['features/companion.js'],
+  files: ['features/companion.js', 'features/mood-context.js'],
   setup(api) {
     const mood = createMood({ getConfig: api.config, dsh: api.dsh, log: api.log })
-    api.context(({ chat }) => (chat.kind === 'system' ? '' : mood.contextLine()))
+    // 理由的相对时间每轮变化，和相关记忆一样放进本轮消息，避免上下文快照膨胀（#79）。
+    api.on('prompt', (content, { chat }) => {
+      if (chat.kind === 'system') return content
+      const line = mood.contextLine()
+      return line ? [...content, { type: 'text', text: line }] : content
+    })
     api.on('activity', (a) => {
       const cfg = api.config()
       if (a.kind === 'in' && a.text) mood.observe(a.text, a.nickname, { direct: a.direct, owner: a.owner })
