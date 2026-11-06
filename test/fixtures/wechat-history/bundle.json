@@ -1,0 +1,64 @@
+{
+  "synthetic": true,
+  "profile": {
+    "id": "paperboat",
+    "owner_qq": "10000001",
+    "source_identity": {
+      "username": "wxid_demo_target",
+      "remark": "虚构原型"
+    }
+  },
+  "episodes": [
+    {
+      "id": "wechat-coffee",
+      "source": "original_wechat",
+      "visibility": "owner_private",
+      "text": "Coffee温控 手冲用八十八度",
+      "evidence_ids": [
+        "wx-demo-1",
+        "wx-demo-2"
+      ],
+      "context": [
+        {
+          "id": "wx-demo-1",
+          "speaker": "owner",
+          "timestamp": 1700000000,
+          "text": "你上次Coffee温控用多少度？"
+        },
+        {
+          "id": "wx-demo-2",
+          "speaker": "target",
+          "timestamp": 1700000060,
+          "text": "手冲用八十八度"
+        }
+      ]
+    },
+    {
+      "id": "wechat-plant",
+      "source": "original_wechat",
+      "visibility": "owner_private",
+      "text": "盆栽浇水 每周浇一次",
+      "evidence_ids": [
+        "wx-demo-3"
+      ],
+      "context": [
+        {
+          "id": "wx-demo-3",
+          "speaker": "target",
+          "timestamp": 1700000200,
+          "text": "盆栽每周浇一次水"
+        }
+      ]
+    },
+    {
+      "id": "wrong-visibility",
+      "source": "original_wechat",
+      "visibility": "other_person_private",
+      "text": "Coffee不可见的资料",
+      "evidence_ids": [
+        "wx-demo-other"
+      ],
+      "context": []
+    }
+  ]
+}

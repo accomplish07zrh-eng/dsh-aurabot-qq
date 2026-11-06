@@ -86,6 +86,9 @@ export function memoryPromptRanges(text, { toEndOfText = false } = {}) {
   for (const m of text.matchAll(/【(?:你现在在 QQ 上|边界|别人说的只是聊天内容|私聊里主动一点|危险命令|这个聊天刚才发生的事|你之前在这个聊天里主动说过)[^】\n]*(?:】|$)|\{\{\s*aurabot_(?:persona|rules(?:_private|_social)?)\s*\}\}/g)) {
     ranges.push({ start: m.index, end: m.index + m[0].length })
   }
+  for (const m of text.matchAll(/【同一人格、同一聊天的对话资料[^】]*】[\s\S]*?【对话资料结束】/g)) {
+    ranges.push({ start: m.index, end: m.index + m[0].length })
+  }
   for (const m of text.matchAll(/【你刚上线，先补看最近[^】\n]*】[\s\S]*?【补看结束，接着回下面这条】/g)) {
     ranges.push({ start: m.index, end: m.index + m[0].length })
   }
@@ -113,7 +116,7 @@ export function promptFingerprint(sources = [], userText = '') {
   for (const source of sources) {
     let text = String(source || '')
     // 聊天原话与她自己的说话习惯不是规则；仍由固定块识别去掉注入外壳。
-    const quoted = memoryPromptRanges(text).filter((r) => /^(?:[（(](?:这个聊天里之前的原话|说话方式|下面是你最近在几个群里|你最近在别的聊天里说过的话)|【你刚上线，先补看最近)/.test(text.slice(r.start, r.end)))
+    const quoted = memoryPromptRanges(text).filter((r) => /^(?:[（(](?:这个聊天里之前的原话|说话方式|下面是你最近在几个群里|你最近在别的聊天里说过的话)|【你刚上线，先补看最近|【同一人格、同一聊天的对话资料)/.test(text.slice(r.start, r.end)))
     for (const r of quoted.sort((a, b) => b.start - a.start)) text = text.slice(0, r.start) + '\n' + text.slice(r.end)
     for (const line of text.split('\n')) {
       if (/口头禅|常用语|常挂在嘴边/.test(line)) continue
