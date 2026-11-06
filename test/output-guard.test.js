@@ -1,6 +1,7 @@
+import { rm } from 'node:fs/promises'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cleanOutboundText, cleanOutboundSegments, parseReply } from '../src/chat/reply.js'
@@ -152,11 +153,12 @@ function setup(t, { hooks = {}, brain = async () => '', contextProviders, voice 
     } },
   })
   fake.ctx.on('session/event', hub.onSessionEvent)
-  t.after(() => {
+  t.after(async () => {
     hub.dispose(); fake.dispose()
     if (previous === undefined) delete process.env.AURABOT_DATA_DIR
     else process.env.AURABOT_DATA_DIR = previous
-    rmSync(dir, { recursive: true, force: true })
+    // Allow pending Windows ACL work to release the temporary directory without blocking the event loop.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
   return { hub, fake, cfg, calls, sent, warnings, activity, spoken, dir }
 }

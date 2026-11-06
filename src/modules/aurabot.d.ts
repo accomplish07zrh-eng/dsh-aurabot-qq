@@ -99,6 +99,18 @@ export interface Logger {
 
 export type Off = () => void
 
+/** 同一人物、同一聊天的原话；assistant 不是用户事实。 */
+export interface ConversationMessage {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  speakerId: string
+  /** Unix milliseconds */
+  at: number
+  /** 原文进入本轮的时间；忘记请求也过滤仍在生成的旧上下文回复。 */
+  contextAt?: number
+}
+
 /** 事件 → 监听函数的样子。返回值的意义见 API.md「事件」。 */
 export interface Events {
   /** 返回 true = 接管这条消息，她不再处理 */
@@ -112,7 +124,7 @@ export interface Events {
   /** 群里这条消息她回不回：返回对象覆盖决定，比如 { reply: true, mode: 'must' }（返回 null 无效，等于不改） */
   'group/decide': (decision: GroupDecision, info: { msg: Message; policy: any; recentTexts: string[]; memScore: number }) => Partial<GroupDecision> | void | Promise<Partial<GroupDecision> | void>
   /** 交给她的内容（[{ type: 'text', text }, { type: 'image', ... }]）：返回新数组改写，null 这次不交给她 */
-  prompt: (content: any[], info: { chat: Chat; senderId: string; queryText?: string }) => any[] | null | void | Promise<any[] | null | void>
+  prompt: (content: any[], info: { chat: Chat; senderId: string; queryText?: string; sessionId: string; prevText: string; recentMessages: ConversationMessage[] }) => any[] | null | void | Promise<any[] | null | void>
   /** 这个聊天用哪个模型（同步）：返回 { provider, model, reasoningEffort } */
   model: (selection: ModelSelection | null, chat: Chat) => ModelSelection | void
   /** 她的人格全文（同步）：返回新文字改写 */

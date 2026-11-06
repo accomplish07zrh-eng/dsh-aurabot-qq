@@ -1153,7 +1153,8 @@ test('#58 在 DSH 会话窗口里直接打字：这一轮按主人说的算（�
   const n = fake.turns.length
   mock.push(priv(OWNER, text('在吗')))
   await until(() => fake.turns.length > n)
-  const sid = fake.workspaces[0].sessionIds.at(-1)
+  // 后台任务也会创建会话；用 QQ 映射定位，不能假定最后一个会话就是主人私聊。
+  const sid = api.hub.sessions()['private:' + OWNER]?.sessionId
   assert.ok(sid, '新会话建出来了')
   // 模拟主人在 DSH 会话窗口里直接打字（DSH 会发 user/message，source.kind = 'user'）
   api.hub.onSessionEvent({ id: sid }, { type: 'user/message', data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '帮我把 B 站头像改一下' }] } })

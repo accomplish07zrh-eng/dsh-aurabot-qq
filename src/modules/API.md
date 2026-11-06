@@ -165,7 +165,7 @@ export default {
 
 | | |
 |---|---|
-| `hub` | 聊天中枢：`deliver(chatId, text)` `sendText` `sendVoice(chatId, 文字)` `sendVoiceFile(chatId, 音频文件)` `sendImage` `sendSticker(chatId, 名字)` `sendSegments` `runSystemTurn(名字, 标题, 提示词)` `pushToSession(...)` `resetChat(chatId)` `groupName(群号)` `turnHasOwner(sessionId)`（只表示本轮有人是主人，别拿它做权限门，用下面的 `turnSendersAllOwner`） `turnSendersAllOwner(sessionId)` `referenceImage(chat, 'last' 或 'quote')`（取当前聊天最近收到 / 引用的图，返回 Buffer，沿用短期缓存） `chatOfSession(sessionId)` `stats()` `sessions()` `chatLogOf(日期)` `lastChatAt` `lastOwnerChatAt` …… |
+| `hub` | 聊天中枢：`deliver(chatId, text)` `sendText` `sendVoice(chatId, 文字)` `sendVoiceFile(chatId, 音频文件)` `sendImage` `sendSticker(chatId, 名字)` `sendSegments` `runSystemTurn(名字, 标题, 提示词)` `pushToSession(...)` `resetChat(chatId)` `groupName(群号)` `turnHasOwner(sessionId)`（只表示本轮有人是主人，别拿它做权限门，用下面的 `turnSendersAllOwner`） `turnSendersAllOwner(sessionId)` `referenceImage(chat, 'last' 或 'quote')`（取当前聊天最近收到 / 引用的图，返回 Buffer，沿用短期缓存） `chatOfSession(sessionId)` `stats()` `sessions()` `chatLogOf(日期)` `recentMessagesOf(chatId, limit)`（原话档案开启后，当前人物同一聊天的近期消息，默认 32、最多 256 条） `lastChatAt` `lastOwnerChatAt` …… |
 | `onebot` | QQ 网关：`call(action, params, { timeoutMs })`、`state` |
 | `snowluma` | SnowLuma 管理：`running()` `start()` `stop()` `detect()` …… |
 | `local` | 本地接口（「本地接口」页那四项）：`active(slot)` `call(slot, 参数)` |
@@ -195,7 +195,7 @@ export default {
 | 事件 | 参数 | 改的是什么 |
 |---|---|---|
 | `group/decide` | `decision, { msg, policy, recentTexts, memScore }` | 群里这条消息（没被 `message` 接管的）她**回不回、怎么回**。返回 `null` 在这里无效（等于不改）。`decision` 是 `{ reply, mode, reason }`，mode 是 `must`（被叫到）/ `engaged`（正在参与话题）/ `interject`（插话）。返回 `{ reply: true, mode: 'must' }` 就让她必回，`{ reply: false }` 就让她不理。想整套换掉插话策略就在这里写 |
-| `prompt` | `content, { chat, senderId, queryText }` | **交给她的内容**：`[{ type: 'text', text }, { type: 'image', … }]`。可以加背景信息、改格式、去掉图片；返回 `null` 这次不交给她 |
+| `prompt` | `content, { chat, senderId, queryText, sessionId, prevText, recentMessages }` | **交给她的内容**：`[{ type: 'text', text }, { type: 'image', … }]`。可以加背景信息、改格式、去掉图片；返回 `null` 这次不交给她 |
 | `reply/items` | `items, { chatId, text, userText }` | 她的回复**拆好之后**（哪条发语音、配不配表情都已经决定了）：每条 `{ kind: 'text' \| 'voice' \| 'sticker' \| 'poke' \| 'image', value, replyTo }`。可以改顺序、全部变语音、去掉表情、加图片 |
 | `send` | `message, { chatId, note, force }` | **最终发给 QQ 的消息段**（OneBot 格式）。所有发出去的消息都经过这里：她的回复、命令回复、模块发的。加签名、过滤词、抄送到别处都在这里 |
 | `model` | `selection, chat` | **这个聊天用哪个模型**（同步，不能 async）：返回 `{ provider, model, reasoningEffort }`。比如群里用便宜的、私聊用好的。`selection` 是面板选的（没选时是 DSH 默认，拿不到时是 `null`），主人在面板里「按聊天选模型」设过的话，已经按那个聊天算好了；模块在它之后还可以再改。换了之后从这个聊天的下一条消息起生效 |
@@ -377,3 +377,5 @@ return function Panel({ settings, save, toast }) {
 - 面板「日志」页：模块的日志按模块 id 分类
 - **安全模式**：「已安装」页打开后，你写的模块一个都不加载，内置的全部恢复。用来判断「是我的模块的问题还是插件的问题」
 - 不会写？在「已安装」页点「复制给 DSH 的话」，粘给 DSH，写上你想要什么，它会读这份说明帮你写
+
+原话档案通过 `conversationContext.enabled` 显式开启，默认关闭。`prompt` 的 `recentMessages` 是当前输入之前的同一人物/聊天记录；关闭时为空。具体保留范围、微信历史资料接入和模块权限边界见 [对话上下文说明](../../docs/MEMORY-CONTEXT.md)。
