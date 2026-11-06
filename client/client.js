@@ -2419,6 +2419,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function Autotelic({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       const [s, setS] = useState(null)
+      const [pv, setPv] = useState(null)
+      const [busy, setBusy] = useState('')
       const load = () => get('/autotelic/status').then((r) => { if (r.ok) setS(r); else setS(null) }).catch(() => setS(null))
       useEffect(() => { load(); const t = setInterval(load, 15000); return () => { clearInterval(t) } }, [])
       const chain = s && s.audit && s.audit.chain
@@ -2426,8 +2428,33 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         : h('span', { className: 'ab-small', style: { color: chain.ok ? 'var(--ab-ok)' : '#c62828' } },
           (s.audit.today || 0) + ' 条 · ' + (chain.ok ? '链完整'
             : '⚠ 断链 @ ' + chain.brokenAt.file + ' 第 ' + chain.brokenAt.line + ' 条（' + chain.brokenAt.reason + '）'))
+      const doPreview = async () => { setBusy('preview'); try { const r = await get('/autotelic/preview'); setPv(r) } catch (e) { toast(e.message, 'err') } finally { setBusy('') } }
+      const doRun = async () => { setBusy('run'); try { const r = await post('/autotelic/run'); toast(r.message || '这轮结束了', r.ok === false ? 'err' : 'ok'); load() } catch (e) { toast(e.message, 'err') } finally { setBusy('') } }
+      const tasks = (s && s.tasks) || []
+      const TASK_BADGE = { active: '', done: '完成', failed: '失败', blocked: '卡住', abandoned: '放弃' }
       return h('div', { className: 'ab-grid' },
-        h(Card, { title: '自驱引擎', right: f.sw('ext.autotelic.enabled'), desc: '给她一间自己的屋子：独立后台会话 + 一本别人代记的账（机械审计）。她可以骗你，但不能骗账本——账是框架机械记的，删了必断链，面板能验出断点。默认关；P0 只铺地基，她一行代码都还不会自己跑。' },
+        h(Card, { title: '她在想的事', desc: '她每分钟想一次「有什么值得自己弄清楚的」，够好奇就立项记账。全程只读（L0）：只在脑子里办，不出门、不打扰你。' },
+          s ? h('div', { className: 'ab-small ab-muted', style: { marginBottom: 8 } },
+            '进行中 ' + (s.summary.active || 0) + ' · 完成 ' + (s.summary.done || 0) + ' · 卡住 ' + (s.summary.blocked || 0) + ' · 放弃 ' + (s.summary.abandoned || 0) + (s.heartbeats && s.heartbeats.length ? ' · 心跳 ' + s.heartbeats.map((x) => timeAgo(x.at)).join(' / ') : '')) : null,
+          !s ? h(Empty, { icon: '⏳', text: '加载中…' })
+            : tasks.length === 0 ? h(Empty, { icon: '💭', text: '账本还空着。开着总开关等她心跳，或点下面的「预览」看这轮素材能立什么项。' })
+              : h('div', { className: 'ab-list' }, tasks.map((t) => h('div', { key: t.id, className: 'ab-li' },
+                h('div', { className: 'meta' },
+                  h('b', null, t.title), ' ',
+                  h('span', { className: 'ab-badge' }, TASK_BADGE[t.status] || t.status),
+                  ' · 好奇 ' + (t.score != null ? t.score.toFixed(2) : '?'),
+                  ' · ' + timeAgo(t.updatedAt || t.createdAt)),
+                h('div', { className: 'body' }, t.reason, t.why ? h('div', { className: 'ab-muted ab-small' }, '→ ' + t.why) : null)))),
+          h('div', { className: 'ab-flex', style: { marginTop: 10 } },
+            h(Btn, { small: true, onClick: doPreview, disabled: busy === 'preview' }, busy === 'preview' ? '正在预览…' : '预览（不落盘）'),
+            h(Btn, { small: true, kind: 'primary', onClick: doRun, disabled: busy === 'run' }, busy === 'run' ? h(Fragment, null, h('i', { className: 'ab-spin' }), ' 正在想…') : '现在想一轮'),
+            h('span', { className: 'ab-muted ab-small' }, s && s.running ? '上一轮还没想完' : '')),
+          pv ? h('div', { className: 'ab-note', style: { marginTop: 8 } },
+            h('div', null, '素材 ' + pv.materialCount + ' 条 · 候选 ' + pv.candidates.length + ' 个（阈值 ' + pv.thresholds.minCuriosity + '）'),
+            pv.candidates.map((c) => h('div', { key: c.title, className: 'ab-small', style: { marginTop: 4 } }, '✓ 「' + c.title + '」 ' + c.score.toFixed(2) + ' — ' + c.reason)),
+            pv.rejected.slice(0, 6).map((x, i) => h('div', { key: i, className: 'ab-small ab-muted', style: { marginTop: 2 } }, '✗ 「' + x.title + '」 ' + x.score.toFixed(2) + ' — ' + x.why))) : null,
+        ),
+        h(Card, { title: '自驱引擎', right: f.sw('ext.autotelic.enabled'), desc: '给她一间自己的屋子：独立后台会话 + 一本别人代记的账（机械审计）。她可以骗你，但不能骗账本——账是框架机械记的，删了必断链，面板能验出断点。默认关；现在她只会「想和记账」，动手（调模块/写代码）往后几期才放开。' },
           h(Row, { label: '允许后台会话指定 preset', hint: 'hub 只在你明确开了这个开关后才接受 presetId 覆盖（aurabot-autotelic，不带 shell、不带 QQ 社交工具）；关着时最坏情况也只是「她不会动」' }, f.sw('ext.autotelic.presetIdOverride')),
           h(Row, { label: '审计账本', hint: '她的工具调用全量落盘（哈希链，一天一页）；你自己在 GUI / QQ 私聊 / 群里的调用不进她的账本' },
             s ? h('span', { className: 'ab-small', style: { color: s.audit.wired ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, s.audit.wired ? '✓ 审计已接线' : '○ 未接线（插件没挂上钩子）') : h('span', { className: 'ab-muted ab-small' }, '…')),
