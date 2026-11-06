@@ -171,12 +171,13 @@ test('市场面板：分页渲染，筛选变化回第一页', () => {
 
 test('市场面板：标题跳仓库，只认 http(s) 的 homepage', () => {
   const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
-  assert.match(src, /const repoUrl = \(m\) => \(\/\^https\?:\\\/\\\//, 'homepage 必须过 http(s) 校验')
-  assert.match(src, /m\.homepage/)
+  // 默认深入到模块库里该模块自己的目录（有的 homepage 指向别处仓库根，不准）
   assert.match(
     src,
-    /stats\.source \? 'https:\/\/github\.com\/' \+ stats\.source \+ '\/tree\/main\/modules\/' \+ m\.id/,
-    '没写 homepage 时深入到模块库里该模块自己的目录',
+    /stats\.source\s*\n\s*\? 'https:\/\/github\.com\/' \+ stats\.source \+ '\/tree\/main\/modules\/' \+ m\.id/,
   )
+  // 认不出模块库仓库才退 homepage，且必须过 http(s) 校验
+  assert.match(src, /m\.homepage/)
+  assert.match(src, /\/i\.test\(String\(m\.homepage \|\| ''\)\)/, 'homepage 必须过 http(s) 正则校验')
   assert.match(src, /target: '_blank', rel: 'noreferrer', title: '打开仓库主页'/)
 })

@@ -4300,9 +4300,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE))
       const cur = Math.min(page, pages) // 数据变少后旧页码可能越界，夹回来
       const pageShown = shown.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
-      // 模块仓库地址：索引条目写了 homepage 就用它（只认 http/https，索引是外部数据），
-      // 没写就深入到模块库仓库里这个模块自己的目录 /tree/main/modules/<id>
-      const repoUrl = (m) => (/^https?:\/\//i.test(String(m.homepage || '')) ? m.homepage : stats.source ? 'https://github.com/' + stats.source + '/tree/main/modules/' + m.id : '')
+      // 模块仓库地址：每个市场模块都在模块库 modules/<id> 下，默认深入到它自己的目录
+      // /tree/main/modules/<id>（比条目里的 homepage 更准——有的 homepage 指向别处仓库根）；
+      // 认不出模块库仓库才退 homepage（只认 http/https，索引是外部数据）
+      const repoUrl = (m) => (stats.source
+        ? 'https://github.com/' + stats.source + '/tree/main/modules/' + m.id
+        : /^https?:\/\//i.test(String(m.homepage || '')) ? m.homepage : '')
       const pager = pages > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 12, justifyContent: 'center', alignItems: 'center' } },
         h(Btn, { small: true, disabled: cur <= 1, onClick: () => setPage(cur - 1) }, '上一页'),
         h('span', { className: 'ab-small ab-muted', style: { margin: '0 10px' } }, '第 ' + cur + ' / ' + pages + ' 页 · 共 ' + shown.length + ' 个'),
