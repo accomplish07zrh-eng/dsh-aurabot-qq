@@ -14,15 +14,18 @@
 /** 瞬态失败特征（hub 的后台会话冷却 / 等太久 / 上一轮没结束）。 */
 const TRANSIENT_RE = /冷却|等太久|还没结束/
 
-import { gatherMaterials, proposeTasks, mergeModelScores, buildScreenPrompt, parseScreenVerdicts, trivialWhy } from './engine.js'
+import { gatherMaterials, proposeTasks, mergeModelScores, buildScreenPrompt, parseScreenVerdicts, trivialWhy, screenFingerprint } from './engine.js'
 import { createBook } from './book.js'
 import { inQuietHours } from '../purpose/engine.js'
 import {
   reviewDue, buildDailyPage, dreamDue, distillDream, writeReflection, createJournal, dayKey as dayKeyOf,
 } from './reflect.js'
 
-/** 预审否决的记忆冷却（2026-11-05 少爷定）：同一句废话别每分钟反复送审。默认 6 小时。 */
-const SCREEN_VETO_COOL_MS = 6 * 3600_000
+/** 预审否决的记忆冷却（2026-11-05 少爷定）：同一句废话别每分钟反复送审。
+ *  2026-11-06 真机实证升级：id 冷却挡不住「同句话从流水再采出来 id 变了」，
+ *  指纹冷却从 6h 提到 48h——闲聊的半衰期远不止 6 小时（「market上下的插件」
+ *  隔了一夜还被送审第三次，模型自己都写「此前已判过」）。 */
+const SCREEN_VETO_COOL_MS = 48 * 3600_000
 
 /** 解析 'provider/model' 形式的便宜模型配置（留空 = 关闭自评）。 */
 export function parseEvalModel(v) {
@@ -120,9 +123,10 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
 
   /**
    * 好奇判分（不打分不落盘的部分，preview 和 tick 共用）。
+   * @param {{previewOnly?:boolean}} [o] previewOnly=true 时零副作用（不刷新预审冷却）
    * @returns {{materials, candidates, rejected}}
    */
-  function appraise() {
+  function appraise({ previewOnly = false } = {}) {
     const s = settings()
     const bk = bookFor()
     const materials = collect()
@@ -149,12 +153,22 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
       maxCandidates: Number(s.maxCandidates) || 3,
       now: at,
     })
+    // 被预审冷却挡住的素材要**刷新冷却**（2026-11-06 真机实证：不刷新的话，隔了冷却期
+    // 还会再烧一个模型回合重新确认一遍「这是闲聊」——复读一句就多烧一次）。
+    // 预览（preview）不走这里，零副作用不受影响。
+    if (!previewOnly) {
+      for (const rej of r.rejected) {
+        if (!/预审已否决/.test(String(rej.why || '')) || !rej.sourceId) continue
+        const m = materials.find((x) => String(x.id || '') === rej.sourceId)
+        if (m) bk.screenVeto({ id: rej.sourceId, fp: screenFingerprint(m.text), title: rej.title, why: '同源冷却中（刷新）' })
+      }
+    }
     return { materials, ...r, book: bk }
   }
 
   /** 零副作用预览（P1.5，验收 2/3）：今天会立什么项、为什么、分数多少。不调模型、不落盘。 */
   function preview() {
-    const { materials, candidates, rejected, lastOutcome } = appraise()
+    const { materials, candidates, rejected, lastOutcome } = appraise({ previewOnly: true })
     return {
       ok: true,
       enabled: !!settings().enabled,
@@ -181,9 +195,27 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
     if (!candidates.length) return { kept: [], vetoed: [], deferred: [] }
     const bk = bookFor()
     const veto = (c, why) => {
-      bk.screenVeto({ id: c.sourceId || c.title, title: c.title, why })
+      bk.screenVeto({ id: c.sourceId || c.title, fp: screenFingerprint(c.title), title: c.title, why })
       auditNote?.({ kind: 'autotelic/screen', tool: 'pre-review', args: { task: c.title }, outcome: why })
     }
+    // 【指纹直否】（2026-11-06 修「同一句闲聊每 6 小时重烧一个模型回合」，真机账本实证：
+    // 「market上下的插件」这条群友闲聊前后被送审 3 次，模型每次都答「此前已判过」——
+    // 冷却按 sourceId 记挡不住复读，因为同句话再采出来 id 是新的。改按归一化文本指纹：
+    // 48 小时内否过的原话（含群友复读、同义重复），本地直接否，一个模型回合都不花。）
+    const fresh = []
+    const vetoed = []
+    for (const c of candidates) {
+      const fp = screenFingerprint(c.title)
+      if (fp && bk.screenFingerprintHot(fp, SCREEN_VETO_COOL_MS)) {
+        const why = '同文本此前已预审否决（48h 指纹冷却），不再送审'
+        vetoed.push({ ...c, why: `立项前预审否决：${why}` })
+        bk.screenVeto({ id: c.sourceId || c.title, fp, title: c.title, why })
+        auditNote?.({ kind: 'autotelic/screen', tool: 'fingerprint', args: { task: c.title }, outcome: why })
+        continue
+      }
+      fresh.push(c)
+    }
+    if (!fresh.length) return { kept: [], vetoed, deferred: [] }
     const model = parseEvalModel(settings().evalModel)
     let verdicts = null
     // 预审这条不能依赖「主人配了便宜模型」——真机上 evalModel 是空的（少爷没配），
@@ -194,13 +226,12 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
     if (turn) {
       try {
         const opts = model ? { model, timeoutMs: 60000 } : { timeoutMs: 60000, noTools: true, key: 'screen' }
-        verdicts = parseScreenVerdicts(await turn(buildScreenPrompt(candidates), opts))
+        verdicts = parseScreenVerdicts(await turn(buildScreenPrompt(fresh), opts))
       } catch (error) { log?.debug?.('自驱：立项前预审回合失败，押后或本地判：', error?.message) }
     }
     const kept = []
-    const vetoed = []
     const deferred = []
-    candidates.forEach((c, idx) => {
+    fresh.forEach((c, idx) => {
       // 模型给了裁决就按裁决；没给（或这条没评到）→ 本地兜底；本地再判不出来就**押后**，
       // 绝不当成「值得」放行——闸失效等于没装闸（2026-11-05 少爷口径）。
       let worth = null

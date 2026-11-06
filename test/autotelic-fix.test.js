@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { proposeTasks, buildTodos, buildScreenPrompt, parseScreenVerdicts, trivialWhy } from '../src/autotelic/engine.js'
+import { proposeTasks, buildTodos, buildScreenPrompt, parseScreenVerdicts, trivialWhy, screenFingerprint } from '../src/autotelic/engine.js'
 import { createBook } from '../src/autotelic/book.js'
 import { createRuntime } from '../src/autotelic/runtime.js'
 import { buildActPrompt, parseActMemo } from '../src/autotelic/exec.js'
@@ -319,6 +319,31 @@ test('没配 evalModel（真机现状）也照样走预审：闸不能因为「�
   assert.equal(seen[0].model, undefined, '没配便宜模型时用主模型（不指定 model）')
   assert.equal(r.outcome, 'screened-out')
   assert.equal(rt.book().list().length, 0, '这句不进待办')
+})
+
+// —— 指纹冷却（2026-11-06 修「同一句闲聊每 6 小时重烧一个模型回合」，reviewer 真机反馈）——
+// 真机证据：「market上下的插件」前后被送审 3 次，模型每次都答「此前已判过」——
+// 冷却按 sourceId 记挡不住复读：同句话从聊天流水再采出来 id 带时间戳、每条都不同。
+
+test('screenFingerprint：归一化文本指纹——标点/表情/大小写/空白不影响', () => {
+  assert.equal(screenFingerprint('market上下的插件'), screenFingerprint('Market 上下的插件！'), '大小写与标点不影响')
+  assert.equal(screenFingerprint('得看破的是谁的甲呀<face:偷笑>'), screenFingerprint('得看破的是谁的甲呀'), '内联表情标记剥掉')
+  assert.notEqual(screenFingerprint('一句闲聊'), screenFingerprint('另一句闲聊'), '不同文本不同指纹')
+  assert.equal(screenFingerprint('。。。'), '', '纯标点没有指纹（不算重复素材）')
+})
+
+test('指纹冷却：同一句话复读 → 本地直否，一次模型回合都不花（修「40 次全这么烧掉」）', async (t) => {
+  const seen = []
+  const { rt, ledgerFile } = mkScreenRuntime(t, { screenReply: () => { seen.push(1); return '[{"i":1,"worth":false,"why":"闲聊"}]' }, prefix: { minCuriosity: 0.1 } })
+  await rt.tick() // 第一次：真送审
+  assert.equal(seen.length, 1)
+  const r2 = await rt.tick() // 第二轮：id 冷却先挡（同源素材），指纹冷却兜底（id 变了的情况）
+  assert.equal(seen.length, 1, '第二轮不许再调模型（id 冷却 + 文本指纹双保险）')
+  assert.equal(['screened-out', 'below-threshold'].includes(r2.outcome), true, `复读被拦在待办之外，实得 ${r2.outcome}`)
+  const saved = JSON.parse(readFileSync(ledgerFile, 'utf8'))
+  const entry = saved.screenVetoes.find((x) => x.fp)
+  assert.ok(entry, '否决记录要带指纹')
+  assert.match(entry.why, /刷新/, '复读那笔要把冷却时间刷新（同一个 id 覆盖更新，不新增行）')
 })
 
 // —— 附带：buildTodos 的产物能被 addTask 原样落账 ——

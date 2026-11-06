@@ -5,6 +5,7 @@
 // （collectMaterials / needAffinity / textSimilarity / isDuplicateText / extractTopic），
 // 素材采集在 runtime.js 里自己写（purpose 的 conversations()/memoryRecords() 没导出）。
 
+import { createHash } from 'node:crypto'
 import {
   DEFAULT_PURPOSE_CONFIG,
   collectMaterials,
@@ -91,7 +92,7 @@ export function proposeTasks({ materials = [], activeTasks = [], recentTitles = 
     const sid = String(m.id || '')
     if (sid && activeSourceIds.has(sid)) { rejected.push({ title, score: c.score, why: '同源素材已有进行中的任务' }); continue }
     if (sid && coolSet.has(sid)) { rejected.push({ title, score: c.score, why: '同源素材最近做过（冷却中），先换个方向' }); continue }
-    if (sid && screenSet.has(sid)) { rejected.push({ title, score: c.score, why: '同源素材立项前预审已否决（不值得办），冷却中' }); continue }
+    if (sid && screenSet.has(sid)) { rejected.push({ title, score: c.score, why: '同源素材立项前预审已否决（不值得办），冷却中', sourceId: sid }); continue }
     if (candidates.some((x) => textSimilarity(x.title, title) > 0.6)) { rejected.push({ title, score: c.score, why: '和本轮别的候选重复' }); continue }
     if (c.score < minCuriosity) { rejected.push({ title, score: c.score, why: `好奇分 ${c.score.toFixed(2)} < 阈值 ${Number(minCuriosity).toFixed(2)}` }); continue }
     candidates.push({
@@ -191,6 +192,19 @@ export function trivialWhy(text) {
   if (/^(嗯|哦|啊|哈|呵|好|是|对|行|在吗|晚安|早安|早上好|你好|谢谢|收到|拜拜|再见|么么|啾|汪|喵)/.test(t)) return '寒暄/应答，没有可办的内容'
   if (/^[^，。！？]{0,8}(吗|呢|吧)$/.test(t)) return '短问答，没有可办的内容'
   return ''
+}
+
+/** 素材文本指纹（2026-11-06 修「同一句闲聊每 6 小时重烧一个模型回合」）：
+ *  否决冷却原来按 sourceId 记，但同一句话从聊天流水里再次采出来 id 带时间戳、**每条都不同**，
+ *  群友复读 / 闲聊刷屏时每句都重新送审。改按**归一化文本**算指纹：同一句话（去掉标点、
+ *  表情、空白后）48 小时内直接本地否掉，不调模型。 */
+export function screenFingerprint(text) {
+  const t = String(text || '')
+    .replace(/<[^>]+>/g, '') // <face:…> 之类内联标记
+    .replace(/[\p{P}\p{S}\p{C}\s]+/gu, '') // 标点/符号/空白全去掉
+    .toLowerCase()
+  if (!t) return ''
+  return createHash('sha256').update(t).digest('hex').slice(0, 24)
 }
 
 /** 素材采集（§3 P1.1：照 purpose 的写法抄，放在 autotelic 里，不依赖未导出的 purpose 内部函数）。 */

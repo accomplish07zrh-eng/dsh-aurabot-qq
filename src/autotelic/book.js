@@ -221,19 +221,30 @@ export function createBook({ file = '', now = () => Date.now(), maxActive = MAX_
 
     /**
      * 记一笔「立项前预审否决」（2026-11-05 少爷定）：只用来让同一句废话别每轮反复送审，不参与账。
-     * @param {{id:string, why?:string, title?:string}} o
+     * 2026-11-06 加 fp（归一化文本指纹）：同一句话从流水里再采出来 sourceId 会变（带时间戳），
+     * 冷却按 id 记挡不住「群友复读/闲聊刷屏」，指纹才挡得住。
+     * @param {{id:string, why?:string, title?:string, fp?:string}} o
      */
-    screenVeto({ id, why = '', title = '' } = {}) {
+    screenVeto({ id, why = '', title = '', fp = '' } = {}) {
       const sid = String(id || '')
-      if (!sid) return { ok: false }
+      if (!sid && !String(fp || '')) return { ok: false }
       const at = nowOf({ now })
-      state.screenVetoes = [...state.screenVetoes.filter((x) => x.id !== sid), { id: sid, why: String(why).slice(0, 160), title: String(title).slice(0, 80), at }].slice(-MAX_SCREEN_VETO)
+      const fresh = { id: sid, fp: String(fp || '').slice(0, 32), why: String(why).slice(0, 160), title: String(title).slice(0, 80), at }
+      state.screenVetoes = [...state.screenVetoes.filter((x) => x.id !== sid || (!sid && x.fp === fresh.fp)), fresh].slice(-MAX_SCREEN_VETO)
       save()
       return { ok: true }
     },
 
     /** 预审否决过的素材 id 列表（冷却由调用方按时间判，这里只给数据）。 */
     screenVetoes() { return state.screenVetoes.map((x) => ({ ...x })) },
+
+    /** 否决指纹是否还在冷却期内（2026-11-06：同文本 48 小时内直接本地否，不调模型）。 */
+    screenFingerprintHot(fp, coolMs) {
+      const f = String(fp || '')
+      if (!f) return false
+      const at = nowOf({ now })
+      return state.screenVetoes.some((x) => x.fp === f && at - (x.at || 0) < coolMs)
+    },
 
     /** 面板状态汇总。 */
     summary() {
