@@ -103,9 +103,12 @@ for (const backend of ['sqlite', 'json']) {
     const dir = isolatedDir(t)
     const now = Date.now()
     const items = Array.from({ length: 2000 }, (_, i) => ({ id: `auto-${i}`, text: `自动记忆 ${i}`, about: 'existing', source: 'auto', at: now - i, importance: 0.5 }))
+    const seedLog = { info() {}, warn() {}, debug() {} }
+    // 回退标记只在「库还在」时有效：先建一个已初始化的空库，再写 JSON 和标记，模拟真实的写失败回退状态
+    if (backend === 'json') createMemoryStorage({ directory: dir, log: seedLog }).load()
     writeFileSync(join(dir, 'memories.json'), JSON.stringify({ items }))
     if (backend === 'json') writeFileSync(join(dir, 'memory-json-fallback.json'), '{}')
-    const storage = createMemoryStorage({ directory: dir, log: { info() {}, warn() {}, debug() {} } })
+    const storage = createMemoryStorage({ directory: dir, log: seedLog })
     t.after(() => storage.close())
     assert.equal(storage.status().backend, backend)
     const cfg = normalize({ memory: { capacity: { auto: 4000, event: 1200, diary: 800 } } })
