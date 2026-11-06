@@ -71,3 +71,18 @@ test('语音文本拆分：表情不念出来，但要留着补发（<face:名�
   assert.deepEqual(splitSpeakable('普通的话'), { spoken: '普通的话', extras: '' })
   assert.equal(speakableText('<face:呲牙>晚安😁'), '晚安', '老接口行为不变')
 })
+
+test('语音文本拆分：颜文字和连着堆的符号不念（TTS 会把它们拉成怪声）', () => {
+  // 2026-11-06 真实事故：这句合成出 15.5 秒音频（同样长度正常句子 3 秒），后半段全是气声，群友听成乱码
+  assert.deepEqual(splitSpeakable('那可不 有人给续着 我就谢天谢地了 (￣▽￣)'), { spoken: '那可不 有人给续着 我就谢天谢地了', extras: '' }, '整个颜文字摘掉，前面的正经话一个字不少')
+  assert.deepEqual(splitSpeakable('等等……我还没说完'), { spoken: '等等 我还没说完', extras: '' }, '中文省略号是两个符号连着，同样会拖长')
+  assert.deepEqual(splitSpeakable('（￣▽￣）'), { spoken: '', extras: '' }, '一条语音只有颜文字，没得念，由调用方改发文字')
+  assert.deepEqual(splitSpeakable('好(´･ω･`)呀'), { spoken: '好 呀', extras: '' }, '字母打头的颜文字也要拆散（ω 是希腊字母，单列了才有这个结果）')
+  assert.deepEqual(splitSpeakable('打游戏还是你自己动手 我连手都没有 (￣▽￣)'), { spoken: '打游戏还是你自己动手 我连手都没有', extras: '' }, '句尾挂颜文字是最常见的形态，和事故那条同形')
+  // 下面几条是「别擦过头」的：符号单个出现都是正常标点，念得出来
+  assert.deepEqual(splitSpeakable('3.5 寸的盘'), { spoken: '3.5 寸的盘', extras: '' }, '小数点是单个符号，留着')
+  assert.deepEqual(splitSpeakable('32G 现在一千二三 到一千五，三千那价'), { spoken: '32G 现在一千二三 到一千五，三千那价', extras: '' }, '中文逗号句号都是单个，不动')
+  assert.deepEqual(splitSpeakable('Ciallo～吃饭啦'), { spoken: 'Ciallo～吃饭啦', extras: '' }, '单个波浪号念得出来，留着')
+  assert.deepEqual(splitSpeakable('<face:捂脸>……'), { spoken: '', extras: '<face:捂脸>' }, '表情照常补发')
+  assert.equal(speakableText('等等……我还没说完'), '等等 我还没说完', 'speakableText 是 splitSpeakable 的薄封装，清洗对它一样生效')
+})

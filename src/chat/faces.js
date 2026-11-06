@@ -82,6 +82,22 @@ export const stripFaceTags = (text) => String(text ?? '').replace(FACE_TAG, '').
 /** 语音文本收尾：去掉 <voice> 标签、连续空格、首尾空白。 */
 const tidySpeech = (s) => String(s).replace(/<\/?voice>/g, '').replace(/[ \t]{2,}/g, ' ').trim()
 
+// 连着出现的符号（颜文字、省略号、感叹号堆）不念。起因 2026-11-06：Fish Audio 收到
+// 「那可不 有人给续着 我就谢天谢地了 (￣▽￣)」之后生成了 15.5 秒音频（同长度正常句子 3 秒），
+// 后半段全是拉长的气声，群里听起来就是乱码。把颜文字摘掉再合成，稳定回到 3 秒。
+// 规则只碰符号：两个以上连着才整段丢掉，单个标点留着（「3.5」的小数点、「，」「？」都要念对）。
+const SYMBOL_RUN = /[^\p{L}\p{N}\s]{2,}/gu
+// 颜文字专用字符：这些字符几乎只出现在颜文字里，单独一个也一并去掉（单个「▽」实测念得出来，
+// 但清掉更省事，而且它们不承担语义）。ω 和 Ω 都是希腊字母，不在上面那条的符号范围（\p{L}）里，得单列。
+// 括号也收进来：颜文字被擦掉之后剩下的半个括号 / 空括号，念出来只有「左括号」，没有意义。
+const KAOMOJI_CHAR = /[￣▽△▲･´｀＾﹏Ωﾟω()（）]/gu
+
+/** 念之前把符号串擦掉；擦完只剩标点（比如一条语音只有颜文字）就返回空串，由调用方改发文字。 */
+function stripUnspeakable (s) {
+  const out = String(s).replace(SYMBOL_RUN, ' ').replace(KAOMOJI_CHAR, ' ')
+  return /[\p{L}\p{N}]/u.test(out) ? out : ''
+}
+
 /**
  * 语音条要念的文字：去掉 QQ 小黄脸标签、表情包/戳一戳等格式标签、以及 emoji 图形符号，
  * 不然 TTS 会把「呲牙」这类表情名字甚至 emoji 直接念出来（用户反馈：发语音时表情被读出来）。
@@ -113,7 +129,7 @@ export function splitSpeakable (text) {
     last = m.index + m[0].length
   }
   spoken += raw.slice(last)
-  return { spoken: tidySpeech(spoken), extras: tidySpeech(extras) }
+  return { spoken: tidySpeech(stripUnspeakable(spoken)), extras: tidySpeech(extras) }
 }
 
 /** 系统表情对照：先用常用的，第一次用到时再去网关拉完整目录（一天刷新一次）。 */
