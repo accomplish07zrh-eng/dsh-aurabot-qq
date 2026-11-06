@@ -16,6 +16,9 @@ export const DEFAULTS = {
   ownerName: '主人',
   ownerLevel: 'full', // full | social | chat
   approvalNotify: true, // DSH 要授权时把请求发到主人私聊
+  // 什么情况往主人 QQ 上报：enabled 是总开关，approval = 工具要授权，question = 她要向人提问选选项。
+  // workspaces 按工作区单独覆盖：{ "<工作区路径>": { approval?: bool, question?: bool } }，没写的项跟随总开关。
+  notice: { enabled: true, approval: true, question: true, workspaces: {} },
   qqApi: { enabled: true }, // 她能用 qq_api_call 调 QQ 接口：别人只能查当前群，写操作只听主人
   approvalViaQQ: true, // 主人私聊会话要授权时，在 QQ 回复「确认」直接批准这一次
   profilePerms: { qqNickname: 'owner', qqSignature: 'owner', qqAvatar: 'owner', biliSign: 'owner', biliAvatar: 'owner', biliComment: 'owner', qqFriendRequest: 'owner', whitelist: 'owner', douyinBrowse: 'owner', douyinLike: 'owner', douyinComment: 'owner', douyinShareOwner: 'owner', douyinDm: 'owner' }, // 改资料类操作（含抖音浏览 / 点赞 / 评论 / 分享）的权限：off 关 / owner 仅主人私聊 / all 所有人。抖音项默认仅主人，总开关默认关
@@ -359,6 +362,25 @@ const bodyText = (v) => {
   return v == null ? '' : String(v)
 }
 
+// 上报开关：总开关 + 按工作区的覆盖。工作区路径原样当键（调用方会先规范化），
+// 覆盖项只认布尔值，别的（0、''、null）一律当「没写」，跟随总开关。
+function normalizeNotice(v, legacyNotify) {
+  const o = isObj(v) ? v : {}
+  const approvalDefault = legacyNotify === false ? false : true
+  const out = { enabled: bool(o.enabled, true), approval: typeof o.approval === 'boolean' ? o.approval : approvalDefault, question: bool(o.question, true), workspaces: {} }
+  const ws = isObj(o.workspaces) ? o.workspaces : {}
+  for (const [key, val] of Object.entries(ws)) {
+    const path = String(key || '').trim()
+    if (!path) continue
+    const w = isObj(val) ? val : {}
+    const item = {}
+    if (typeof w.approval === 'boolean') item.approval = w.approval
+    if (typeof w.question === 'boolean') item.question = w.question
+    out.workspaces[path] = item
+  }
+  return out
+}
+
 export function normalize(raw) {
   const c = deepMerge(DEFAULTS, raw)
   c.enabled = bool(c.enabled, false)
@@ -367,6 +389,8 @@ export function normalize(raw) {
   c.botQQ = qq(c.botQQ)
   c.ownerQQ = qq(c.ownerQQ)
   c.approvalNotify = bool(c.approvalNotify, true)
+  // 老配置只有 approvalNotify：没写过 notice 时用它当审批上报的默认值，免得更一次版本被重新打开
+  c.notice = normalizeNotice(isObj(raw?.notice) ? raw.notice : null, raw?.approvalNotify)
   c.approvalViaQQ = bool(c.approvalViaQQ, true)
   c.qqApi.enabled = bool(c.qqApi.enabled, true)
   c.gateway = c.gateway === 'onebot' ? 'onebot' : 'snowluma'

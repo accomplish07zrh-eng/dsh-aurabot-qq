@@ -1450,7 +1450,34 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       )
     }
 
-    function Access({ st, draft, setDraft }) {
+    /**
+     * 按工作区控制「审批 / 提问」要不要上报到 QQ。
+     * 工作区是 DSH 动态登记的，所以单独拉接口，不走配置表单的 draft。
+     */
+    function NoticeWorkspaces({ toast }) {
+      const [info, setInfo] = useState(null)
+      const load = async () => {
+        try { setInfo(await get('/notice/state')) } catch (e) { setInfo({ ok: false, workspaces: [] }) }
+      }
+      useEffect(() => { load() }, [])
+      const toggle = async (kind, workspace, value) => {
+        try {
+          await post('/notice/toggle', { kind, workspace, value })
+          await load()
+        } catch (e) { toast(e.message, 'err') }
+      }
+      const list = info?.workspaces || []
+      const rows = list.map((w) => h(Row, { key: w.path, label: w.name, hint: w.path + (w.sessions ? ` · ${w.sessions} 个会话` : '') },
+        h('div', { style: { display: 'flex', gap: 10, alignItems: 'center' } },
+          h('span', { className: 'ab-small ab-muted' }, '审批'), h(Switch, { on: w.approval, onChange: (v) => toggle('approval', w.path, v) }),
+          h('span', { className: 'ab-small ab-muted' }, '提问'), h(Switch, { on: w.question, onChange: (v) => toggle('question', w.path, v) }))))
+      return h(Card, { title: '按工作区上报', desc: '哪个工作区的活卡在授权或提问上，就把那条消息发到 QQ。只通知，不代答；改动立即生效。' },
+        list.length === 0
+          ? h('div', { className: 'ab-muted ab-small' }, info ? '这个 DSH 里还没登记过工作区。' : '读取中…')
+          : rows)
+    }
+
+    function Access({ st, draft, setDraft, toast }) {
       const f = useField(draft, setDraft)
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '主人', desc: '主人的 QQ 号。群管、点歌、电脑上的操作只听主人的。' },
@@ -1464,7 +1491,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
                 { value: 'chat', label: '纯聊天', desc: '什么工具都没有，只聊天' },
               ] }),
               h('div', { className: 'ab-muted ab-small', style: { marginTop: 8 } }, '切换后会给主人私聊换一个新的 DSH 会话（旧的还在侧栏里）。'))),
-          h(Row, { label: 'DSH 要授权时发到 QQ', hint: '人不在电脑前也知道ta卡住了。' }, f.sw('approvalNotify')),
+          h(Row, { label: '上报到 QQ', hint: '有会话在等授权、等你选东西时，ta 会用自己的话提醒你一句。' }, f.sw('notice.enabled')),
+          h(Row, { label: '要授权时提醒', hint: '工具卡住、等你点批准的时候。' }, f.sw('notice.approval')),
+          h(Row, { label: '要选选项时提醒', hint: '需要你选东西的时候。' }, f.sw('notice.question')),
+          h(NoticeWorkspaces, { toast }),
           h(Row, { label: 'QQ 接口', hint: '让她用 QQ 的其他能力：别人只能查当前群的公告、精华这些；撤回、设精华、改群名片等只听你的。取 Cookie、发原始包、删好友、退群这些不开放。' }, f.sw('qqApi.enabled')),
           h(Row, { label: '在 QQ 里批准', hint: '和你私聊时要授权，回复「确认」批准这一次、回复「取消」拒绝，5 分钟没回就不批。只认你本人的私聊回复，DSH 里也能同时点。QQ 号被盗的话，对方也能批，介意就关掉' }, f.sw('approvalViaQQ')),
           h(Row, { label: '长任务模式', hint: '只在「完整」权限下生效。打开后ta能把命令放到后台跑、跑完自动回来告诉你，也能设定时任务；工具多一点，回话会稍慢。切换后同样换新会话。' },
