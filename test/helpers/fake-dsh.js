@@ -13,6 +13,7 @@ export function createFakeDsh({ brain }) {
   const agents = new Map()
   const workspaces = []
   const turns = [] // 记录每一轮：{ sessionId, preset, userText, images, reply, toolCalls }
+  const llmCalls = [] // 记录宿主 llm.stream 收到的参数（后台 askModel 用；聊天轮次不走这里）
   const logs = []
 
   const emit = (name, ...args) => { for (const fn of listeners.get(name) || []) fn(...args) }
@@ -116,7 +117,9 @@ export function createFakeDsh({ brain }) {
     llm: {
       listProviders: () => ['fake'],
       async listModels() { return ['fake-1', 'm-pdef', 'm-gdef', 'm-owner', 'm-g777'].map((id) => ({ id, name: id })) },
-      async *stream({ system } = {}) {
+      async *stream(params = {}) {
+        const { system } = params
+        llmCalls.push(params)
         const text = system?.includes('整理长期记忆') ? '[]' : '可爱的小鲸鱼 #开心 #卖萌'
         yield { type: 'text-delta', text }
         yield { type: 'finish', reason: { kind: 'stop' } }
@@ -168,5 +171,5 @@ export function createFakeDsh({ brain }) {
     return { status, raw: () => out, json: () => JSON.parse(out) }
   }
 
-  return { ctx, emit, routes, variables, agents, workspaces, turns, logs, call, dispose: () => disposers.reverse().forEach((d) => { try { d() } catch (e) {} }) }
+  return { ctx, emit, routes, variables, agents, workspaces, turns, llmCalls, logs, call, dispose: () => disposers.reverse().forEach((d) => { try { d() } catch (e) {} }) }
 }

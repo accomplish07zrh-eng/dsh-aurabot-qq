@@ -1739,15 +1739,32 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const noReasoning = Boolean(curModel && curModel.reasoning === null)
       // 视觉能力：自动时把 DSH 的声明显示出来，主人一眼能看出会不会降级
       const autoVision = curModel ? curModel.vision : undefined
-      const visionHint = draft.model.vision === 'on'
-        ? '强制当「能看图」；模型其实看不了的话，带图的那一轮会报错'
-        : draft.model.vision === 'off'
-          ? '强制当「看不懂」：收到图片只给一行文字提示，不会把图塞给模型'
-          : autoVision === true
-            ? '自动：DSH 说这个模型支持看图'
-            : autoVision === false
-              ? '自动：DSH 说这个模型看不了图，会自动降级成文字提示'
-              : '自动：DSH 没声明，默认照发；真看不了就手动选「不支持」'
+      // 识图模型：配了它以后，收到的图片先交给它看，聊天模型只收文字描述
+      const vm = draft.model.visionModel || { provider: '', model: '' }
+      const vmVal = vm.provider && vm.model ? vm.provider + '::' + vm.model : ''
+      const vmOptions = [{ value: '', label: '跟随聊天模型', desc: '聊天模型自己能看图就直接收图' }]
+        .concat((list || []).filter((m) => m.vision !== false).map((m) => ({ value: key(m), label: m.name + (m.vision === true ? '（能看图）' : ''), desc: m.provider, group: m.provider })))
+      if (vmVal && !vmOptions.some((o) => o.value === vmVal)) {
+        const hit = (list || []).find((m) => key(m) === vmVal)
+        vmOptions.push({ value: vmVal, label: vm.model, desc: hit ? hit.provider + '（DSH 说它看不了图）' : '（DSH 里没找到这个模型）' })
+      }
+      const visionHint = vmVal
+        ? '设了识图模型：图片先交给它看，再把描述当文字交给她；和聊天模型选同一个时仍然直接看图'
+        : draft.model.vision === 'on'
+          ? '强制当「能看图」；模型其实看不了的话，带图的那一轮会报错'
+          : draft.model.vision === 'off'
+            ? '强制当「看不懂」：收到图片只给一行文字提示，不会把图塞给模型'
+            : autoVision === true
+              ? '自动：DSH 说这个模型支持看图'
+              : autoVision === false
+                ? '自动：DSH 说这个模型看不了图，会自动降级成文字提示'
+                : '自动：DSH 没声明，默认照发；真看不了就手动选「不支持」'
+      // 识图模型有自己的思考强度：和上面聊天的「思考强度」分开设，互不影响
+      const vmCur = vmVal && list ? list.find((m) => key(m) === vmVal) : null
+      const vmNoReasoning = Boolean(vmCur && vmCur.reasoning === null)
+      const vmHint = vmVal
+        ? '图片先交给它看，描述再交给聊天模型（聊天模型本身看不了图也没关系）；识图用下面的「识图思考强度」，和聊天的互不影响'
+        : '默认跟着聊天模型；也可以单独选一个识图模型，让她用便宜的快模型聊天、图片交给会看图的模型'
       const test = async (m) => {
         setPing({ ...ping, [key(m)]: '测速中…' })
         const r = await post('/model/ping', { provider: m.provider, model: m.model })
@@ -1756,6 +1773,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '聊天用的模型', desc: '新建的 QQ 会话按这里的设置来；已有会话也可以在 DSH 里点开单独切换。聊天对速度很敏感，可以先点「测速」挑个快的。' },
           h(Row, { label: '思考强度', hint: noReasoning ? '这个模型不支持思考强度，会自动忽略' : '聊天建议「低」，回得快' }, h(Seg, { value: draft.model.reasoningEffort || 'low', disabled: noReasoning, onChange: (v) => setDraft(setPath(draft, 'model.reasoningEffort', v)), options: [{ value: 'low', label: '低' }, { value: 'high', label: '高' }, { value: 'max', label: '最高' }] })),
+          vmVal ? h(Row, { label: '识图思考强度', hint: vmNoReasoning ? '这个模型不支持思考强度，会自动忽略' : '只影响识图，和上面聊天的「思考强度」互不影响；模型不支持会自动省略' }, h(Seg, { value: draft.model.visionReasoningEffort || 'low', disabled: vmNoReasoning, onChange: (v) => setDraft(setPath(draft, 'model.visionReasoningEffort', v)), options: [{ value: 'low', label: '低' }, { value: 'high', label: '高' }, { value: 'max', label: '最高' }] })) : null,
           h(Row, { label: '视觉能力', hint: visionHint }, h(Seg, {
             value: draft.model.vision || 'auto',
             onChange: (v) => setDraft(setPath(draft, 'model.vision', v)),
@@ -1769,13 +1787,21 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             }),
             cur ? h(Btn, { small: true, onClick: () => test({ provider: draft.model.provider, model: draft.model.model }) }, '测速') : null,
             cur && ping[cur] ? h('span', { className: 'ab-muted ab-small' }, ping[cur]) : null),
+          h(Row, { label: '识图模型', hint: vmHint }, h(Select, {
+            value: vmVal, width: 280,
+            options: vmOptions,
+            onChange: (v) => {
+              const [p, ...m] = v.split('::')
+              setDraft(setPath(setPath(draft, 'model.visionModel.provider', v ? p : ''), 'model.visionModel.model', v ? m.join('::') : ''))
+            },
+          })),
         ),
         h(ChatModels, { draft, setDraft, list }),
         h(CostCard, { draft, setDraft }),
         h(Card, { title: '可用的模型', desc: '点「测速」会真的问一次模型（花一点点额度），看它回一句话要多久。' },
           list === null ? h(Empty, { icon: '⏳', text: '加载中…' }) : list.length === 0 ? h(Empty, { text: 'DSH 没有列出模型' }) :
             h('table', { className: 'ab-table' }, h('tbody', null, list.map((m) => h('tr', { key: key(m) },
-              h('td', null, m.name), h('td', { className: 'ab-muted' }, m.provider),
+              h('td', null, m.name, m.vision === true ? h('span', { className: 'ab-muted ab-small' }, ' · 能看图') : m.vision === false ? h('span', { className: 'ab-muted ab-small' }, ' · 纯文本') : null), h('td', { className: 'ab-muted' }, m.provider),
               h('td', null, ping[key(m)] || ''),
               h('td', { style: { textAlign: 'right' } }, h(Btn, { small: true, kind: 'ghost', onClick: () => test(m) }, '测速'), h(Btn, { small: true, kind: 'ghost', onClick: () => { setDraft(setPath(setPath(draft, 'model.provider', m.provider), 'model.model', m.model)); toast('选好了，记得保存') } }, '用这个')))))),
         ),
