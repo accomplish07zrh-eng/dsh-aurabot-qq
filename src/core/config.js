@@ -47,7 +47,7 @@ export const DEFAULTS = {
   snowluma: {
     dir: 'C:\\Aurabot\\snowluma', // 主人自己下载解压到这里（EULA 不允许自动部署）
     autoStart: true, // 随 DSH 启动它（只启动主人已安装并同意过协议的副本）
-    webuiPort: 5099,
+    webuiPort: 15099, // SnowLuma 控制台端口；5099 在开了 Hyper-V 的 Windows 上常落在系统保留段，默认改用 15099
     webuiPassword: '', // 插件自动生成并保存（第一次启动 SnowLuma 时）；用来调 /api/processes 只给机器人号注入
     passwordAuto: false,
     autoAttach: true, // 自动给机器人号所在的 QQ 进程注入（绝不碰别的号）
@@ -575,7 +575,7 @@ export function normalize(raw) {
   for (const k of ['atOwnerOnLikeChance', 'minimize', 'socialInterruptBrowse', 'replyPollMinutes']) delete d[k]
 
   delete c.mood.maxInjectPerDay // 旧版的「每天最多提醒几次」，现在心情明显时每轮都会带上
-  c.snowluma.webuiPort = num(c.snowluma.webuiPort, 5099, 1, 65535)
+  c.snowluma.webuiPort = num(c.snowluma.webuiPort, 15099, 1, 65535)
   // 老配置只有一个 consolidateAt：换成两个时间点（它 + 12 小时后）
   if (!Array.isArray(raw?.memory?.consolidateTimes) && raw?.memory?.consolidateAt) {
     const [hh, mm] = hhmm(raw.memory.consolidateAt, '04:00').split(':').map(Number)
