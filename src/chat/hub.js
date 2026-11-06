@@ -45,14 +45,18 @@ const personaSlug = (cfg, instance = 'aurabot') => {
   const raw = String(cfg?.persona?.current || instance || 'aurabot').trim() || 'aurabot'
   return raw.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'aurabot'
 }
-export const WORKSPACE_DIR = WORKSPACE_ENV || (existsSync(LEGACY_WORKSPACE) ? LEGACY_WORKSPACE : join(WORKSPACE_ROOT, 'dafeiyu'))
-export const workspaceTitleOf = (cfg) => `Aurabot · ${personaSlug(cfg)}`
-/** 现在用的工作区目录：面板里填了就用填的，否则按人格自动命名（旧安装也迁到新名字）。 */
+export const WORKSPACE_DIR = WORKSPACE_ENV || (existsSync(LEGACY_WORKSPACE) ? LEGACY_WORKSPACE : join(WORKSPACE_ROOT, 'qq-chats'))
+const PERSONA_TITLES = { dafeiyu: '大肥鱼', Ronova: '若娜瓦', columbina: '哥伦比娅' }
+export const workspaceTitleOf = (cfg) => {
+  const id = personaSlug(cfg)
+  return `Aurabot · ${PERSONA_TITLES[id] || id}`
+}
+/** 现在用的工作区目录：面板里填了就用填的；默认账号沿用旧命名，其他账号按实例名接后缀。 */
 export const workspaceDirOf = (cfg, instance = 'aurabot') => {
   const explicit = String(cfg?.workspaceDir || '').trim()
   if (explicit) return explicit
-  if (WORKSPACE_ENV) return instance === 'aurabot' ? WORKSPACE_ENV : `${WORKSPACE_ENV}-${personaSlug(cfg, instance)}`
-  return join(WORKSPACE_ROOT, personaSlug(cfg, instance))
+  if (WORKSPACE_ENV) return instance === 'aurabot' ? WORKSPACE_ENV : `${WORKSPACE_ENV}-${instance}`
+  return instance === 'aurabot' ? WORKSPACE_DIR : `${WORKSPACE_DIR}-${instance}`
 }
 export const WORKSPACE_TITLE = 'Aurabot · QQ'
 const SOURCE_KIND = 'aurabot'
