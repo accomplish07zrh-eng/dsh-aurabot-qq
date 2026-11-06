@@ -1759,8 +1759,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               : autoVision === false
                 ? '自动：DSH 说这个模型看不了图，会自动降级成文字提示'
                 : '自动：DSH 没声明，默认照发；真看不了就手动选「不支持」'
+      // 识图模型有自己的思考强度：和上面聊天的「思考强度」分开设，互不影响
+      const vmCur = vmVal && list ? list.find((m) => key(m) === vmVal) : null
+      const vmNoReasoning = Boolean(vmCur && vmCur.reasoning === null)
       const vmHint = vmVal
-        ? '图片先交给它看，描述再交给聊天模型（聊天模型本身看不了图也没关系）；识图时的思考强度跟着上面的「思考强度」走'
+        ? '图片先交给它看，描述再交给聊天模型（聊天模型本身看不了图也没关系）；识图用下面的「识图思考强度」，和聊天的互不影响'
         : '默认跟着聊天模型；也可以单独选一个识图模型，让她用便宜的快模型聊天、图片交给会看图的模型'
       const test = async (m) => {
         setPing({ ...ping, [key(m)]: '测速中…' })
@@ -1783,6 +1786,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               setDraft(setPath(setPath(draft, 'model.visionModel.provider', v ? p : ''), 'model.visionModel.model', v ? m.join('::') : ''))
             },
           })),
+          vmVal ? h(Row, { label: '识图思考强度', hint: vmNoReasoning ? '这个模型不支持思考强度，会自动忽略' : '只影响识图，和上面聊天的「思考强度」互不影响；模型不支持会自动省略' }, h(Seg, { value: draft.model.visionReasoningEffort || 'low', disabled: vmNoReasoning, onChange: (v) => setDraft(setPath(draft, 'model.visionReasoningEffort', v)), options: [{ value: 'low', label: '低' }, { value: 'high', label: '高' }, { value: 'max', label: '最高' }] })) : null,
           h(Row, { label: '模型' },
             h(Select, {
               value: cur, width: 280,

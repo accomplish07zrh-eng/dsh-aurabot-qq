@@ -222,11 +222,11 @@ export async function askModel (dsh, o) {
   }
   // 温度参数的落点按上游 #249：默认温度放进每轮的 params，模型明确拒绝时再去掉重试。
   let temperature = o.temperature ?? 0.3
-  // 识图模型跟随面板「思考强度」：和聊天模型用同一档；模型不支持时 pickReasoningEffort 会收敛或省略。
+  // 识图模型有自己的「识图思考强度」：和聊天的「思考强度」分开设，互不影响；模型不支持时 pickReasoningEffort 会收敛或省略。
   const usingVision = Boolean(vision && (!o.model || (o.model.provider === vision.provider && o.model.model === vision.model)))
   const wantEffort = o.reasoningEffort !== undefined
     ? o.reasoningEffort
-    : (usingVision ? (o.cfg?.model?.reasoningEffort || 'low') : 'low')
+    : (usingVision ? (o.cfg?.model?.visionReasoningEffort || 'low') : 'low')
   let effort = await pickReasoningEffort(dsh, t.provider, t.model, wantEffort)
   let widened = false
   let temperatureTried = false
