@@ -4301,8 +4301,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const cur = Math.min(page, pages) // 数据变少后旧页码可能越界，夹回来
       const pageShown = shown.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
       // 模块仓库地址：索引条目写了 homepage 就用它（只认 http/https，索引是外部数据），
-      // 没写就退回模块库仓库（下载量统计里认出来的 owner/repo）
-      const repoUrl = (m) => (/^https?:\/\//i.test(String(m.homepage || '')) ? m.homepage : stats.source ? 'https://github.com/' + stats.source : '')
+      // 没写就深入到模块库仓库里这个模块自己的目录 /tree/main/modules/<id>
+      const repoUrl = (m) => (/^https?:\/\//i.test(String(m.homepage || '')) ? m.homepage : stats.source ? 'https://github.com/' + stats.source + '/tree/main/modules/' + m.id : '')
       const pager = pages > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 12, justifyContent: 'center', alignItems: 'center' } },
         h(Btn, { small: true, disabled: cur <= 1, onClick: () => setPage(cur - 1) }, '上一页'),
         h('span', { className: 'ab-small ab-muted', style: { margin: '0 10px' } }, '第 ' + cur + ' / ' + pages + ' 页 · 共 ' + shown.length + ' 个'),

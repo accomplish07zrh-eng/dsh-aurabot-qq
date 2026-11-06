@@ -173,6 +173,10 @@ test('市场面板：标题跳仓库，只认 http(s) 的 homepage', () => {
   const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
   assert.match(src, /const repoUrl = \(m\) => \(\/\^https\?:\\\/\\\//, 'homepage 必须过 http(s) 校验')
   assert.match(src, /m\.homepage/)
-  assert.match(src, /stats\.source \? 'https:\/\/github\.com\/' \+ stats\.source/, '没写 homepage 时退回模块库仓库')
+  assert.match(
+    src,
+    /stats\.source \? 'https:\/\/github\.com\/' \+ stats\.source \+ '\/tree\/main\/modules\/' \+ m\.id/,
+    '没写 homepage 时深入到模块库里该模块自己的目录',
+  )
   assert.match(src, /target: '_blank', rel: 'noreferrer', title: '打开仓库主页'/)
 })
