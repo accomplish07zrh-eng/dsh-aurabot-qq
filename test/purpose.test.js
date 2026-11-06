@@ -818,6 +818,19 @@ test('星期分桶：样本全挤在一个星期几不偏置（不把下次主�
   assert.equal(shift, 6 * 24 * 60 * MIN, '多桶时周五 → 下周四（6 天后）')
 })
 
+test('星期分桶：分散度门槛的边界——两桶即生效，单桶再多也不挪', () => {
+  const friday = (() => { const d = new Date(); d.setHours(9, 16, 0, 0); while (d.getDay() !== 5) d.setDate(d.getDate() + 1); return d.getTime() })()
+  // 边界：第二个桶只有 1 条也算「分散」，门槛是「非零桶 ≥2」而不是「第二桶要够多」
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 1, 30, 0, 0]), 6 * 24 * 60 * MIN, '两桶（哪怕第二桶只有 1 条）就照常偏置')
+  // 反向：单桶样本量再大也不可信——门槛在 total 判定之后，与样本多少无关
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 0, 500, 0, 0]), 0, '单桶 500 条仍不偏置')
+  // 全零（没有任何回流记录）：既没有可信日，也不会算出 NaN / 负偏移
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 0, 0, 0, 0]), 0)
+  // 样本量门槛仍先于分散度门槛：总数 <7 时哪怕已经分散也不挪
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 3, 3, 0, 0]), 0, '总数 6 < minSamples 不偏置')
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 3, 4, 0, 0]), 6 * 24 * 60 * MIN, '总数 7 达标且分散 → 偏置')
+})
+
 test('朋友分账：朋友线的直方图与反馈账本落在朋友自己的状态文件里', async () => {
   const FRIEND = '20000011'
   const now = Date.now()
