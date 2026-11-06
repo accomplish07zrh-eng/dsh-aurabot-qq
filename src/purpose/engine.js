@@ -22,6 +22,8 @@
  */
 
 export const PURPOSE_STATE_VERSION = 1;
+// 到期事实优先关心；只由记忆库提供到期的一件，不在目的状态里复制排程。
+export const FOLLOW_UP_WEIGHT = 4;
 
 /** 默认值刻意保守：白天每 2.5~5 小时最多一次，一天最多 4 次，23:30~08:30 不打扰。 */
 export const DEFAULT_PURPOSE_CONFIG = Object.freeze({
@@ -505,6 +507,7 @@ export function collectMaterials({
   conversations = [],
   biliEntries = [],
   memoryRecords = [],
+  followUpRecords = [],
 } = {}) {
   const windowStart = now - Math.max(1, Number(config.materialWindowHours) || 72) * HOUR;
   const list = convoList(conversations);
@@ -517,7 +520,15 @@ export function collectMaterials({
     seen.add(key);
     items.push(enrichMaterial(item, roleName));
   };
-  const stats = { qq: 0, bili: 0, memory: 0, thought: 0 };
+  const stats = { qq: 0, bili: 0, memory: 0, thought: 0, followUp: 0 };
+  // 接线层复用记忆库的资格检查，这里只接受仍然到期的一件。
+  const due = followUpRecords.filter((m) => m?.followUp && m.followUp.at <= now && m.followUp.tries < 3)
+    .sort((a, b) => a.followUp.at - b.followUp.at)[0];
+  if (due) {
+    push({ id: `follow:${due.id}`, source: 'memory', kind: 'memory-follow-up', at: due.followUp.at,
+      who: '对方', text: due.text, meta: { question: due.followUp.question }, weight: FOLLOW_UP_WEIGHT });
+    stats.followUp = 1;
+  }
 
   // ① 和主人的私聊：最重要，也最不容易「隔着群」。
   const ownerKey = ownerUin ? `private:${String(ownerUin).replace(/[^\d]/g, '')}` : '';
@@ -709,7 +720,7 @@ export function collectMaterials({
     stats.thought += 1;
   }
 
-  const rank = { owner: 0, self: 1, thought: 2, video: 3, dynamic: 4, memory: 5, member: 6 };
+  const rank = { 'memory-follow-up': -1, owner: 0, self: 1, thought: 2, video: 3, dynamic: 4, memory: 5, member: 6 };
   items.sort((a, b) => {
     const ra = rank[a.kind] ?? 9;
     const rb = rank[b.kind] ?? 9;
@@ -1719,7 +1730,9 @@ export function minePurposeSeeds({
 
   for (const m of materials) {
     const text = String(m.text ?? '');
-    if (m.kind === 'owner') {
+    if (m.kind === 'memory-follow-up') {
+      add('memory-follow-up', `想顺口问问：${m.meta.question}`, m, FOLLOW_UP_WEIGHT, { need: 'care', action: 'follow' });
+    } else if (m.kind === 'owner') {
       if (QUESTION_RE.test(text) && !answeredAfter(m.at)) {
         add('curiosity', `想接上主人之前问的「${clip(text, 36)}」`, m, 1.25, {
           need: 'connect', action: 'curiosity',
@@ -1821,11 +1834,12 @@ export function selectPurpose({
   const add = (item, weight, fromPending) => {
     const text = clip(item?.text, 120);
     if (!text) return;
-    if (isDuplicateText(text, recent)) return;
+    const followUp = item?.kind === 'memory-follow-up';
+    if (!followUp && isDuplicateText(text, recent)) return;
     // 同一个目标已经主动说过：就算换了措辞也不重复。
     if (item?.goalId && recent.some((h) => h && h.goalId === item.goalId)) return;
     // 同一件 B站 视频 / 同一条记忆已经用过：就算措辞不同也换一个，别复读。
-    if (item?.sourceId && recent.some((h) => h && h.sourceId && h.sourceId === item.sourceId)) return;
+    if (!followUp && item?.sourceId && recent.some((h) => h && h.sourceId && h.sourceId === item.sourceId)) return;
     if (candidates.some((c) => textSimilarity(c.text, text) >= 0.8)) return;
     const needAff = item.needAffinity || needAffinity(text);
     const need = PURPOSE_NEEDS.includes(item.need) ? item.need : topNeedOf(needAff, query);
@@ -1928,6 +1942,9 @@ export function selectPurpose({
   const top = diverse;
   if (!top.length) return { purpose: null, candidates: [], fromPending: false };
 
+  const followUp = top.find((c) => c.kind === 'memory-follow-up');
+  if (followUp) return { purpose: followUp, candidates: top, fromPending: false };
+
   // 有一半概率优先处理「心里惦记着的事」——人也会先把没说完的话说完。
   const pendingTop = top.filter((c) => c.fromPending);
   if (pendingTop.length && random() < 0.5) {
@@ -1985,7 +2002,8 @@ export function formatMaterialLine(material, now = Date.now()) {
     : material.kind === 'owner' ? 'QQ·主人'
       : material.kind === 'self' ? 'QQ·你'
         : material.kind === 'member' ? 'QQ·群友'
-          : material.kind === 'memory' ? '记忆'
+          : material.kind === 'memory-follow-up' ? '待跟进'
+            : material.kind === 'memory' ? '记忆'
             : '心里';
   const title = material.title ? `《${material.title}》` : '';
   const quote = material.quote ? `（你当时评论：「${clip(material.quote, 60)}」）` : '';

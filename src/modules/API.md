@@ -321,11 +321,17 @@ return function Panel({ settings, save, toast }) {
 
 平台是工具，同一个人只有一套记忆。模块确认平台账号对应的 QQ 后，可以用 `noteVia` 把双方对话写进同一份私聊流水（`who` 为 `user` 或 `bot`，`at` 是可选的毫秒时间戳），用 `contextVia` 取得这位 QQ 用户的私聊记忆上下文。模块用 `noteVia` 写入流水后，开启的短期状态会自动生效。核对不了身份的账号不要写入，也不要读取记忆。
 
-接 B 站、抖音、帖子、网页等外部内容平台时，看见或分享的内容用 `memory.addEvent({ kind: 'seen', text, meta: { title, author, url, platform, id } })`。它表示「她看过的内容」，不是作者对她说的话，不参与人物事实、画像、相处经验或长期印象的提炼。仍存于 `memories.json` 的 `items`，`source` 仍为 `event`。不要再把内容里的 `remember` 结果另存成普通事实或经历。
+接 B 站、抖音、帖子、网页等外部内容平台时，看见或分享的内容用 `memory.addEvent({ kind: 'seen', text, meta: { title, author, url, platform, id } })`。它表示「她看过的内容」，不是作者对她说的话，不参与人物事实、画像、相处经验或长期印象的提炼。仍存于同一记忆库的 `items`（`features/memory-store.js` 统一 `load/save`），`source` 仍为 `event`。不要再把内容里的 `remember` 结果另存成普通事实或经历。
 
 `addEvent` 的 `kind` 可省略（原有「做过的事」），或传 `'seen'`。`meta` 可省略，只保留 title / author / url / platform / id 五个可选字符串，分别最多 160 / 80 / 500 / 40 / 100 字符，其他字段丢弃；`id` 也接受数字并转成字符串。`seen` 不挂到某个人名下；`text` 可记感受，省略时用标题。时间轴平台选项从 `meta.platform` 和聊天梗概保留的 `via` 自动汇总，不要求固定平台名。写入真实聊天平台的双方对话则用上面的 `noteVia`，不要用 `seen` 代替聊天流水。
 
 事实 `add` / `update` 支持可选 `validFrom`、`validUntil`（毫秒时间戳或明确年月日），开始时间默认取 `saidAt`。老记录只有 `invalidAt` 时，按它作为结束时间读取；新事实使旧事实过时时，保留 `supersededBy`，结束时间取新事实的 `saidAt`。`related` 是最多 6 个事实 id 的双向引用，由记忆库维护。面板返回的 `validityText`、`displayText`、`relatedItems` 是显示用的派生值，不重复存储。`timeline({ kind?, platform?, chatId?, level?, about? })` 汇总聊天梗概和 `seen`，其中 `kind` 为 `gist` 或 `seen`，平台来自每条返回值的 `platforms`。
+
+悬而未决的重要事直接使用事实上的可选字段 `followUp = { at, tries, question }`：`at` 为下次该问的毫秒时间戳，`tries` 从 0 开始，`question` 为一句自然的问题。没有独立跟进表或文件；存储仍由 `features/memory-store.js` 的 `load/save` 负责。`memory.followUp` 默认开，只跟进主人和 `speakUp.allow` 中朋友在本人私聊里亲口说的、`status: 'fact'`、`tier: 2 / 3` 的个人事实，群聊与外部内容不跟进；已核对 QQ 的跨平台私聊仍使用同一份事实。
+
+提炼输出用 `follow_up: { at: 'YYYY-MM-DD HH:mm', question }`，本地明确日期保留原时间，只有日期则安排晚上 20 点；日期拿不准按原话后 3 天。`update` / `outdated` 用旧事实 id，有结果写 `follow_up: null`，尚无结果省略字段以保留次数和排程。沿用事实去重，重复提炼不重置次数；过时、忘掉、删除时连带清理，未完成的跟进暂不参与细节压缩。面板取消沿用 `memory.update(id, { followUp: null })`，该接口不接受创建跟进。
+
+主动模块共用 `memory.dueFollowUp(qq, now?)`（只返回最早到期的一件，检查记忆开关、本人来源、白名单、有效期和喜恶）与 `memory.markFollowUpAsked(id, now?)`（只在实际发出后调用；问后延期 3 天、7 天，第三次清掉）。主动搭话用 `hub.pushToSession` 的可选 `onDelivered` 回执，在实际发出文字或语音后记数；沉默、试运行、拦截、失败不记数。目的引擎只在模块开启时收集同一件到期素材，权重由 `purpose/engine.js` 的 `FOLLOW_UP_WEIGHT` 定义，不复制进目的目标或待续清单。两条路径都沿用各自的清醒时段、次数与间隔闸门，禁言和讨厌的人跳过。
 
 聊天中枢需要的时候会去找 `stickers`（发表情、偷表情）、`voice`（发语音）、`mood`（心情影响表情 / 语音频率）、`memory`（群聊插话判断）。
 这几个被关掉，对应的事就不做（想发语音时改发文字）；被替换，就用你的——所以替换时**导出的函数名要和上表一样**。

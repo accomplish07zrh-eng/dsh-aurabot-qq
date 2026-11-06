@@ -11,6 +11,7 @@
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { cleanOutboundText } from '../chat/reply.js'
+import { followUpHint } from '../features/memory.js'
 import {
   DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS,
   normalizePurposeConfig, createPurposeState, normalizePurposeState,
@@ -113,7 +114,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     try {
       const items = memoryOf()?.list?.('') || []
       return items
-        .filter((m) => m && !m.invalidAt && m.text && !['hearsay', 'guess'].includes(m.status) && (!friend || (m.scope !== 'group' && String(m.about) === friend)))
+        .filter((m) => m && !m.invalidAt && !m.followUp && m.text && !['hearsay', 'guess'].includes(m.status) && (!friend || (m.scope !== 'group' && String(m.about) === friend)))
         .map((m) => ({
           id: m.id,
           title: '',
@@ -165,6 +166,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
 
   // ①~④ 收素材 → 驱动 → 目标假设 → 候选（只读，不落盘）
   function prepare(cfg, config, state, now = Date.now(), friend = '') {
+    const followUp = memoryOf()?.dueFollowUp?.(friend || cfg.ownerQQ, now) || null
     const materials = collectMaterials({
       now, config,
       ownerUin: friend || cfg.ownerQQ,
@@ -172,6 +174,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       conversations: conversations(cfg, now, friend),
       biliEntries: [], // 首期不接 B站/Qzone 素材，字段留扩展
       memoryRecords: memoryRecords(friend),
+      followUpRecords: followUp ? [followUp] : [],
     })
     const persona = personaOf(cfg)
     const lastMasterAt = lastPrivateAt(cfg, friend)
@@ -180,14 +183,15 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       materials: materials.items, now, lastMasterAt, personaBias: persona.bias,
     })
     const { goals, observations } = formGoalHypotheses({
-      materials: materials.items, goals: state.goals, observations: state.observations,
+      // 跟进的排程和次数只属于事实，不再生成另一份目标或观察账本。
+      materials: materials.items.filter((m) => m.kind !== 'memory-follow-up'), goals: state.goals, observations: state.observations,
       drives, now, lastMasterAt, config, roleName: ROLE, persona,
     })
     const seeds = minePurposeSeeds({
       materials: materials.items, now, roleName: ROLE, config,
       drives, history: state.history, lastMasterAt,
     })
-    return { materials, persona, lastMasterAt, drives, goals, observations, seeds }
+    return { materials, persona, lastMasterAt, drives, goals, observations, seeds, followUp }
   }
 
   const friendName = (friend) => {
@@ -209,7 +213,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       stats: ctx.materials.stats,
       drives: ctx.drives,
     }) + `\n6) 这一轮不能用任何工具：直接输出你要发的那句话即可（会自动转发给${name}）。不想说就整段只输出 ${SILENCE}。`
-    return friend ? prompt.replaceAll('主人', name) : prompt // 引擎的提示词是写给主人的，朋友不是她的主人
+    const body = friend ? prompt.replaceAll('主人', name) : prompt // 朋友不是她的主人
+    return [body, selected?.kind === 'memory-follow-up' ? followUpHint(ctx.followUp) : ''].filter(Boolean).join('\n')
   }
 
   // ---------- 载体分发（互斥铁律：一轮只发一处，永不双发） ----------
@@ -273,9 +278,9 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     state.observations = ctx.observations
 
     // 朋友没聊过就别凭人设硬找：没有素材时她只能瞎编由头
-    const hasEnough = friend
+    const hasEnough = Boolean(ctx.followUp) || (friend
       ? ctx.materials.items.length >= Math.max(1, config.minMaterials)
-      : ctx.materials.items.length >= config.minMaterials || state.pending.length > 0 || ctx.persona.hasText
+      : ctx.materials.items.length >= config.minMaterials || state.pending.length > 0 || ctx.persona.hasText)
     if (!hasEnough) {
       markPurposeSkip(state, { now, reason: 'materials', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday }) })
       saveState(state, friend)
@@ -336,7 +341,10 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
         }
       }
     }
-    applyPurposeOutcome(state, { now: Date.now(), config, outcome, text, memo, planned: picked.purpose })
+    const following = picked.purpose.kind === 'memory-follow-up'
+    if (following && outcome === 'sent') memoryOf()?.markFollowUpAsked?.(ctx.followUp.id)
+    // 模型的「待续」不能把事实跟进再复制进 purpose.pending。
+    applyPurposeOutcome(state, { now: Date.now(), config, outcome, text, memo: following ? null : memo, planned: picked.purpose })
     if (!friend) nudgeMood(picked.purpose, outcome)
     saveState(state, friend)
     log.info?.(`目的：回合结束 ${outcome}（今天第 ${state.countToday} 次）`)
@@ -406,7 +414,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const cfg = getConfig()
     const config = purposeConfig(cfg)
     if (!config.enabled || !cfg.ownerQQ) return
-    if (!isMuted?.(chatIdOf(cfg)) && await tickOne(cfg, config)) return
+    if (!isMuted?.(chatIdOf(cfg)) && !memoryOf()?.dislikes?.(cfg.ownerQQ) && await tickOne(cfg, config)) return
     for (const qq of cfg.speakUp?.allow || []) {
       if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq)) || memoryOf()?.dislikes?.(qq)) continue
       if (await tickOne(cfg, config, String(qq))) return
@@ -419,6 +427,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const config = purposeConfig(cfg)
     if (!config.enabled) return { outcome: 'disabled' }
     if (isMuted?.(chatIdOf(cfg))) return { outcome: 'muted' }
+    if (memoryOf()?.dislikes?.(cfg.ownerQQ)) return { outcome: 'disliked' }
     if (!cfg.ownerQQ) return { outcome: 'no-owner' }
     const state = loadState(config)
     return runOnce({ reason, config, state, force: true })

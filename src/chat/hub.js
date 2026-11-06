@@ -1141,6 +1141,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       groupSaid.set(gid, said)
       groupEngaged.set(gid, Date.now() + ENGAGE_MS) // 在群里说了话 = 加入了话题
     }
+    if (sentTexts.length && typeof opts.onDelivered === 'function') {
+      try { opts.onDelivered() } catch (error) { log.warn('发送回执处理出错：', error.message) }
+    }
     const said = items.map((i) => (i.kind === 'text' || i.kind === 'voice' ? i.value : `[${i.kind}]`)).join(' ')
     logChat(chatId, 'bot', said)
     // 不是这个聊天自己那一轮发的（主人在私聊里让她去群里说、扩展模块代发）：记下来，下次这个聊天交给她时告诉她自己说过什么。
@@ -1195,7 +1198,8 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
           // 不在这里记账：deliver 会在真发出去之后自己 logChat，一条都没发成功就不记。
           // 这里再记一次会让每个中间段在聊天流水里出现两遍，发送失败时还会把没发出去的话算成说过。
           log.debug(`${chatId}：分条发出上一段（${prev.length} 字）`)
-          chainSend(chatId, () => deliver(chatId, prev, { own: true, interim: true }), '分条发送出错：')
+          const onDelivered = st.onDelivered
+          chainSend(chatId, () => deliver(chatId, prev, { own: true, interim: true, onDelivered }), '分条发送出错：')
         }
       }
       return
@@ -1229,6 +1233,9 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const sys = st.system
       const wantVoice = Boolean(st.wantVoice)
       const autoReply = st.autoReply
+      const onDelivered = st.onDelivered
+      st.onDelivered = st.pendingOnDelivered || null
+      st.pendingOnDelivered = null
       st.autoReply = null
       st.text = ''
       // 上一轮还在跑时新消息已经排队给「下一轮」：这一轮 turn/end 不能把下一轮的说话人清掉（#90）
@@ -1253,7 +1260,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       // 发完再放开：发送期间来的消息也攒到下一段。
       // 没有中间段在发的时候就走原来的路径（同步开始、release 跟着这一条走），时序和以前一模一样；
       // 只有前面真有中间段没发完时才排队，保证最后一段一定是最后一条（#214 review）。
-      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true })
+      const sendLast = () => deliver(chatId, text, { wantVoice, autoReply, userText: st.lastText || '', own: true, onDelivered })
         .catch((error) => log.warn('发送出错：', error.message))
         .finally(() => release(chatId))
       const pending = sendChain.get(chatId)
@@ -2246,7 +2253,12 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     st.lastText = String(opts.queryText ?? content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')).slice(-600)
     st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
     if (opts.wantVoice) st.wantVoice = true
-    if (!opts.steer) st.autoReply = opts.autoReply || null
+    if (!opts.steer) {
+      st.autoReply = opts.autoReply || null
+      // 回执跟着它所属的轮次走；排队的主动搭话不能算到上一轮。
+      if (queuedNextTurn) st.pendingOnDelivered = opts.onDelivered || null
+      else st.onDelivered = opts.onDelivered || null
+    }
     turnState.set(key, st)
     content = await seedHistoryOnce(sessionId, chat, content)
     const admitted = await admit(agent, content)

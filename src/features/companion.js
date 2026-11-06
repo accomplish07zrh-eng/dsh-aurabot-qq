@@ -4,6 +4,7 @@ import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel } from '../core/llm.js'
 import { cleanText, clipText } from '../core/text.js'
 import { shouldDeferBackground } from '../core/offpeak.js'
+import { followUpHint } from './memory.js'
 
 // ---------------- 心情 ----------------
 // 0~100，基线 60。聊天里的话按关键词推一推，随时间按半衰期回到基线。
@@ -187,8 +188,19 @@ export function createSpeakUp({ getConfig, hub, log, isMuted, memory }) {
     '看看现在几点，按时间说点应景的（早上、饭点、深夜）',
   ]
 
+  function followUpReceipt(item) {
+    let counted = false
+    return item ? { onDelivered() {
+      if (counted) return
+      counted = true
+      memory?.()?.markFollowUpAsked?.(item.id)
+    } } : {}
+  }
+
   async function fire(reason = '定时', { nudge = false } = {}) {
     const cfg = getConfig()
+    if (!cfg.enabled || !cfg.speakUp.enabled || !cfg.ownerQQ || isMuted?.(`private:${cfg.ownerQQ}`) || memory?.()?.dislikes?.(cfg.ownerQQ)) return
+    const followUp = !nudge ? memory?.()?.dueFollowUp?.(cfg.ownerQQ) : null
     const owner = cfg.ownerName || '主人'
     const idle = Math.round((Date.now() - lastPrivateAt()) / 60000)
     const angle = ANGLES[Math.floor(Math.random() * ANGLES.length)]
@@ -196,16 +208,19 @@ export function createSpeakUp({ getConfig, hub, log, isMuted, memory }) {
       ? `【系统提醒，不是${owner}说的话】你刚才跟${owner}说「${String(hub.lastBotToOwner?.text || '').slice(-60)}」，${owner}已经 ${idle} 分钟没回了。可以轻轻追一句（比如「人呢」「睡着啦？」，或者换个话题），别催、别抱怨；觉得${owner}在忙就只回 [沉默]。`
       : `【系统提醒，不是${owner}说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和${owner}私聊了，想主动找${owner}说点什么。这次的由头可以是：${angle}。优先用手里真实的素材（最近做过的事、记忆里的、聊天流水里能查到的），没有真实素材就别硬找，也不要编；用你自己的口气，一两句就好，别用模板、别解释为什么来找；实在不想说就只回 [沉默]。`
     log.info(`主动搭话（${reason}）`)
-    await hub.pushToSession({ chatId: `private:${cfg.ownerQQ}`, kind: 'private', userId: cfg.ownerQQ, nickname: owner }, [{ type: 'text', text: prompt }], '')
+    await hub.pushToSession({ chatId: `private:${cfg.ownerQQ}`, kind: 'private', userId: cfg.ownerQQ, nickname: owner }, [{ type: 'text', text: [prompt, followUpHint(followUp)].filter(Boolean).join('\n') }], '', followUpReceipt(followUp))
   }
 
   /** 找白名单里的人：不提主人的事，这是她和对方自己的聊天。 */
   async function fireFriend(qq) {
+    const cfg = getConfig()
+    if (!cfg.enabled || !cfg.speakUp.enabled || !(cfg.speakUp.allow || []).map(String).includes(String(qq)) || isMuted?.(`private:${qq}`) || memory?.()?.dislikes?.(qq)) return
+    const followUp = memory?.()?.dueFollowUp?.(qq)
     const idle = Math.round((Date.now() - (hub.lastPrivateAt?.(qq) || 0)) / 60000)
     const angle = ANGLES[Math.floor(Math.random() * ANGLES.length)]
     const prompt = `【系统提醒，不是对方说的话】你已经 ${idle > 600 ? '很久' : idle + ' 分钟'}没和这位朋友私聊了，想主动找对方说点什么。这次的由头：${angle}。只说你和对方之间的事，别提主人或别人的私事。`
     log.info(`主动搭话（白名单 ${qq}）`)
-    await hub.pushToSession({ chatId: `private:${qq}`, kind: 'private', userId: qq, nickname: qq }, [{ type: 'text', text: prompt }], '')
+    await hub.pushToSession({ chatId: `private:${qq}`, kind: 'private', userId: qq, nickname: qq }, [{ type: 'text', text: [prompt, followUpHint(followUp)].filter(Boolean).join('\n') }], '', followUpReceipt(followUp))
   }
 
   /** 白名单：每人单独算次数和间隔，一分钟最多找一个人，不一口气群发。 */
@@ -236,7 +251,7 @@ export function createSpeakUp({ getConfig, hub, log, isMuted, memory }) {
     const c = cfg.speakUp
     if (!cfg.enabled || !c.enabled) return
     if (cfg.ext?.purpose?.enabled === true) return // 目的引擎开着时由它主动找人，两套都跑同一个人会被找两次
-    if (isMuted?.(`private:${cfg.ownerQQ}`)) { // 主人在私聊里让她闭嘴了：只管主人这边，白名单照旧
+    if (isMuted?.(`private:${cfg.ownerQQ}`) || memory?.()?.dislikes?.(cfg.ownerQQ)) { // 主人在私聊里让她闭嘴了：只管主人这边，白名单照旧
       const s = load()
       if (!(await tickFriends(cfg, s))) save(s)
       return
