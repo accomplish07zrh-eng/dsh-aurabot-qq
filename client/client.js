@@ -4193,6 +4193,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [show, setShow] = useState('all')
       const [cat, setCat] = useState('')
       const [hot, setHot] = useState(true)
+      // 分页：市场模块多了全量渲染会卡，一次只画一页
+      const PAGE_SIZE = 12
+      const [page, setPage] = useState(1)
+      // 筛选条件一变就回第一页，别停在可能超出范围的旧页码
+      useEffect(() => { setPage(1) }, [q, show, cat, hot])
       const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
       useEffect(() => { load() }, [])
       // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）。拉取当前值与默认值，改完可保存或恢复内置。
@@ -4292,6 +4297,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const shown = list.filter((m) => (!cat || m.category === cat) && (show === 'all' || (show === 'installed' && m.installed) || (show === 'update' && m.update)) && (!word || (m.name + ' ' + m.id + ' ' + (m.description || '') + ' ' + (m.tags || []).join(' ')).toLowerCase().includes(word)))
       // 关掉热度排序时保持索引里的原顺序，别悄悄改成按名字排
       if (hot && canHot) shown.sort(byHot)
+      const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE))
+      const cur = Math.min(page, pages) // 数据变少后旧页码可能越界，夹回来
+      const pageShown = shown.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
+      // 模块仓库地址：索引条目写了 homepage 就用它（只认 http/https，索引是外部数据），
+      // 没写就退回模块库仓库（下载量统计里认出来的 owner/repo）
+      const repoUrl = (m) => (/^https?:\/\//i.test(String(m.homepage || '')) ? m.homepage : stats.source ? 'https://github.com/' + stats.source : '')
+      const pager = pages > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 12, justifyContent: 'center', alignItems: 'center' } },
+        h(Btn, { small: true, disabled: cur <= 1, onClick: () => setPage(cur - 1) }, '上一页'),
+        h('span', { className: 'ab-small ab-muted', style: { margin: '0 10px' } }, '第 ' + cur + ' / ' + pages + ' 页 · 共 ' + shown.length + ' 个'),
+        h(Btn, { small: true, disabled: cur >= pages, onClick: () => setPage(cur + 1) }, '下一页')) : null
       const num = (n) => (Number(n) >= 10000 ? (Number(n) / 10000).toFixed(1).replace(/\.0$/, '') + ' 万' : String(Number(n) || 0))
       const openSettings = (m) => {
         const running = (st.modules || []).find((x) => x.id === m.id)
@@ -4301,8 +4316,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const card = (m) => {
         const settings = m.installed ? openSettings(m) : null
         const note = [m.delisted ? '已从市场下架' : '', m.foreign ? '有同名的自己写的文件夹，不会覆盖' : '', m.blocked].filter(Boolean).join(' · ')
+        const url = repoUrl(m)
+        const title = url
+          ? h('a', { href: url, target: '_blank', rel: 'noreferrer', title: '打开仓库主页', style: { color: 'inherit', textDecoration: 'none' } }, m.name)
+          : m.name
         return h('div', { key: m.id, className: 'ab-card', style: { display: 'flex', flexDirection: 'column' } },
-          h('h3', null, m.name, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
+          h('h3', null, title, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
           h('div', { className: 'ab-small ab-muted' }, 'v' + (m.installed || m.version) + (m.update ? ' → v' + m.version : '') + (CATEGORY_LABEL[m.category] ? ' · ' + CATEGORY_LABEL[m.category] : '') + (m.author ? ' · ' + m.author : '') + (m.license ? ' · ' + m.license : '')),
           canHot ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 2 } }, '下载 ' + num(m.downloads) + ' 次' + (m.delisted ? '' : ' · 含更新')) : null,
           h('p', { className: 'ab-desc', style: { margin: '8px 0' } }, m.description),
@@ -4336,7 +4355,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
         data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
         data && data.ok !== false && !shown.length ? h(Empty, { icon: '🐟', text: list.length ? '没有符合条件的模块' : '市场里还没有模块' }) : null,
-        shown.length ? h('div', { className: 'ab-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' } }, shown.map(card)) : null,
+        shown.length ? h('div', { className: 'ab-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' } }, pageShown.map(card)) : null,
+        pager,
         h(ModuleTutorial, { toast }))
     }
 

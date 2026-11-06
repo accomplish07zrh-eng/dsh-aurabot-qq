@@ -157,3 +157,22 @@ test('市场面板：卡片显示下载次数、可以按热度排', () => {
   assert.match(src, /按热度/)
   assert.match(src, /byHot/)
 })
+
+test('市场面板：分页渲染，筛选变化回第一页', () => {
+  const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+  // 只画当前页，不把整个市场一次全渲染出来
+  assert.match(src, /pageShown\.map\(card\)/)
+  assert.ok(!src.includes('shown.map(card)'), '不能整列表直接渲染')
+  assert.match(src, /PAGE_SIZE = 12/)
+  assert.match(src, /setPage\(1\)/, '筛选条件变化要回第一页')
+  assert.match(src, /Math\.min\(page, pages\)/, '旧页码越界要夹回来')
+  assert.match(src, /第 ' \+ cur \+ ' \/ ' \+ pages \+ ' 页/)
+})
+
+test('市场面板：标题跳仓库，只认 http(s) 的 homepage', () => {
+  const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+  assert.match(src, /const repoUrl = \(m\) => \(\/\^https\?:\\\/\\\//, 'homepage 必须过 http(s) 校验')
+  assert.match(src, /m\.homepage/)
+  assert.match(src, /stats\.source \? 'https:\/\/github\.com\/' \+ stats\.source/, '没写 homepage 时退回模块库仓库')
+  assert.match(src, /target: '_blank', rel: 'noreferrer', title: '打开仓库主页'/)
+})
