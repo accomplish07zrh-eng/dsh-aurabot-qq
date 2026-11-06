@@ -4918,18 +4918,28 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (path.endsWith('/login')) setWaiting({ url: r.url, needPaste: r.needPaste })
         else { setWaiting(null); refresh(); toast(path.endsWith('/logout') ? '已退出 ChatGPT' : path.endsWith('/cancel') ? '已取消登录' : '登录成功') }
       }
+      // 1455 被系统保留时：没登录（或正在登录）才提示并显示粘贴框；登录完成后收起，只留「重新登录」
+      const callbackUnavailable = Boolean(status && status.callback && status.callback.available === false)
+      const needManualCallback = callbackUnavailable && (!status?.loggedIn || Boolean(waiting))
       return h('div', null,
         h('div', { className: 'ab-note', style: { margin: '8px 0' } }, '实验性订阅接法：使用非公开图片端点，可用性和额度由账号、工作区及服务端决定。登录信息仅存本机。'),
+        needManualCallback
+          ? h('div', { className: 'ab-note warn', style: { margin: '8px 0' } }, '本机 1455 端口被系统保留（Windows 开了 Hyper-V / WSL 时常见）：插件没法自动接收回调，浏览器会显示「无法访问」，但地址栏里就是完整回调地址，复制回来粘贴即可完成登录。')
+          : null,
         h(Row, { label: 'ChatGPT 账号' },
           h('span', { className: 'ab-small' }, status === null ? '读取登录状态…' : status.loggedIn ? '已登录：' + (status.email || status.accountId) : '尚未登录'),
-          h(Btn, { small: true, onClick: act('/image/codex/login'), disabled: busy || Boolean(waiting) }, '登录 ChatGPT'),
+          h(Btn, { small: true, onClick: act('/image/codex/login'), disabled: busy || Boolean(waiting) }, status?.loggedIn ? '重新登录 ChatGPT' : '登录 ChatGPT'),
           status?.loggedIn ? h(Btn, { small: true, onClick: act('/image/codex/logout'), disabled: busy }, '退出') : null),
-        waiting ? h('div', { className: 'ab-note' },
-          h('div', null, waiting.needPaste ? '端口 1455 被占用：打开授权链接登录，再粘贴完整回调地址。' : '请在浏览器完成登录。回调成功后自动刷新，也可以手动粘贴完整回调地址。'),
-          h('a', { href: waiting.url, target: '_blank', rel: 'noreferrer', style: { display: 'block', wordBreak: 'break-all' } }, '打开 ChatGPT 授权页'),
-          h('input', { className: 'ab-input', value: input, type: 'password', autoComplete: 'off', placeholder: '粘贴完整回调地址', onChange: (e) => setInput(e.target.value) }),
-          h(Btn, { small: true, onClick: act('/image/codex/complete', { input }), disabled: busy || !input.trim() }, '完成登录'),
-          h(Btn, { small: true, onClick: act('/image/codex/cancel'), disabled: busy }, '取消登录')) : null,
+        (waiting || needManualCallback) ? h('div', { className: 'ab-note' },
+          h('div', null, waiting
+            ? (waiting.needPaste ? '1455 收不到回调：' : '') + '在浏览器完成登录后，把地址栏里的完整回调地址粘到下面。'
+            : '先在浏览器完成登录，再把地址栏里的完整回调地址粘到下面；点上面的登录按钮会生成并打开授权链接。'),
+          waiting?.url
+            ? h('a', { href: waiting.url, target: '_blank', rel: 'noreferrer', style: { display: 'block', wordBreak: 'break-all' } }, '打开 ChatGPT 授权页')
+            : null,
+          h('input', { className: 'ab-input', value: input, type: 'password', autoComplete: 'off', placeholder: waiting ? '粘贴完整回调地址' : '完成浏览器登录后再粘贴', onChange: (e) => setInput(e.target.value) }),
+          h(Btn, { small: true, onClick: act('/image/codex/complete', { input }), disabled: busy || !waiting || !input.trim() }, '完成登录'),
+          waiting ? h(Btn, { small: true, onClick: act('/image/codex/cancel'), disabled: busy }, '取消登录') : null) : null,
         h(Row, { label: '模型', hint: '可用模型由服务端决定' }, f.select('imageGen.codex.model', [
           { value: 'gpt-image-2', label: 'gpt-image-2' }, { value: 'gpt-image-2.5-flare', label: 'gpt-image-2.5-flare' }, { value: 'gpt-image-2.5-sunburst', label: 'gpt-image-2.5-sunburst' },
         ], { width: 260 })),
