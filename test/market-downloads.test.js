@@ -181,3 +181,12 @@ test('市场面板：标题跳仓库，只认 http(s) 的 homepage', () => {
   assert.match(src, /\/i\.test\(String\(m\.homepage \|\| ''\)\)/, 'homepage 必须过 http(s) 正则校验')
   assert.match(src, /target: '_blank', rel: 'noreferrer', title: '打开仓库主页'/)
 })
+
+test('市场面板：地址设置默认折叠、放在市场上方', () => {
+  const src = readFileSync(new URL('../client/client.js', import.meta.url), 'utf8')
+  const market = src.indexOf("title: '模块市场'")
+  const registry = src.indexOf("title: '模块市场地址'")
+  assert.ok(registry >= 0 && market > registry, '地址卡要在市场卡的上方')
+  assert.match(src, /collapsible: true, defaultOpen: false/, '地址卡要默认折叠')
+  assert.match(src, /function Card\(\{ title, desc, icon, right, children, className, collapsible, defaultOpen = true \}\)/, 'Card 要支持折叠')
+})
