@@ -167,7 +167,15 @@ export function rewriteImports(code, fromKey, keep = new Set()) {
 // 放行才真的调 hub；hub 侧的 setOutboundGuard 是第二道保险（覆盖任何绕过包装层的直调）。
 // 未注入服务（core.outbound 缺失：旧环境 / 纯测试）时全部返回放行 —— 完全惰性、零开销。
 
-const NOOP_LOG = { warn() {} }
+// 日志兜底：出站治理的日志是「锦上添花」，绝不能因为它把发送链路炸了。
+// 全等级 NOOP + safeLog：log 缺失 / 某个等级不是函数 / 日志器自己抛错，都只当没记上。
+const NOOP_LOG = { debug() {}, info() {}, warn() {}, error() {} }
+
+function safeLog(level, log, ...args) {
+  const l = log || NOOP_LOG
+  const fn = typeof l?.[level] === 'function' ? l[level] : NOOP_LOG[level]
+  try { fn(...args) } catch {}
+}
 
 /** 取宿主注入的出站服务；没有或者面不对就当没注入。 */
 function outboundOf(core) {
@@ -207,10 +215,10 @@ function admitModuleCall(core, id, ask, log) {
     const action = verdict && verdict.action
     // defer 只会在 broker 档出现，没有排队执行器时按 deny 处理（宁可不发，也不越过预算）
     const allow = action === 'allow'
-    if (!allow) (log || NOOP_LOG).warn?.(`模块「${id}」这次主动发送被策略拦下（${(verdict && verdict.reason) || action || 'deny'}）`)
+    if (!allow) safeLog('warn', log, `模块「${id}」这次主动发送被策略拦下（${(verdict && verdict.reason) || action || 'deny'}）`)
     return { allow, verdict: verdict || null }
   } catch (error) {
-    (log || NOOP_LOG).warn?.(`出站判定出错，模块「${id}」这条按放行处理：`, error && error.message)
+    safeLog('warn', log, `出站判定出错，模块「${id}」这条按放行处理：`, error && error.message)
     return { allow: true, verdict: null }
   }
 }
@@ -222,7 +230,7 @@ function settleModuleCall(core, verdict, outcome, log) {
   try {
     svc.commit(verdict.reserveId, { deliveryId: verdict.deliveryId, outcome })
   } catch (error) {
-    (log || NOOP_LOG).warn?.(`出站结算失败（${outcome}）：`, error && error.message)
+    safeLog('warn', log, `出站结算失败（${outcome}）：`, error && error.message)
   }
 }
 
@@ -259,7 +267,7 @@ function governedSend(core, id, ask, run, log) {
   if (!svc) return run({ sourceModule: id })
   // broker 档无可审文本（图片/文件/语音/消息段）发主人私聊：识别不了就直发，不进门闸
   if (unreviewableBrokerSend(core, ask)) {
-    (log || NOOP_LOG).info?.(`模块「${id}」这条主动发送没有可审文本（图片/文件等），按「识别不了就直发」口径直接发出`)
+    safeLog('info', log, `模块「${id}」这条主动发送没有可审文本（图片/文件等），按「识别不了就直发」口径直接发出`)
     return run({ sourceModule: id, outboundDone: true })
   }
   const gate = admitModuleCall(core, id, ask, log)
@@ -362,11 +370,10 @@ async function delegateToHost(core, id, ask, verdict, svc, log) {
     if (state === 'sent' || state === 'pending' || state === 'queued') {
       return { message_id: 'delegated-' + r.deliveryId }
     }
-    (log || NOOP_LOG).warn?.(`模块「${id}」这条代发没发出去（${state || 'unknown'}）`)
-    (log || NOOP_LOG).warn?.(`模块「${id}」这条代发没发出去（${state || 'unknown'}）`)
+    safeLog('warn', log, `模块「${id}」这条代发没发出去（${state || 'unknown'}）`)
     return null
   } catch (error) {
-    (log || NOOP_LOG).warn?.(`模块「${id}」代发出错：`, error && error.message)
+    safeLog('warn', log, `模块「${id}」代发出错：`, error && error.message)
     return null
   }
 }

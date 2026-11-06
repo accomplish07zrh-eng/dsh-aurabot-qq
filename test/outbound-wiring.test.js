@@ -460,8 +460,29 @@ test('broker 档：模块发主人纯文本改走宿主代发（scopedHub 路径
   assert.equal(sent.length, 0, 'broker 代发路径不应再直接调 hub')
 })
 
-test('broker 档：群聊 / 朋友私聊不走代发（保持原路径）', async (t) => {
+test('broker 档：决断不发 + 日志口各种坏形态都不炸链路（2026-11-06 生产 TypeError 回归）', async (t) => {
   const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: true, reserveId: 'r1' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  svc.setDeliverer(async () => false, '决断不发：deliverer 返回 false')
+  const { hub } = makeHub(t)
+  // log 的各种坏形态：对象缺 warn / warn 不是函数 / 抛错 / 干脆没有——出站日志是锦上添花，
+  // 哪种都不能把发送链路炸成 TypeError（2026-11-06 生产：代发决断「不发」被记成代发出错）
+  const badLogs = [undefined, {}, { warn: 42 }, { warn: () => { throw new Error('日志器炸了') } }]
+  for (const log of badLogs) {
+    const core = { hub, outbound: svc, logger: log }
+    const scoped = scopeCoreForModule(core, 'probe-badlog')
+    const r = await scoped.hub.sendText('private:10001', '决断不发的一条')
+    assert.equal(r, null, `决断不发返回 null（log 形态：${log === undefined ? 'undefined' : JSON.stringify(Object.keys(log))}）`)
+  }
+})
+
+test('broker 档：群聊 / 朋友私聊不走代发（保持原路径）', async (t) => {  const svc = createOutboundPolicy({
     getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
     dataDir: null, hooks: { fsSync: false },
   })
