@@ -576,7 +576,7 @@ export function checkAbstractText (text, sourceTexts = []) {
   return { ok: true, text: t }
 }
 
-export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
+export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConfig = null }) {
   const vector = createVectorIndex({ getConfig, log, fetchImpl })
   const reranker = createReranker({ getConfig, log, fetchImpl })
   const storage = createMemoryStorage({ log })
@@ -2673,6 +2673,83 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     },
     setInsights: (key, list) => setInsights(key, list.map((x) => (typeof x === 'string' ? { id: randomUUID().slice(0, 8), text: x, at: Date.now() } : x))),
     list,
+    // ── 星图（memory-graph.js）要用的几个接口 ──
+    // 星图只管可视化，**读**记忆；除了 setTier（手动点层级）和 touch（点击复习）
+    // 之外都不改数据。tier 的值域映射放在 memory-graph.js 里做，这边只认 rc1 的数字档。
+    /**
+     * 每条记忆的「清晰度参数」：tau（决定遗忘速度）、tier、lastHit。
+     * 星图用 tau 算艾宾浩斯亮度，不用我们这边的 retention()，因为它要画的是「星星多久会暗」。
+     * 只读，不落盘。
+     */
+    metaAll: () => {
+      const now = Date.now()
+      return load().items.filter((m) => isCurrent(m)).map((m) => ({
+        id: m.id,
+        tier: Number.isInteger(m.tier) ? m.tier : (m.tier === 'core' ? 'core' : undefined),
+        // 和 retention() 里的 tau 公式保持一致：20 × (1+min(10,hitDays)) × (0.5+importance)
+        tau: 20 * (1 + Math.min(10, Number(m.hitDays) || 0)) * (0.5 + (Number(m.importance) || 0.5)),
+        lastHit: Number(m.lastHit) || 0,
+        at: Number(m.at) || 0,
+        importance: Number(m.importance) || 0.5,
+      }))
+    },
+    /**
+     * 过时/归档的记忆（星图上的「归档星云」）。
+     * rc1 没有单独的归档表，过时的就是 invalidAt 有值的那些。
+     */
+    archived: () => load().items.filter((m) => !isCurrent(m)).map((m) => ({
+      id: m.id,
+      text: m.text,
+      about: m.about,
+      aboutName: m.aboutName,
+      tags: m.tags,
+      source: m.source,
+      at: m.at,
+      importance: m.importance,
+      tier: m.tier,
+      invalidAt: m.invalidAt,
+      hitDays: m.hitDays,
+      lastHit: m.lastHit,
+    })),
+    /**
+     * 手动改层级（星图上点「改成长期/重要」）。
+     * 只接受 0~3 的整数；'core' 是压缩产物，不许手动改成它，也不许把它改成数字档。
+     */
+    setTier: (id, tier) => {
+      const t = Number(tier)
+      if (!Number.isInteger(t) || t < 0 || t > 3) return { ok: false, message: '层级只能是 0~3' }
+      const s = load()
+      const m = (s.items || []).find((x) => x.id === String(id))
+      if (!m || !isCurrent(m)) return { ok: false, message: '找不到这条记忆' }
+      if (m.tier === 'core') return { ok: false, message: '长期印象不能被手动改层级' }
+      // 手动改档**直接生效**，不走「只升不降」：面板上明确点了「临时」就应该是临时。
+      // （add/update 里的 Math.max 是防自动流程把档位降下去，不能套到用户手动操作上。）
+      m.tier = t
+      // 改档后重置升档起点：新档位从今天重新累计，否则会拿旧 tierSince 直接涨满
+      if (t > 0) m.tierSince = Date.now()
+      else delete m.tierSince
+      save(s)
+      return { ok: true, message: '已改为' + ({ 0: '永久', 1: '临时', 2: '长期', 3: '重要' })[t] + '记忆' }
+    },
+    /**
+     * 开关「自动回忆」。rc1 没有独立的 autoRecall 布尔，控制它是 recallMode：
+     *   'always'  = 每轮都查（相当于开）
+     *   'trigger' = 提到过去时才查（相当于关）
+     * 星图面板上那个总开关映射到这里，不去造第二个开关，免得多出个互相打架的配置。
+     * 必须走宿主注入的 setConfig（它会同时更新内存里的 cfg 和落盘）；
+     * 直接改 getConfig() 的返回值是无效的——那是宿主的对象，改完下轮读到的还是旧的。
+     */
+    setAutoRecall: (on) => {
+      if (typeof setConfig !== 'function') return { ok: false, message: '当前环境不支持改配置' }
+      setConfig((cfg) => {
+        if (!cfg.memory) cfg.memory = {}
+        cfg.memory.recallMode = on ? 'always' : 'trigger'
+        return cfg
+      })
+      return { ok: true, message: on ? '自动回忆已打开（每轮都查）' : '自动回忆已关（只在提到过去时查）' }
+    },
+    // 星图点「还记得」时用：整理一份命中，让她真的复习一次（会涨 hitDays / 刷新 lastHit）
+    touch,
     stats: () => {
       const items = load().items
       const live = items.filter((m) => isCurrent(m))
