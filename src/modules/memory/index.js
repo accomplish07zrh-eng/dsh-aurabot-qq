@@ -3,9 +3,11 @@
 // 别的模块（空间日记、B 站、翻唱）会往这里记她的经历；记忆模块关着时它们自己跳过。
 
 import { createMemoryStore, memoryLine, looksLikeRuleMemory } from '../../features/memory.js'
+export { looksLikeRuleMemory } from '../../features/memory.js'
+// 记忆星图：算法全在 memory-graph.js（原样搬自记忆中枢 0.9.2 的 graph.mjs，纯函数）。
+// 这里只用它的建边/布局/亮度和 tier 值域映射，不搬中枢的 assoc.mjs 和 pipeline.mjs。
 import { buildEdges, layoutGraph3d, brightness, regionOf, FADING_THRESHOLD, LAYOUT_VERSION, toStarTier, toHostTier, STAR_TIER_LABEL } from '../../features/memory-graph.js'
 import { readFileSync, writeFileSync } from 'node:fs'
-export { looksLikeRuleMemory } from '../../features/memory.js'
 import { defineTool, str } from '../../tools/tools.js'
 
 export default {
@@ -13,7 +15,7 @@ export default {
   name: '记忆',
   version: '1.0.0',
   description: '长期记忆：记事、想起、每日整理、小档案和相处经验',
-  tab: 'mood',
+  tab: 'memory',
   files: ['features/memory.js', 'features/memory-store.js', 'features/memory-vector.js'],
   setup(api, { fetchImpl } = {}) {
     const { hub, http } = api.core
@@ -119,11 +121,42 @@ export default {
         stats: memory.stats(),
       }
     })
+    // 面板「联想预览」：走真正的 recall 路径，能看见 A→B→C 到底带出了什么、第几跳、打了几折。
+    // /memories 用的是 list()，不经过联想扩散，所以那边看不到跳数。
+    api.route('/memory/assoc/preview', async (req) => {
+      const q = String(http.query(req).q || '').trim()
+      if (!q) return { ok: false, message: '给个查询词' }
+      const owner = String(api.config().ownerQQ || '')
+      const chatId = owner ? `private:${owner}` : ''
+      let vec = []
+      try { vec = await memory.vectorHits(q) } catch (error) {}
+      // shown: false —— 预览不能算「真想起过」，否则你点几下预览就把记忆加深了、还乱涨 critical 计数
+      const hits = memory.recall(q, { where: chatId, about: owner, limit: 6, groupChatId: '', vectorHits: vec, shown: false })
+      const rows = hits.map((h) => ({
+        id: h.it.id,
+        text: (h.it.text || '').slice(0, 80),
+        score: Math.round(h.score * 100) / 100,
+        hop: h.assocHop ?? 0,
+        via: h.assocOf || '',
+        why: (h.why || []).join('　'),
+      }))
+      const ap = api.config().memory.assoc || {}
+      return { ok: true, query: q, hops: ap.hops ?? 2, recall: ap.recall ?? 3, items: rows,
+        counts: { direct: rows.filter((r) => !r.hop).length, hop1: rows.filter((r) => r.hop === 1).length, hop2: rows.filter((r) => r.hop === 2).length, hop3: rows.filter((r) => r.hop === 3).length } }
+    })
     // 面板「立即重建联想」：平时 tick 会自动建，这里给手动排查用
     api.route('/memory/assoc/rebuild', async () => memory.buildAssoc())
     api.route('/memory/add', async (req) => {
       const b = await http.body(req)
-      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil })
+      // tier 以前漏传了：面板/星图选「临时/长期/永久」加进来的记忆一律变成默认档。
+      // 另外面板传的是字符串（short/long/core），而 memory.add 只认 0~3 的整数，
+      // 必须用 toHostTier 转一下，否则字符串被 Number.isInteger 判为假、静默丢弃。
+      return memory.add({
+        text: b.text, aboutName: b.aboutName || '', about: b.about || '',
+        importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel',
+        validFrom: b.validFrom, validUntil: b.validUntil,
+        tier: toHostTier(b.tier) ?? undefined,
+      })
     })
     api.route('/memory/update', async (req) => {
       const b = await http.body(req)
@@ -135,6 +168,10 @@ export default {
     })
     api.route('/insights', async () => ({ ok: true, items: memory.insights(), styles: memory.styles() }))
     api.route('/memory/recalls', async () => ({ ok: true, list: memory.recalls() }))
+    // 面板「立即重建联想」：平时 tick 会自动建，这里给手动排查用
+    api.route('/memory/assoc/rebuild', async () => memory.buildAssoc())
+    api.route('/memory/restore', async (req) => memory.restore((await http.body(req)).id))
+    // ═══════════════════════════════════════════════════════════
     // 记忆星图（memory-graph.js）
     // 只做可视化与它的交互，**不接管自动回忆**、不搬中枢的 assoc/pipeline。
     // 联想的唯一实现在 state.assoc + search() 里，星图这边不碰。
@@ -373,8 +410,6 @@ export default {
         return memory.setAutoRecall(Boolean(body.on))
       })
     }
-
-    api.route('/memory/restore', async (req) => memory.restore((await http.body(req)).id))
     api.route('/persona/overview', async () => ({ ok: true, list: memory.personaOverview() }))
     api.route('/persona/person', async (req) => {
       const detail = memory.personaPerson(http.query(req).qq || '')
