@@ -24,7 +24,7 @@ export default {
       if (req?.method !== 'POST' || !/^application\/json(?:\s*;|$)/i.test(String(req.headers?.['content-type'] || ''))) return { ok: false, message: '账号操作需要 POST JSON 请求' }
       return fn(req)
     }
-    api.route('/image/codex/status', async () => ({ ok: true, ...auth.status(), login: auth.loginStatus() }))
+    api.route('/image/codex/status', async () => ({ ok: true, ...auth.status(), login: auth.loginStatus(), callback: { port: auth.callbackPort?.() || 1455, available: await auth.callbackPortUsable?.() } }))
     api.route('/image/codex/login', accountAction(async () => ({ ok: true, ...(await auth.startLogin()), ...auth.loginStatus() })))
     api.route('/image/codex/login/status', async () => ({ ok: true, ...auth.loginStatus(), ...auth.status() }))
     api.route('/image/codex/complete', accountAction(async (req) => {

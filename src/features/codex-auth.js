@@ -11,6 +11,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, unlinkSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createServer } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import { spawn } from 'node:child_process'
 import { dataDir, readJson } from '../core/store.js'
 
@@ -19,12 +20,32 @@ const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
 const TOKEN_URL = 'https://auth.openai.com/oauth/token'
 const SCOPE = 'openid profile email offline_access'
 const CALLBACK_HOST = '127.0.0.1'
-const CALLBACK_PORT = 1455
+export const CALLBACK_PORT = 1455
 const CALLBACK_PATH = '/auth/callback'
 // 这条流程的 redirect_uri 必须是注册过的固定地址（Codex CLI 用的就是它），不能随机端口
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 const REFRESH_SKEW_MS = 2 * 60_000
+
+let callbackProbe = { at: 0, available: true }
+/** 1455 能不能绑。绑不上（Windows 的 Hyper-V 保留段常占这块）时，登录会退化成「手动粘贴回调地址」。缓存 60 秒。 */
+export function callbackPortUsable () {
+  if (Date.now() - callbackProbe.at < 60_000) return Promise.resolve(callbackProbe.available)
+  return new Promise((resolve) => {
+    const server = createNetServer()
+    let settled = false
+    const finish = (available) => {
+      if (settled) return
+      settled = true
+      callbackProbe = { at: Date.now(), available }
+      try { server.close() } catch (error) {}
+      resolve(available)
+    }
+    server.once('error', () => finish(false))
+    server.listen(CALLBACK_PORT, CALLBACK_HOST, () => finish(true))
+    setTimeout(() => finish(false), 1500).unref?.()
+  })
+}
 
 /** PKCE：verifier 随机串，challenge 是它的 sha256(b64url)。 */
 export function createPkce () {
@@ -356,5 +377,5 @@ export function createCodexAuth ({ log, fetchImpl, openUrl, createServerImpl = c
     pending = null
   }
 
-  return { status, startLogin, completeLogin, loginStatus, cancelLogin, ensureAccess, logout, dispose, revision: () => epoch, assertCurrent }
+  return { status, startLogin, completeLogin, loginStatus, cancelLogin, ensureAccess, logout, dispose, callbackPort: () => CALLBACK_PORT, callbackPortUsable, revision: () => epoch, assertCurrent }
 }
