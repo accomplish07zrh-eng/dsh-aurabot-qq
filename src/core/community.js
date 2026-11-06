@@ -323,8 +323,12 @@ export function createCommunity({ mods, getConfig, setConfig, log, version, aliv
     const e = (index.modules || []).find((x) => x.id === id)
     if (!e || e.id !== id) return { ok: false, message: `社区库里没有「${id}」` }
     if (hasFolder(id) && !readSource(id)) return { ok: false, message: `modules/${id} 是你自己的文件夹，不会覆盖；先挪走它` }
-    // 替换内置按真实文件判断：index 里的 replacesBuiltin 可能被篡改/漏填，不能只信它
-    const replacesBuiltin = Boolean(e.replacesBuiltin) || existsSync(join(builtinDir(), id))
+    // 替换内置按「已注册的内置模块」判断：index 里的 replacesBuiltin 可能被篡改/漏填，不能只信它；
+    // 但也不能只看 builtin 目录是否存在——内置搬到社区库后残留的旧目录会让这里误报（群管就是这样）。
+    const builtinRegistered = (() => {
+      try { return mods.status().some((m) => m.id === id && m.builtin === true) } catch { return existsSync(join(builtinDir(), id)) }
+    })()
+    const replacesBuiltin = Boolean(e.replacesBuiltin) || builtinRegistered
     if (replacesBuiltin && !confirmReplace) return { ok: false, needConfirm: true, message: `「${e.name}」会替换内置模块，请确认` }
     const why = blocked(index, e)
     if (why) return { ok: false, message: why }

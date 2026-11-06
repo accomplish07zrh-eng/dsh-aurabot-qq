@@ -255,11 +255,18 @@ test('安装：id 必须是白名单（防被篡改索引/调用方越目录写�
   }
 })
 
-test('安装：替换内置必须确认，索引 replacesBuiltin 漏填也拦（按真实内置目录判断）', async () => {
+test('安装：替换内置必须确认，索引 replacesBuiltin 漏填也拦（按已注册内置判断）', async () => {
   const p = pack('memory', '9.9.9')
-  const { c } = setup([p])
+  const { c } = setup([p], { status: [{ id: 'memory', builtin: true }] })
   const r = await c.install('memory')
   assert.equal(r.ok, false)
   assert.equal(r.needConfirm, true)
   assert.match(String(r.message), /替换内置/)
+})
+
+test('安装：内置目录残留但未注册（群管）不再要求确认', async () => {
+  const p = pack('group-admin', '1.0.0')
+  const { c } = setup([p])
+  const r = await c.install('group-admin')
+  assert.equal(r.ok, true)
 })
