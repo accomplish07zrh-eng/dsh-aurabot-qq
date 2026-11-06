@@ -37,6 +37,7 @@ import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js
 import { createApprovalRelay } from './security/approval.js'
 import { captureSystemPrompt } from './security/leak-guard.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
+import { pushBackup } from './core/backup-push.js'
 import { cleanText } from './core/text.js'
 import { createBridge } from './core/bridge.js'
 import { createDangerGuard, safeOwnedSession } from './security/danger.js'
@@ -72,9 +73,13 @@ export function apply(ctx) {
   let cfg = loadConfig()
   let mods = null
   let bridge = null
+  // 备份与云备份推送的任务状态声明在顶部：setConfig 里改云备份设置时要提前排定时器
+  let backupJob = null // { running, done, total, error, result }
+  let pushJob = null // { running, ok, error, result, at }
+  let pushTimer = null // 云备份每日定时
   const getConfig = () => cfg
   setSsrpMode(() => (getConfig().security && getConfig().security.ssrfMode === 'loose' ? 'loose' : 'strict'))
-  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token) }
+  const secrets = () => { for (const k of ['webuiPassword', 'httpToken', 'wsToken']) registerSecret(cfg.snowluma[k]); registerSecret(cfg.imageGen.apiKey); registerSecret(cfg.bridge.token); registerSecret(cfg.backup?.remote?.token) } // backup 令牌也按密钥脱敏（云备份）
   const setConfig = (next) => {
     const before = cfg
     cfg = saveConfig(next)
@@ -87,6 +92,7 @@ export function apply(ctx) {
     if (bridge && before.bridge.dshTools !== cfg.bridge.dshTools) bridge.refresh()
     if (mods && (JSON.stringify(before.modules) !== JSON.stringify(cfg.modules) || before.safeMode !== cfg.safeMode)) mods.sync().catch(() => {})
     mods?.emit('config', cfg, before)
+    if (JSON.stringify(before.backup?.remote) !== JSON.stringify(cfg.backup?.remote)) scheduleRemoteBackup()
     return cfg
   }
   secrets()
@@ -699,6 +705,7 @@ export function apply(ctx) {
   ctx.effect(() => () => {
     unloaded = true
     clearTimeout(firstWatch)
+    if (pushTimer) { clearTimeout(pushTimer); pushTimer = null } // 云备份的每日定时也要收尾，别留悬空回调
     dangerGuard?.dispose()
     approvalRelay?.dispose()
     hub.dispose()
@@ -1428,8 +1435,7 @@ export function apply(ctx) {
       child.once('spawn', () => { child.unref(); resolve({ ok: true, message: '打开了' }) })
     })
   }
-  // 备份：文件里有账号凭证，只存在本机文件夹，不提供网页下载
-  let backupJob = null // { running, done, total, error, result }
+  // 备份：文件里有账号凭证，只存在本机文件夹，不提供网页下载（backupJob 声明在文件顶部，云备份的定时器要提前用到）
   const backupAction = (run) => async (req) => {
     if (req.method !== 'POST' || req.headers?.['x-aurabot-backup'] !== '1') return { ok: false, message: '请从面板发起操作' }
     return run(req)
@@ -1455,6 +1461,59 @@ export function apply(ctx) {
     try { return await stageRestore(path) } catch (error) { return { ok: false, message: error.message } }
   }))
   route('/backup/cancel', backupAction(async () => { cancelRestore(); return { ok: true, message: '取消了' } }))
+  // ---------- 云备份：每天到点自动打包，并把最新备份推到 Gitee 私有仓库（走本机 git）----------
+  const alive = () => { try { return !unloaded } catch { return true } }
+  const nextRemoteAt = () => {
+    const r = cfg.backup?.remote
+    if (!r?.enabled) return null
+    const [hh, mm] = String(r.time || '03:30').split(':').map(Number)
+    const next = new Date()
+    next.setHours(hh, mm, 0, 0)
+    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
+    return next.toISOString()
+  }
+  const remoteView = (r = cfg.backup?.remote || {}) => ({ enabled: !!r.enabled, owner: r.owner, repo: r.repo, branch: r.branch, time: r.time, keep: r.keep, autoCreate: r.autoCreate !== false, forceOverwrite: !!r.forceOverwrite, hasToken: Boolean(r.token) })
+  route('/backup/remote/state', async () => ({ ok: true, remote: remoteView(), job: pushJob, nextAt: nextRemoteAt() }))
+  route('/backup/remote/config', backupAction(async (req) => {
+    const patch = { ...(await readBody(req)) }
+    if (!patch.token) delete patch.token // 令牌留空 = 沿用旧值，别把配好的抹掉
+    setConfig(mergeFromPanel(cfg, { backup: { remote: patch } })) // setConfig 里会重排定时器
+    const r = cfg.backup.remote
+    log.info(`云备份设置已更新｜${r.enabled ? `每天 ${r.time} 推 ${r.owner}/${r.repo}，留 ${r.keep} 份` : '关'}`)
+    return { ok: true, message: '存好了', remote: remoteView() }
+  }))
+  const doPush = async (pack) => {
+    if (pushJob?.running) return { ok: false, message: '上一次推送还没跑完' }
+    if (backupJob?.running) return { ok: false, message: '正在打包，等这轮打包完再推' }
+    pushJob = { running: true, pack: !!pack, at: Date.now() }
+    try {
+      if (pack) {
+        const result = await createBackup({ version: VERSION, workspaceDir: workspaceDirOf(getConfig()) })
+        log.info(`云备份自动打包完成：${result.name}，${result.files} 个文件`)
+      }
+      const r = await pushBackup(getConfig().backup?.remote, { version: VERSION })
+      pushJob = { running: false, ok: true, result: r, at: Date.now() }
+      log.info(`云备份推送完成：${r.message}`)
+    } catch (error) {
+      pushJob = { running: false, ok: false, error: error.message, at: Date.now() }
+      log.error('云备份推送失败：', error.message)
+    } finally {
+      scheduleRemoteBackup() // 打包+推送耗时不定，跑完重排到下一天
+    }
+    return { ok: true, message: '推送流程跑完了，结果看状态' }
+  }
+  route('/backup/push', backupAction(async () => doPush(false)))
+  const scheduleRemoteBackup = () => {
+    if (pushTimer) { clearTimeout(pushTimer); pushTimer = null }
+    const r = cfg.backup?.remote
+    if (!r?.enabled || !alive()) return
+    const [hh, mm] = String(r.time || '03:30').split(':').map(Number)
+    const next = new Date()
+    next.setHours(hh, mm, 0, 0)
+    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1)
+    pushTimer = setTimeout(() => { pushTimer = null; if (alive()) doPush(true) }, next.getTime() - Date.now())
+    pushTimer.unref?.()
+  }
   route('/local/status', async () => ({ ok: true, dir: local.dir(), list: local.status() }))
   route('/local/template', async (req) => {
     const slot = String((await readBody(req)).slot || '')
@@ -1737,6 +1796,7 @@ export function apply(ctx) {
     }
   })
 
+  scheduleRemoteBackup() // 云备份：到点自动打包推送（配置里关着就是空操作）
   log.info(`Aurabot v${VERSION} 已加载｜总开关 ${cfg.enabled ? '开' : '关'}｜试运行 ${cfg.dryRun ? '开' : '关'}｜工作区 ${workspaceDirOf(cfg)}`)
 
   return {
