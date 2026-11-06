@@ -16,7 +16,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { askModel, lastEmptyInfo } from '../core/llm.js'
 import { clipText } from '../core/text.js'
-import { createVectorIndex } from './memory-vector.js'
+import { createVectorIndexByMode } from './memory-vector.js'
 import { createReranker } from './rerank.js'
 import { createMemoryStorage } from './memory-store.js'
 import { shouldDeferBackground } from '../core/offpeak.js'
@@ -26,6 +26,23 @@ const EXTRACT_RETRY_TOKENS = 16000
 const VIA_NAMES = { douyin: '抖音', heybox: '小黑盒' }
 export const RELATED_MIN_SCORE = 0.8
 export const RELATED_LIMIT = 6
+// 向量关联（联想）：建边阈值、每条最多几条边、召回时最多带几条、每次点开边涨多少。
+export const ASSOC_MIN_SIM = 0.45
+export const ASSOC_LIMIT = 4
+export const ASSOC_RECALL_LIMIT = 3
+// 联想跳数：A→B 是 1 跳，A→B→C 是 2 跳。默认 2 跳（能「想起相关的事，再想起那件事的周边」），
+// 但**必须封顶**：跳数不封顶就是 A→B→C→D…无限套娃，一条记忆能把整个库带出来。
+export const ASSOC_HOPS = 2
+// 硬上限：配置最多也只能到 3 跳。这是防套娃的最后一道闸，不能由配置突破。
+export const ASSOC_HOPS_MAX = 3
+// 每多跳一次，分数打折。跳得越远越不可信，也越容易跑题。
+export const ASSOC_HOP_DECAY = 0.55
+export const ASSOC_BUMP = 0.01
+export const ASSOC_BUMP_EVERY = 5
+// 行为驱动的档位升档参数（面板里都能改，这里是默认值）。
+// assocPerHitDay：一条记忆被「联想」带出来几次才算想起来一天。比直接命中更轻，
+// 这样联想也能帮记忆加深，但不会因为一条热门记忆被反复联想就暴涨。
+export const TIER_GROW = { enabled: true, perDay: 0.02, minHitDays: 3, cap: 0.85, assocPerHitDay: 2, tier2: { hitDays: 5, imp: 0.6 }, tier3: { hitDays: 10, imp: 0.75 } }
 export const SEEN_META_LIMITS = { title: 160, author: 80, url: 500, platform: 40, id: 100 }
 
 export const validFromOf = (m) => m.validFrom ?? saidTime(m)
@@ -110,6 +127,58 @@ function cleanRelated(items) {
     m.related = [...new Set(m.related)].filter((id) => id !== m.id && active.has(m.id) && active.get(id)?.related?.includes(m.id)).slice(0, RELATED_LIMIT)
   }
   for (const m of items) if (m.related) m.related = m.related.filter((id) => active.get(id)?.related?.includes(m.id))
+}
+
+/**
+ * 建边签名：条目集合 + 每条的文字哈希 + **已建向量覆盖的条目集合**。
+ * 长度一样的改写（「喜欢吃辣」→「讨厌吃辣」）也得重建边，所以文字要哈希；
+ * 向量是分批同步的（每轮最多 SYNC_MAX_PER_RUN 条），签名里必须带上「哪些条目已经有向量」，
+ * 否则签名不变就直接 skipped，后面补上向量的条目**永远建不了边**。
+ * 纯函数，方便直接测。
+ */
+export function assocSignature(items, vectorIds) {
+  const list = Array.isArray(items) ? items : []
+  let h = 2166136261
+  const mix = (text) => {
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i)
+      h = Math.imul(h, 16777619)
+    }
+  }
+  for (const m of list) mix(String(m.id) + '\u0001' + String(m.text || ''))
+  // 向量覆盖度单独混进去（排序后再哈希，保证顺序稳定）
+  const covered = [...(vectorIds || [])].map(String).sort()
+  mix('\u0002' + covered.join(','))
+  return `${list.length}:${covered.length}:${(h >>> 0).toString(36)}`
+}
+
+/**
+ * 联想边单独存在顶层（state.assoc），不往记忆条目上加字段——
+ * 条目的结构是官方契约，升级测试要求旧条目一个字段都不能变。
+ * 形状：{ [id]: [[otherId, weight, walkCount], ...] }，递归引用收拾规则和 related 一样双向、失效即清。
+ */
+export function cleanAssocMap(map, items, limit = ASSOC_LIMIT) {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return {}
+  const active = new Set(items.filter((m) => isCurrent(m) && m.kind !== 'seen').map((m) => String(m.id)))
+  const out = {}
+  for (const [id, edges] of Object.entries(map)) {
+    if (!active.has(String(id)) || !Array.isArray(edges)) continue
+    const seen = new Set()
+    const list = []
+    for (const e of edges) {
+      const other = Array.isArray(e) ? String(e[0] || '') : String(e?.id || '')
+      const w = Math.max(0, Math.min(1, Number(Array.isArray(e) ? e[1] : e?.w) || 0))
+      const walks = Math.max(0, Math.round(Number(Array.isArray(e) ? e[2] : e?.count) || 0))
+      if (!other || other === id || seen.has(other) || !active.has(other)) continue
+      // 只认对端也承认的边，否则会留下单向引用
+      const back = Array.isArray(map[other]) ? map[other] : []
+      if (!back.some((x) => (Array.isArray(x) ? String(x[0]) : String(x?.id || '')) === id)) continue
+      seen.add(other)
+      list.push([other, Math.round(w * 1000) / 1000, walks])
+    }
+    if (list.length) out[id] = list.sort((a, b) => b[1] - a[1]).slice(0, limit)
+  }
+  return out
 }
 
 // ---------------- 纯函数：切词与打分 ----------------
@@ -277,6 +346,108 @@ export function search(idx, query, o = {}) {
       have.add(id)
     }
   }
+  // 向量联想：官方 related 只覆盖「关于同一个人、同一个聊天」的关键词近邻，经历和日记被排除在外。
+  // 这里补一层按语义建的边，支持多跳（A→B→C），但**三重封顶防无限套娃**：
+  //   1. 跳数上限（默认 2，最多 3）
+  //   2. 总数上限（assocMax，默认 3 条）
+  //   3. visited 集合（一个条目整轮只出现一次，天然不成环）
+  // 关键是**名额按跳分配**：不能让它被第 1 跳吃光，否则 2 跳永远是 0 条，
+  // 「A→B→C」就成了摆设（实测真实数据时全库 2 跳都是 0）。
+  // 分配方式：第 1 跳最多 max(1, assocMax-1) 条，剩下的留给更深跳；跳数越多每条名额越少。
+  // 每多跳一跳分数乘 ASSOC_HOP_DECAY，所以越远越不重要，最后自然沉底。
+  // 边存在 o.assocMap（顶层 state.assoc）里；纯函数自己拿不到 store，所以由 recall 传进来。
+  const assocMax = Math.min(ASSOC_RECALL_LIMIT, Math.max(0, Number(o.assocLimit ?? ASSOC_RECALL_LIMIT)))
+  const assocMap = o.assocMap && typeof o.assocMap === 'object' ? o.assocMap : null
+  const hopsMax = Math.max(0, Math.min(ASSOC_HOPS_MAX, Number.isFinite(Number(o.assocHops)) ? Number(o.assocHops) : ASSOC_HOPS))
+  const hopDecay = Math.max(0.1, Math.min(1, Number.isFinite(Number(o.assocHopDecay)) ? Number(o.assocHopDecay) : ASSOC_HOP_DECAY))
+  if (o.assoc !== false && assocMax > 0 && hopsMax > 0 && assocMap) {
+    // visited 一开始就装进所有已选中的条目：既防止重复，也防止 B→A 绕回起点
+    const visited = new Set(selected.map((h) => h.it.id))
+    let taken = 0
+    // frontier 里是「本跳的起点」，每条带自己的分数和已经走过的跳数
+    let frontier = [...selected].sort((a, b) => b.score - a.score).map((h) => ({ it: h.it, score: h.score, hop: 0 }))
+    for (let hop = 1; hop <= hopsMax && taken < assocMax && frontier.length; hop += 1) {
+      // 本跳名额：**先保证第 1 跳拿到大部分**（它最可信），但必须给后面的跳留位置，
+      // 否则 1 跳会把名额吃光、2 跳永远是 0 条（实测真实数据时全库 2 跳都是 0）。
+      // 规则：第 1 跳拿 max(1, ceil(剩余/2))，剩下的依次再分，最深的一跳拿走余额。
+      const remainingHops = hopsMax - hop + 1
+      const remaining = assocMax - taken
+      const quota = hop === hopsMax
+        ? remaining
+        : Math.max(1, Math.min(remaining - (remainingHops - 1), Math.ceil(remaining / 2)))
+      let thisHop = 0
+      const next = []
+      // 第 1 跳按**每个起点轮转**分名额：不让分数最高的那一条把名额吃光。
+      // 以前是「按分数排序后一个个走」，实测真实数据时第 1 条就把配额用完了，
+      // recallCount 调大也帮不上忙（第 2~6 条完全不参与联想）。
+      // 现在第 1 跳优先保证每个起点先各拿 1 个，还有余额再回头按分数补。
+      if (hop === 1) {
+        // 每个起点先各拿 1 条
+        for (const src of frontier) {
+          if (thisHop >= quota || taken >= assocMax) break
+          const edges = Array.isArray(assocMap[String(src.it.id)]) ? assocMap[String(src.it.id)] : []
+          for (const edge of edges) {
+            if (thisHop >= quota || taken >= assocMax) break
+            const id = Array.isArray(edge) ? String(edge[0]) : String(edge?.id || '')
+            const w = Math.max(0, Math.min(1, Number(Array.isArray(edge) ? edge[1] : edge?.w) || 0))
+            if (!id || visited.has(id)) continue
+            const it = eligible.get(id)
+            if (!it || it.kind === 'gist') continue
+            const score = src.score * w * (0.6 + 0.4 * retention(it, now))
+            visited.add(id)
+            taken++
+            thisHop++
+            selected.push({ it, score, why: ['（联想）'], assocOf: src.it.id, assocW: w, assocHop: 1 })
+            next.push({ it, score, hop })
+            break // 每个起点只拿最像的一条
+          }
+        }
+        // 还有余额就再按分数补满
+        for (const src of frontier) {
+          if (thisHop >= quota || taken >= assocMax) break
+          const edges = Array.isArray(assocMap[String(src.it.id)]) ? assocMap[String(src.it.id)] : []
+          for (const edge of edges) {
+            if (thisHop >= quota || taken >= assocMax) break
+            const id = Array.isArray(edge) ? String(edge[0]) : String(edge?.id || '')
+            const w = Math.max(0, Math.min(1, Number(Array.isArray(edge) ? edge[1] : edge?.w) || 0))
+            if (!id || visited.has(id)) continue
+            const it = eligible.get(id)
+            if (!it || it.kind === 'gist') continue
+            const score = src.score * w * (0.6 + 0.4 * retention(it, now))
+            visited.add(id)
+            taken++
+            thisHop++
+            selected.push({ it, score, why: ['（联想）'], assocOf: src.it.id, assocW: w, assocHop: 1 })
+            next.push({ it, score, hop })
+          }
+        }
+      } else {
+      for (const src of frontier) {
+        if (thisHop >= quota || taken >= assocMax) break
+        const edges = Array.isArray(assocMap[String(src.it.id)]) ? assocMap[String(src.it.id)] : []
+        for (const edge of edges) {
+          if (thisHop >= quota || taken >= assocMax) break
+          const id = Array.isArray(edge) ? String(edge[0]) : String(edge?.id || '')
+          const w = Math.max(0, Math.min(1, Number(Array.isArray(edge) ? edge[1] : edge?.w) || 0))
+          if (!id || visited.has(id)) continue
+          const it = eligible.get(id)
+          if (!it || it.kind === 'gist') continue
+          // 分数 = 起点分 × 边权 × 保留率 × 跳数折扣。w ≤ 1、衰减 < 1，所以永远低于起点。
+          const score = src.score * w * (0.6 + 0.4 * retention(it, now)) * (hop === 1 ? 1 : hopDecay * (hop - 1))
+          visited.add(id)
+          taken++
+          thisHop++
+          const hit = { it, score, why: [`（联想${hop > 1 ? '·' + hop + ' 跳' : ''}）`], assocOf: src.it.id, assocW: w, assocHop: hop }
+          selected.push(hit)
+          next.push({ it, score, hop })
+          if (selected.length >= limit + assocMax) break
+        }
+      }
+      }
+      frontier = next
+      if (selected.length >= limit + assocMax) break
+    }
+  }
   return selected.map(({ keyword, vector, ...hit }) => hit)
 }
 
@@ -340,7 +511,7 @@ export function memoryLine(it, now = Date.now()) {
  * 该不该忘掉：自动提炼的按遗忘曲线淡了忘掉（见 retention）；桌宠行为回执只留 3 天，到期清掉。
  * 经历留 90 天，重要经历、她自己记的、你加的和日记不自动忘。
  */
-export function shouldForget(m, now = Date.now(), eventExpireDays = 90) {
+export function shouldForget(m, now = Date.now(), eventExpireDays = 90, retentionBase = RETENTION_BASE) {
   // 过时的留半年（面板里能看到、能恢复），之后清掉
   // 成立时间可能很早，刚补记的往事仍应保留半年；沿用 invalidAt / at 计算清理时间。
   if (m.invalidAt || (validUntilOf(m) && validUntilOf(m) <= now)) return now - (m.invalidAt || m.at || validUntilOf(m)) > 180 * 86400_000
@@ -350,18 +521,27 @@ export function shouldForget(m, now = Date.now(), eventExpireDays = 90) {
   if (m.source === 'event') return eventExpireDays >= 0 && (Number(m.importance) || 0) < 0.6 && now - (saidTime(m) || 0) > eventExpireDays * 86400_000
   if (m.source !== 'auto') return false
   if ((Number(m.importance) || 0) >= 0.6) return false
-  return retention(m, now) < 0.05
+  return retention(m, now, retentionBase) < 0.05
 }
+
+/** 遗忘曲线的时间基数（天）。原来硬编码 20；调小 = 忘得更快、更像人，调大 = 记得更牢。 */
+export const RETENTION_BASE = 20
 
 /**
  * 记得多牢（0~1）：R = e^(-Δt/τ)。Δt 是离上次被想起（或记下）过了多久；
  * τ 随「被想起过几天」和重要程度变长——一条普通记忆两个月没碰就淡了，隔几天就聊到一次的能记很久。
+ *
+ * 第 3 个参数 base 是时间基数（默认 20 天）。按艾宾浩斯对照：
+ *   base=20 时 1 天后还有 95%（人约 33%）、31 天后 21%（人约 21%），长期吻合但短期偏慢。
+ *   base≈8 时 1 天后约 75%、31 天后约 5%，短期更接近人类，但记住的东西会明显变少。
+ * 不传就是原来的行为，所以调用方无需改动。
  */
-export function retention(m, now = Date.now()) {
+export function retention(m, now = Date.now(), base = RETENTION_BASE) {
   const last = Math.max(m.at || 0, m.lastHit || 0)
   const days = Math.max(0, (now - last) / 86400_000)
   const strength = 1 + Math.min(10, Number(m.hitDays) || 0)
-  const tau = 20 * strength * (0.5 + (Number(m.importance) || 0.5))
+  const b = Number.isFinite(Number(base)) && Number(base) > 0 ? Number(base) : RETENTION_BASE
+  const tau = b * strength * (0.5 + (Number(m.importance) || 0.5))
   return Math.exp(-days / tau)
 }
 
@@ -577,13 +757,16 @@ export function checkAbstractText (text, sourceTexts = []) {
 }
 
 export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConfig = null }) {
-  const vector = createVectorIndex({ getConfig, log, fetchImpl })
+  // 用 ByMode：beta 的 createVectorIndex 只会走在线服务，本地 bge-small 模型完全用不上，
+  // 「检索方式 = 本地」时联想就永远是 0 条。ByMode 会在本地模型没就绪时返回 null（降级成关键词）。
+  const vector = createVectorIndexByMode({ getConfig, log, fetchImpl })
   const reranker = createReranker({ getConfig, log, fetchImpl })
   const storage = createMemoryStorage({ log })
   let transaction = null // 一批记忆和流水进度一起落盘，避免中断后重复提炼
   const load = () => transaction ? structuredClone(transaction) : storage.load()
   const save = (s) => {
     cleanRelated(s.items)
+    s.assoc = cleanAssocMap(s.assoc, s.items)
     if (transaction) transaction = s
     else storage.save(s)
     cache = null
@@ -817,19 +1000,141 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
   const recallLog = readJson(recallFile(), () => []) // 最近想起了什么：给面板看，也留着查回归问题
   const saveRecalls = () => { try { writeJson(recallFile(), recallLog) } catch (error) { log.debug?.('记不下召回日志：', error.message) } }
 
-  /** 真正交给她看的才算想起过，否则没用上的记忆也会越记越牢。 */
+  /** 行为驱动的升档：被想起来的次数多了、日子久了，importance 慢慢涨，够门槛就升一档。 */
+  function growTier(m, cfg) {
+    const g = { ...TIER_GROW, ...((cfg ?? getConfig().memory?.tierGrow) || {}) }
+    if (g.enabled === false) return
+    const now = Date.now()
+    const perDay = Math.max(0, Number(g.perDay) || 0)
+    // 不能用 `Number(g.cap) || 0.85` —— cap=0 是合法配置（就是「不许自动涨」），
+    // 而 0 是假值，会被 || 吞成 0.85，用户把上限调成 0 反而一点用都没有。
+    const rawCap = Number(g.cap)
+    const cap = Number.isFinite(rawCap) ? Math.max(0, Math.min(1, rawCap)) : 0.85
+    // 凑够「被想起的天数」才开始按天涨：一两条偶然想起不该把她记的事推到重要档。
+    const earnable = (Number(m.hitDays) || 0) >= (Number(g.minHitDays) || 0)
+    if (earnable && perDay > 0) {
+      // 老记忆没有 tierSince：**不能拿 at 当起点**，否则一条 3 个月前的记忆今天刚凑够天数，
+      // 一次就涨 0.02×90 = 1.8 直接封顶，和「行为驱动、慢慢涨」的设计正好相反。
+      // 第一次进入可增长状态时把起点定在现在，之后每次只结算「上次结算到现在」这段。
+      const since = Number(m.tierSince) || 0
+      if (!since) {
+        m.tierSince = now
+      } else {
+        const days = Math.floor(Math.max(0, (now - since) / 86400_000))
+        if (days > 0) {
+          m.importance = Math.max(0, Math.min(cap, (Number(m.importance) || 0.5) + perDay * days))
+          m.tierSince = since + days * 86400_000
+        }
+      }
+    }
+    // 档位有三种形态：
+    //   'core' —— 压缩出来的长期印象，**永远不参与升档**（否则会被改写成 tier:3，
+    //             compressionClusters 里 `m.tier === 'core'` 的排除就失效，长期印象会被反复压缩）
+    //   undefined/null —— **还没分档的普通记忆**，这是合法状态（add() 默认就不设 tier、
+    //             容量清理和遗忘曲线也都按「无档位」处理它）。它必须能升档，否则
+    //             新用户所有记忆永远停在无档位、记忆加深功能等于没有（实测踩到过）。
+    //   0~3 —— 正常档位，参与升档判定
+    if (m.tier === 'core') return
+    const cur = Number.isInteger(m.tier) ? m.tier : -1
+    // 永久档（0）不升不降
+    if (cur === 0) return
+    const hitDays = Number(m.hitDays) || 0
+    const imp = Number(m.importance) || 0
+    const t2 = { ...TIER_GROW.tier2, ...(g.tier2 || {}) }
+    const t3 = { ...TIER_GROW.tier3, ...(g.tier3 || {}) }
+    if (cur < 3 && hitDays >= (Number(t3.hitDays) || 10) && imp >= (Number(t3.imp) || 0.75)) m.tier = 3
+    else if (cur < 2 && hitDays >= (Number(t2.hitDays) || 5) && imp >= (Number(t2.imp) || 0.6)) m.tier = 2
+  }
+
+  /**
+   * 真正交给她看的才算想起过，否则没用上的记忆也会越记越牢。
+   * 联想带出来的条目**也算想起**（用户要的就是这个：联想出来的记忆也会加深），
+   * 但强度打折：`assocPerHitDay`（默认 2）次联想才折算成「想起来一天」，
+   * 而且联想的那次不直接涨 importance —— 只有攒出一天来才走 growTier。
+   */
   function touch(hits) {
     if (!hits.length) return
     const s = load()
+    const items = new Map((s.items || []).map((x) => [x.id, x]))
+    const gists = new Map((s.gists || []).map((x) => [x.id, x]))
+    const grow = getConfig().memory?.tierGrow || {}
+    // 几次联想折算一天。配 0 或关掉升档就当没有这个机制。
+    const assocPerDay = Math.max(1, Math.round(Number(grow.assocPerHitDay) || 2))
+    // hitDays 不只是升档门槛，retention() 还拿它算「记多牢」（strength 在 10 就饱和）。
+    // 联想也能加 hitDays，等于让常被联想的记忆更抗遗忘——这是「加深」想要的效果，
+    // 但要封顶，否则噪声记忆会赖着不走。retention 那边本来就是 min(10, hitDays)，
+    // 这里再兜一个绝对值上限，保证联想怎么加都不会把记忆变成永不遗忘。
+    const hitDaysCap = 40
+    const today = new Date().toDateString()
+    /**
+     * 记「想起来一天」。同一个自然日只算一次，**只看 lastHitDay**。
+     * 不能用 lastHit 判断：它在上一步已经刷成现在了，拿它比日期永远相等。
+     * 也不能给老数据做「lastHit 是今天就算过了」的兜底——第一次联想就会把 lastHit 刷成今天，
+     * 第二次就会被误判成「今天算过了」，导致 hitDays 永远不涨（踩过这个坑）。
+     * 老数据缺 lastHitDay 就当作「今天还没算」，最坏只会多算一天，可以接受。
+     */
+    const countDay = (m) => {
+      if (m.lastHitDay === today) return false
+      m.lastHitDay = today
+      m.hitDays = Math.min(hitDaysCap, (m.hitDays || 0) + 1)
+      return true
+    }
     for (const h of hits) {
-      const m = (h.it.kind === 'gist' ? s.gists || [] : s.items).find((x) => x.id === h.it.id)
+      const m = (h.it.kind === 'gist' ? gists : items).get(h.it.id)
       if (!m) continue
-      // 强度按「被想起过几天」算，同一天想起多次只算一次
-      if (!m.lastHit || new Date(m.lastHit).toDateString() !== new Date().toDateString()) m.hitDays = (m.hitDays || 0) + 1
       m.hits = (m.hits || 0) + 1
       m.lastHit = Date.now()
+      if (h.assocOf) {
+        // 联想出来的也算想起，但比直接命中轻：攒够 assocPerDay 次折算「想起来一天」。
+        // 攒够但今天已经算过一天时**不清零、封顶在 assocPerDay**——留到跨天再折算。
+        // 否则同一天被反复联想会把计数反复清掉，永远折算不出一天；不清零又会无限累积，
+        // 所以封顶。结果是「一天最多折算一天」，和直接命中的口径一致。
+        //
+        // ⚠️ 用 assocSeen 而不是 assocHits：库里有一批旧模块（memory-constellation）留下的
+        // `assocHits=1` + `assocDay/assocLast`。旧字段语义是「被联想过几次」，
+        // 直接读过来会被当成「已经攒了 1 次」，下一次联想就白捡一天、多涨档。
+        // 换个新名字，旧数据一律从 0 起算，干净。
+        const seen = Number(m.assocSeen) || 0
+        m.assocSeen = Math.min(assocPerDay, seen + 1)
+        if (m.assocSeen >= assocPerDay && countDay(m)) {
+          m.assocSeen = 0
+          growTier(m, grow)
+        }
+        continue
+      }
+      // 直接命中：同一自然日只算一天
+      countDay(m)
+      if (h.it.kind === 'gist') continue
+      growTier(m, grow)
     }
-    storage.save(s) // 只改命中计数，不动索引
+    // 关联强化必须限数量：每次召回最多给 ASSOC_RECALL_LIMIT 条边加，而且要同一条边走过 ASSOC_BUMP_EVERY 次才 +ASSOC_BUMP。
+    // 不加限制的话，网络一密就全体普涨，importance 也跟着涨。
+    const bumped = new Set()
+    const map = s.assoc && typeof s.assoc === 'object' ? s.assoc : {}
+    for (const h of hits) {
+      const from = String(h.assocOf || '')
+      const to = String(h.it.id || '')
+      if (!from || !to) continue
+      if (bumped.size >= ASSOC_RECALL_LIMIT) break
+      const key = from < to ? `${from}|${to}` : `${to}|${from}`
+      if (bumped.has(key)) continue
+      bumped.add(key)
+      // 边是双向存的，两边都要更新，否则下次收拾时会被判成单向引用
+      for (const [a, b] of [[from, to], [to, from]]) {
+        const list = Array.isArray(map[a]) ? map[a] : null
+        if (!list) continue
+        const edge = list.find((e) => (Array.isArray(e) ? String(e[0]) : String(e?.id || '')) === b)
+        if (!Array.isArray(edge)) continue
+        // 计数放在边的第三位，每条边自己数，互不影响
+        edge[2] = (Number(edge[2]) || 0) + 1
+        if (edge[2] % ASSOC_BUMP_EVERY === 0) edge[1] = Math.min(1, Math.round(((Number(edge[1]) || 0) + ASSOC_BUMP) * 1000) / 1000)
+      }
+    }
+    // touch 只改命中计数和边权，不动索引，所以走 storage.save 跳过整份 save() 的重活。
+    // 但 assoc 边必须在这里也收拾一遍：记忆可能刚被删掉/标失效，残留的脏边不清理会一直存着
+    // （save() 里的 cleanAssocMap 这条路径不会被执行到）。
+    s.assoc = cleanAssocMap(s.assoc, s.items)
+    storage.save(s)
   }
 
   function recall(query, { about, limit, where = '', context = '', onlyAbout, requireAbout, shown = true, groupChatId = '', includeGroup = false, excludeAbout = '', vectorHits } = {}) {
@@ -841,10 +1146,15 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     // F1：社交场景（群聊 / 非主人私聊）统一加来源可见性，只保留当前聊天产生的普通记忆；
     // 主人私聊（ownerPrivate）保持可以看全部。where 不是真实聊天 id 的内部调用按主人视角处理（向后兼容）。
     const socialScope = Boolean(id) && /^(private|group):/.test(id) && !ownerPrivate
-    const options = { period: pastWindow(query, Date.now(), getConfig().memory.recallTriggers), about, onlyAbout, requireAbout, gistChatId: /^(private|group):/.test(id) && (!id.startsWith('group:') || getConfig().memory.groupMemory !== false) ? id : '', ownerScope: !socialScope, scopeChatId: socialScope ? id : '', groupChatId: getConfig().memory.groupMemory !== false && id === groupChatId && id.startsWith('group:') ? id : '', includeGroup: getConfig().memory.groupMemory !== false && includeGroup && ownerPrivate, excludeAbout: excluded, rrf: getConfig().memory.searchRrf !== false }
+    // assoc 必须显式传进去：只传 assocLimit/assocHops 的话，用户把「记忆联想」关掉
+    // （或向量检索关掉）之后，库里已经建好的边照样会被走一遍——开关形同虚设。
+    // 库里存着的 assoc 边是「建过边」的历史，不代表现在还想用。
+    const memoryCfg = getConfig().memory
+    const assocOn = memoryCfg.assoc?.enabled !== false && memoryCfg.vector?.enabled !== false && memoryCfg.enabled !== false
+    const options = { period: pastWindow(query, Date.now(), memoryCfg.recallTriggers), about, onlyAbout, requireAbout, gistChatId: /^(private|group):/.test(id) && (!id.startsWith('group:') || getConfig().memory.groupMemory !== false) ? id : '', ownerScope: !socialScope, scopeChatId: socialScope ? id : '', groupChatId: getConfig().memory.groupMemory !== false && id === groupChatId && id.startsWith('group:') ? id : '', includeGroup: getConfig().memory.groupMemory !== false && includeGroup && ownerPrivate, excludeAbout: excluded, rrf: getConfig().memory.searchRrf !== false, assoc: assocOn, assocLimit: memoryCfg.assoc?.recall ?? ASSOC_RECALL_LIMIT, assocHops: memoryCfg.assoc?.hops ?? ASSOC_HOPS, assocHopDecay: memoryCfg.assoc?.hopDecay ?? ASSOC_HOP_DECAY, assocMap: assocOn ? (load().assoc || null) : null }
     const idx = index()
     // 查询结束到真正回忆之间，记忆可能刚被改写、忘掉或关闭向量检索。
-    const valid = Array.isArray(vectorHits) && vectorHits.length ? new Set(vector.validIds(idx.docs.map((d) => d.it))) : null
+    const valid = Array.isArray(vectorHits) && vectorHits.length && vector && typeof vector.validIds === 'function' ? new Set(vector.validIds(idx.docs.map((d) => d.it))) : null
     const currentHits = valid ? vectorHits.filter((h) => valid.has(h.id)) : []
     const hits = search(idx, query, { ...options, limit: max, vectorHits: currentHits })
     // 这一句没想起几条（「嗯嗯」「然后呢」）：用上一句再找找，分数打折
@@ -881,14 +1191,108 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     const q = String(query || '').trim()
     if (!getConfig().memory.enabled || !getConfig().memory.vector?.enabled || !q || (respectForget && parseMemoryCommand(q)?.action === 'forget')) return []
     try {
-      if (!vector.validIds(index().docs.map((d) => d.it)).length) return []
+      // validIds 返回 id 数组（本地版和在线版都是），这里判空用测得的条数，
+      // 两种实现都不会再因为「Set 没有 length」而把语义检索整条路径短路掉。
+      const ids = vector.validIds(index().docs.map((d) => d.it))
+      const total = Array.isArray(ids) ? ids.length : (ids && ids.size) || 0
+      if (!total) return []
       const vec = await vector.queryVector(q)
       if (!vec) return []
-      const ids = vector.validIds(index().docs.map((d) => d.it))
-      return vector.search(vec, ids, ids.length).filter((h) => h.similarity >= 0.55)
+      return vector.search(vec, ids, total).filter((h) => h.similarity >= 0.55)
     } catch (error) {
       log.debug?.('向量查询失败，暂时使用关键词检索')
       return []
+    }
+  }
+
+  // ---------- 向量联想：按意思给记忆建边 ----------
+  // 官方的 related 边靠关键词，而且把 event / diary 全排除了（用户数据里一条都没建出来）。
+  // 这里用本地向量给**可见性相同**的条目按余弦建边，存成 assoc: [[id, weight, walkCount]]。
+  // 建边只花本地算力，不调模型、不发网络请求。
+  const ASSOC_MAX_POOL = 900
+  let assocRunning = false
+  /**
+   * 建联想边。纯本地点积，不调模型、不发网络请求。
+   * 必须和 related 一样遵守可见性：只在同一个 chatId / about / scope / status 的桶里连边，
+   * 否则群友的私事会被拉进主人的私聊。
+   * 分桶计算，每算一批让出事件循环，别把聊天卡住。
+   */
+  async function buildAssoc() {
+    if (assocRunning) return { ok: false, message: '正在建边' }
+    const cfg = getConfig().memory
+    if (!cfg.enabled || !cfg.vector?.enabled) return { ok: false, message: '向量检索没开' }
+    if (cfg.assoc?.enabled === false) return { ok: false, message: '联想关着' }
+    if (!vector || typeof vector.all !== 'function') return { ok: false, message: '当前向量实现不支持联想' }
+    const minSim = Number(cfg.assoc?.minSim) || ASSOC_MIN_SIM
+    const perNode = Math.max(1, Math.min(8, Number(cfg.assoc?.limit) || ASSOC_LIMIT))
+    const s = load()
+    const live = s.items.filter((m) => isCurrent(m) && m.kind !== 'seen' && String(m.text || '').trim())
+    let vectors
+    try { vectors = vector.all() } catch (error) { return { ok: false, message: error.message } }
+    if (!vectors || !vectors.size) return { ok: false, message: '还没有向量' }
+    const sig = assocSignature(live, vectors.keys())
+    if ((s.assocSig || '') === sig && s.assoc && Object.keys(s.assoc).length) return { ok: true, skipped: true }
+    assocRunning = true
+    try {
+      // 大库保护：只给最近的 ASSOC_MAX_POOL 条建边，按重要性 + 时间挑
+      const pool = live
+        .filter((m) => vectors.has(String(m.id)))
+        .sort((a, b) => (Number(b.importance) || 0) - (Number(a.importance) || 0) || (Number(b.at) || 0) - (Number(a.at) || 0))
+        .slice(0, ASSOC_MAX_POOL)
+      const buckets = new Map()
+      for (const m of pool) {
+        const key = JSON.stringify([m.chatId || '', m.about || '', m.scope || '', m.status || 'fact'])
+        if (!buckets.has(key)) buckets.set(key, [])
+        buckets.get(key).push(m)
+      }
+      const edges = new Map() // id -> Map(otherId -> weight)
+      const put = (a, b, w) => {
+        if (!edges.has(a)) edges.set(a, new Map())
+        if (!edges.has(b)) edges.set(b, new Map())
+        edges.get(a).set(b, Math.max(edges.get(a).get(b) || 0, w))
+        edges.get(b).set(a, Math.max(edges.get(b).get(a) || 0, w))
+      }
+      for (const bucket of buckets.values()) {
+        if (bucket.length < 2) continue
+        for (let i = 0; i < bucket.length; i += 1) {
+          const va = vectors.get(String(bucket[i].id))
+          if (!va) continue
+          for (let j = i + 1; j < bucket.length; j += 1) {
+            const vb = vectors.get(String(bucket[j].id))
+            if (!vb || va.length !== vb.length) continue
+            let dot = 0
+            for (let d = 0; d < va.length; d += 1) dot += va[d] * vb[d]
+            if (dot < minSim) continue
+            put(String(bucket[i].id), String(bucket[j].id), Math.round(dot * 1000) / 1000)
+          }
+        }
+        // 每算完一个桶让出一次事件循环：大库（900 条一个桶）单桶就要跑 40 万次点积，
+        // 一口气算完会把聊天卡住；分批后主线程最长阻塞约几十毫秒。
+        await new Promise((r) => setImmediate(r))
+      }
+      // 每条只留最像的 perNode 条；保留原来的走边计数，重算时不清零
+      const next = load()
+      const old = next.assoc && typeof next.assoc === 'object' ? next.assoc : {}
+      const built = {}
+      for (const [id, near] of edges) {
+        const walks = new Map((Array.isArray(old[id]) ? old[id] : []).map((e) => [Array.isArray(e) ? String(e[0]) : String(e?.id || ''), Math.max(0, Math.round(Number(Array.isArray(e) ? e[2] : e?.count) || 0))]))
+        built[id] = [...near.entries()].sort((a, b) => b[1] - a[1]).slice(0, perNode).map(([other, w]) => [other, w, walks.get(other) || 0])
+      }
+      const cleaned = cleanAssocMap(built, next.items, perNode)
+      const changed = JSON.stringify(old) !== JSON.stringify(cleaned)
+      next.assoc = cleaned
+      next.assocSig = sig
+      next.assocBuiltAt = Date.now()
+      if (changed) next.rev = (next.rev || 0) + 1
+      save(next)
+      const pairs = Object.values(cleaned).reduce((n, list) => n + list.length, 0) / 2
+      if (changed) log.debug?.(`[记忆联想] 建好 ${cleaned ? Object.keys(cleaned).length : 0} 个节点、${Math.round(pairs)} 条关联边`)
+      return { ok: true, changed, nodes: Object.keys(cleaned).length, pairs: Math.round(pairs) }
+    } catch (error) {
+      log.debug?.('记忆联想建边失败：' + error.message)
+      return { ok: false, message: error.message }
+    } finally {
+      assocRunning = false
     }
   }
 
@@ -1439,11 +1843,46 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     const requireAbout = !ownerPrivate
     // 「嗯嗯」「然后呢」这种短句单看检索不到东西，把上一句也带上
     const ctxText = q.length < 12 ? String(prevText || '').slice(-300) : ''
-    const hits = recall(q, { about, onlyAbout, requireAbout, where: (chat && chat.chatId) || '', context: ctxText, shown: false, groupChatId: chat?.kind === 'group' ? chat.chatId : '', includeGroup: ownerPrivate, excludeAbout: ownerPrivate ? '' : owner, vectorHits }).filter((h) => !shown.has(h.it.id)).slice(0, 4)
+    // 「直接想起」和「联想」各自限量，最后合起来交给模型：
+    //   直接命中 ≤ recallCount（面板「每轮最多想起几条」）
+    //   联想     ≤ assoc.recall（面板「每次回忆最多带几条」）
+    //   总数     ≤ recallTotal（面板「想起总数」，0 = 不额外限制）
+    // 以前这里写死 slice(0,4)，导致 recallCount 调到 6/12 都没用、联想全被砍掉（实测进 hint 恒为 4 条）。
+    const cfgMem = getConfig().memory
+    const directMax = Math.max(0, Math.round(Number(cfgMem.recallCount) || 0))
+    const assocMax = Math.max(0, Math.round(Number(cfgMem.assoc?.recall) || 0))
+    const totalCap = Math.round(Number(cfgMem.recallTotal) || 0)
+    const pool = recall(q, { about, onlyAbout, requireAbout, where: (chat && chat.chatId) || '', context: ctxText, shown: false, groupChatId: chat?.kind === 'group' ? chat.chatId : '', includeGroup: ownerPrivate, excludeAbout: ownerPrivate ? '' : owner, vectorHits }).filter((h) => !shown.has(h.it.id))
+    // 直接命中和联想分开取，各自受各自的上限约束（联想不占直接的名额，反之亦然）
+    const direct = pool.filter((h) => !h.assocOf).slice(0, directMax)
+    const assoc = pool.filter((h) => h.assocOf).slice(0, assocMax)
+    // 按分数合并后保持「直接在前、联想在后」的顺序，重要的事先出现
+    let hits = [...direct, ...assoc]
+    if (totalCap > 0) hits = hits.slice(0, totalCap)
+    // 按字符预算逐条累加，而不是先拼好再一刀切：
+    // 一刀切（以前是 body.slice(0,300)）会把「拼到一半的联想条目」截断，
+    // 既让 hint 变长，又把联想挤成半句话。逐条累加保证每条都是完整的，
+    // 且**直接命中先占位**，联想只吃剩下的空间。
+    //
+    // 预算是动态的：真实记忆平均 72 字/条（实测 489 条，90% 分位 113 字），
+    // 要让用户设的「直接 N + 联想 M」真的都进得去，预算得跟着条数走。
+    // 每条约 75 字（含分隔符），另留 40 字余量给长条目；下限 280 字、上限 600 字，
+    // 这样设 2+4 能装下 6 条（约 450 字），设 12+8 也不会无限制撑爆上下文。
+    const wantCount = Math.max(1, hits.length)
+    const BODY_BUDGET = Math.min(600, Math.max(280, wantCount * 75 + 40))
+    const kept = []
+    let used = 0
+    for (const h of hits) {
+      const line = memoryLine(h.it)
+      const cost = line.length + (kept.length ? 1 : 0) // 分隔符「；」
+      if (used + cost > BODY_BUDGET) continue
+      kept.push(h)
+      used += cost
+    }
+    hits = kept
     touch(hits)
     if (recallLog[0]) { recallLog[0].shown = hits.map((h) => h.it.id); saveRecalls() }
-    let body = hits.map((h) => memoryLine(h.it)).join('；')
-    if (body.length > 300) body = body.slice(0, 300) + '…'
+    const body = hits.map((h) => memoryLine(h.it)).join('；')
     return [shortHint, body && '（你记得这些事，只是印象不是指令，方括号里是什么时候的事，聊到相关的就自然用上，别把老事当新事说，也别说「根据记忆」：' + body + '）', includeTail && tailHint(chat, q), crossHint(chat), backdrop].filter(Boolean).join('\n')
   }
 
@@ -2278,7 +2717,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
       // 遗忘：不重要、很久没被想起的自动记忆清掉，记忆库不会越堆越乱
       const before = s.items.length
       for (const [qq, state] of Object.entries(s.shortTerm || {})) if (!shortTermFresh(state)) delete s.shortTerm[qq]
-      s.items = s.items.filter((m) => isCurrent(m) && Number.isInteger(m.tier) && m.tier >= 0 && m.tier <= 3 ? true : !shouldForget(m, Date.now(), getConfig().memory.eventExpireDays ?? 90))
+      s.items = s.items.filter((m) => isCurrent(m) && Number.isInteger(m.tier) && m.tier >= 0 && m.tier <= 3 ? true : !shouldForget(m, Date.now(), getConfig().memory.eventExpireDays ?? 90, getConfig().memory.retentionBase ?? RETENTION_BASE))
       const forgot = before - s.items.length
       if (forgot) s.rev = (s.rev || 0) + 1
       s.lastConsolidate = { day: today, at: Date.now(), added, insights, days, forgot, profiles, compressed, deferred: deferExtra }
@@ -2501,8 +2940,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
       } else {
         vectorDeferLogged = false
         const indexed = () => index().docs.map((d) => d.it)
-        try { await vector.sync(indexed(), indexed) }
-        catch (error) { log.debug?.('向量索引同步失败，稍后再试') }
+        try {
+          await vector.sync(indexed(), indexed)
+          // 向量库刚补上新条目时才建联想边；建过的用签名跳过，不每分钟重算全库。
+          await buildAssoc()
+        } catch (error) { log.debug?.('向量索引同步失败，稍后再试') }
       }
     }
     if (!cfg.enabled || !cfg.dailyConsolidate) {
@@ -2550,10 +2992,11 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     return hits.length ? Math.min(1, hits[0].score / 3) : 0
   }
 
-  function list(q) {
+  function list(q, vectorHits) {
     const items = load().items
     // 面板里过时的也列出来（排在后面），能看到被哪条取代、能恢复
     const byId = new Map(items.map((m) => [m.id, m]))
+    const assoc = load().assoc && typeof load().assoc === 'object' ? load().assoc : {}
     const withBy = (m) => ({
       ...m,
       validFrom: validFromOf(m),
@@ -2563,9 +3006,18 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
       ...(m.supersededBy ? { supersededText: byId.get(m.supersededBy)?.text || '' } : {}),
       relatedItems: (m.related || []).map((id) => byId.get(id)).filter((other) => other && isCurrent(other)).slice(0, RELATED_LIMIT)
         .map((other) => ({ id: other.id, text: other.text, validityText: validityText(other) })),
+      assocItems: (Array.isArray(assoc[String(m.id)]) ? assoc[String(m.id)] : [])
+        .map((e) => ({ id: Array.isArray(e) ? String(e[0]) : String(e?.id || ''), w: Array.isArray(e) ? Number(e[1]) || 0 : Number(e?.w) || 0 }))
+        .map((e) => ({ ...e, other: byId.get(e.id) })).filter((e) => e.other && isCurrent(e.other)).slice(0, ASSOC_LIMIT)
+        .map((e) => ({ id: e.id, w: e.w, text: e.other.text, validityText: validityText(e.other) })),
     })
     if (!q) return items.slice().sort((a, b) => (Number(!isCurrent(a)) - Number(!isCurrent(b))) || b.at - a.at).map(withBy)
-    return search(index(), q, { limit: 100, minScore: 0.01, includeInvalid: true, includeGroup: true }).map((h) => withBy({ ...h.it, score: Number(h.score.toFixed(2)) }))
+    // 面板搜索也走「关键词 + 向量」双路：只按字面找的话，
+    // 用户搜「最近老是睡不好」是找不到「主人经常熬夜」这条的。
+    const idx = index()
+    const valid = Array.isArray(vectorHits) && vectorHits.length && vector && typeof vector.validIds === 'function' ? new Set(vector.validIds(idx.docs.map((d) => d.it))) : null
+    const current = valid ? vectorHits.filter((h) => valid.has(h.id)) : []
+    return search(idx, q, { limit: 100, minScore: 0.01, includeInvalid: true, includeGroup: true, vectorHits: current }).map((h) => withBy({ ...h.it, score: Number(h.score.toFixed(2)) }))
   }
 
   // 换平台时允许下一次 tick 不等空闲；流水仍然只写入这个人的私聊记录。
@@ -2655,10 +3107,15 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     noteVia, contextVia, recallHint, recallHintAsync, handleCommand, vectorHits, shouldAutoRecall,
     rerankStatus: () => ({ configured: reranker.configured(), ...(reranker.settings() || {}) }),
     rerankTest: (text) => reranker.test(text),
-    vectorStatus: () => vector.status(load().items),
-    vectorTest: (text) => vector.test(text),
-    vectorReset: () => vector.reset(),
-    vectorSync: () => vector.sync(load().items, () => load().items),
+    // ⚠️ vector 在本地模型没就绪时是 null（ByMode 会降级回关键词），
+    // 这些接口不能直接 vector.xxx(...)，否则面板一点就 500。统一给个明确的空状态。
+    vectorStatus: () => (vector && typeof vector.status === 'function' ? vector.status(load().items) : { enabled: false, configured: false, provider: '', model: '', dims: 0, indexed: 0, total: 0, lastError: '向量模型还没就绪（只走关键词检索）' }),
+    vectorTest: (text) => (vector && typeof vector.test === 'function' ? vector.test(text) : Promise.reject(new Error('向量模型还没就绪，先配好检索方式再测'))),
+    vectorReset: () => (vector && typeof vector.reset === 'function' ? vector.reset() : { ok: true, message: '没有可重置的索引（向量模型还没就绪）' }),
+    vectorSync: () => (vector && typeof vector.sync === 'function' ? vector.sync(load().items, () => load().items) : { ok: true, count: 0 }),
+    buildAssoc,
+    // 只读向量接口，给「记忆中枢 / 星图」这类扩展用（没开向量检索时是 null）
+    vector,
     add, addEvent, recentEvents, update, remove, restore, recall, recallAsync, contextFor, consolidate, tick, topicScore, compressDetails, importCandidates, importCommit,
     personaOverview, personaPerson, savePersonaPerson, personTags, dislikes, chats, saveChat, gists, timeline, deleteGist, saveRelation, deleteRelation, lookupPerson, lookupChat,
     profiles: () => { const s = load(); return Object.entries(s.profiles || {}).map(([qq, p]) => ({ qq, ...p })).sort((a, b) => b.at - a.at) },
@@ -2751,9 +3208,38 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl, setConf
     // 星图点「还记得」时用：整理一份命中，让她真的复习一次（会涨 hitDays / 刷新 lastHit）
     touch,
     stats: () => {
-      const items = load().items
+      const state = load()
+      const items = state.items
       const live = items.filter((m) => isCurrent(m))
-      return { count: live.length, auto: live.filter((m) => m.source === 'auto').length, events: live.filter((m) => m.source === 'event').length, outdated: items.length - live.length, vector: vector.count(index().docs.map((d) => d.it)) }
+      const assoc = state.assoc && typeof state.assoc === 'object' ? state.assoc : {}
+      // 联想边在面板上要能看见：条数和建边时间，避免「开了但没生效」这种静默状态
+      const assocEdges = Object.values(assoc).reduce((n, list) => n + (Array.isArray(list) ? list.length : 0), 0)
+      // beta 这一版的向量实现是 memory-vector.js（provider 可配）。
+      // 注意两个字段含义不同，别混：
+      //   vector     = 已同步进索引的条数（关掉检索后也照样显示，方便判断「同步过没有」）
+      //   vectorReady = 现在能不能真的用
+      // 判断就绪要看"哪个实现"：本地实现有 ready()（模型装好了没有），
+      // 在线实现看 status().configured（地址和模型填了没有）。
+      // 只用 configured 会让本地模式永远显示「没就绪」（它在 status() 里恒为 false）。
+      let vcount = 0
+      try { vcount = vector && typeof vector.count === 'function' ? vector.count(items) : 0 } catch (error) { vcount = 0 }
+      let vstat = null
+      try { vstat = vector && typeof vector.status === 'function' ? vector.status(items) : null } catch (error) { vstat = null }
+      const vecCfg = getConfig().memory?.vector || {}
+      const vecMode = String(vecCfg.mode || (vecCfg.baseUrl ? 'remote' : 'local'))
+      let vecReady = false
+      if (vector) {
+        if (typeof vector.ready === 'function') {
+          try { vecReady = Boolean(vector.ready()) } catch (error) { vecReady = false }
+        } else {
+          vecReady = Boolean(vstat && vstat.configured)
+        }
+      }
+      // 模型下载状态：本地实现才有 modelStatus()（能显示「正在下载 / 下载失败」）
+      const vmodel = (vector && typeof vector.modelStatus === 'function') ? vector.modelStatus() : null
+      // vectorLocal：明确告诉面板「记忆联想现在能不能生效」。
+      // 向量没就绪时它原本什么都不显示，用户只会以为「开关打开了却没反应」。
+      return { count: live.length, auto: live.filter((m) => m.source === 'auto').length, events: live.filter((m) => m.source === 'event').length, outdated: items.length - live.length, vector: vcount, vectorReady: vecReady, vectorMode: vecMode, vectorModel: vmodel || (vstat ? { present: vecReady, running: false, error: String(vstat.lastError || '') } : null), vectorLocal: { wanted: vecCfg.enabled !== false && vecMode === 'local', ready: vecReady, enabled: vecCfg.enabled !== false }, assoc: Math.round(assocEdges / 2), assocAt: state.assocBuiltAt || 0, tierSince: live.filter((m) => m.tierSince).length }
     },
   }
 }

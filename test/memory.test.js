@@ -254,7 +254,14 @@ test('相关记忆提示有长度上限（#79：上下文增长优化）', () =>
   for (let i = 0; i < 20; i++) mem.add({ text: '测试记忆第' + i + '条，内容是阿花喜欢的东西和周末计划', about: '30000003', aboutName: '阿花', importance: 0.5, source: 'tool', chatId: 'group:555' })
   hubState.speakers = ['30000003']
   const hint = mem.recallHint({ kind: 'group', groupId: '555', chatId: 'group:555' }, '阿花喜欢什么 周末计划')
-  assert.ok(hint.length > 0 && hint.length <= 350, 'hint 长度 ' + hint.length)
+  // 上限是**动态预算**：条数 × 75 字（+40 余量），夹在 280~600 字之间，外加 56 字引导语
+  // 和 50 字余量。默认「直接 6 + 联想 3」时最坏约 600+56+50 字。
+  // 关键意图不变：**必须有上限**，不能因为条数可调就无限制撑爆上下文。
+  const bodyCap = 600
+  assert.ok(hint.length > 0 && hint.length <= bodyCap + 120, 'hint 长度 ' + hint.length)
+  // 真的按条数增长，而不是永远只有 4 条
+  const body = hint.slice(hint.indexOf('：') + 1, hint.lastIndexOf('）'))
+  assert.ok(body.split('；').length >= 2, '至少给出多条')
   hubState.speakers = []
 })
 

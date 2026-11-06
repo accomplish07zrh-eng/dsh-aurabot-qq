@@ -1,6 +1,10 @@
-// 实验性语义索引：向量存在本机，文字只发给用户配置的 embedding 服务。
+// 实验性语义索引：两种模式
+//   local  —— 用本机 bge-small 小模型，纯离线，不联网（默认推荐）
+//   remote —— 把文字发给用户配置的兼容 OpenAI 的 embedding 服务
+// 向量本身都只存在本机；开关默认关闭，用户主动打开才生效。
 import { createHash } from 'node:crypto'
 import { dataDir, readJson, writeJson } from '../core/store.js'
+import { createLocalVectorIndex } from './memory-vector-local.js'
 
 // 一批多少条：方舟等服务的单次 input 上限比 OpenAI 小，默认 10 最稳；面板可调。
 const DEFAULT_BATCH = 10
@@ -336,4 +340,39 @@ export function createVectorIndex({ getConfig, log, fetchImpl = globalThis.fetch
   }
 
   return { embed, queryVector, search, sync, validIds, count, status, test, reset }
+}
+
+/**
+ * 按配置挑一个向量实现，没开就返回 null（上层自动退回纯关键词）。
+ *
+ * 模式判定（要兼容老配置）：
+ *   mode === 'remote'            → 在线服务
+ *   mode === 'local'             → 本地模型
+ *   mode 没写、但填了 baseUrl     → 老配置，按原来的在线服务跑（不然升级后向量直接断）
+ *   mode 没写、也没填 baseUrl     → 新装用户，用本地模型
+ */
+export function createVectorIndexByMode({ getConfig, log, fetchImpl = globalThis.fetch }) {
+  const memory = getConfig()?.memory
+  const c = memory?.vector
+  if (memory?.enabled === false || c?.enabled !== true) return null
+  const hasBase = Boolean(String(c.baseUrl || '').trim())
+  const mode = c.mode === 'remote' || c.mode === 'local'
+    ? c.mode
+    : (hasBase ? 'remote' : 'local')
+  if (mode === 'local') {
+    try {
+      const idx = createLocalVectorIndex({ dataDir: dataDir(), log })
+      if (!idx.ready || !idx.ready()) {
+        // 本地模型还没装好时，如果老配置里有在线服务，就先用它，别把用户的向量检索弄没
+        if (hasBase) return createVectorIndex({ getConfig, log, fetchImpl })
+        log?.debug?.('本地向量不可用：' + (idx.error || '模型未就绪') + '，这次只走关键词')
+        return null
+      }
+      return idx
+    } catch (error) {
+      log?.warn?.('本地向量初始化失败，退回关键词检索：' + error.message)
+      return hasBase ? createVectorIndex({ getConfig, log, fetchImpl }) : null
+    }
+  }
+  return createVectorIndex({ getConfig, log, fetchImpl })
 }

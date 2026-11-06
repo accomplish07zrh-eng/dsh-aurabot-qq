@@ -97,6 +97,29 @@ export default {
     })
 
     api.route('/memories', async (req) => ({ ok: true, items: memory.list(http.query(req).q || '').slice(0, 300), stats: memory.stats() }))
+    api.route('/memory/assoc/preview', async (req) => {
+      const q = String(http.query(req).q || '').trim()
+      if (!q) return { ok: false, message: '给个查询词' }
+      const owner = String(api.config().ownerQQ || '')
+      const chatId = owner ? `private:${owner}` : ''
+      let vec = []
+      try { vec = await memory.vectorHits(q) } catch (error) {}
+      // shown: false —— 预览不能算「真想起过」，否则你点几下预览就把记忆加深了、还乱涨 critical 计数
+      const hits = memory.recall(q, { where: chatId, about: owner, limit: 6, groupChatId: '', vectorHits: vec, shown: false })
+      const rows = hits.map((h) => ({
+        id: h.it.id,
+        text: (h.it.text || '').slice(0, 80),
+        score: Math.round(h.score * 100) / 100,
+        hop: h.assocHop ?? 0,
+        via: h.assocOf || '',
+        why: (h.why || []).join('　'),
+      }))
+      const ap = api.config().memory.assoc || {}
+      return { ok: true, query: q, hops: ap.hops ?? 2, recall: ap.recall ?? 3, items: rows,
+        counts: { direct: rows.filter((r) => !r.hop).length, hop1: rows.filter((r) => r.hop === 1).length, hop2: rows.filter((r) => r.hop === 2).length, hop3: rows.filter((r) => r.hop === 3).length } }
+    })
+    // 面板「立即重建联想」：平时 tick 会自动建，这里给手动排查用
+    api.route('/memory/assoc/rebuild', async () => memory.buildAssoc())
     api.route('/memory/add', async (req) => {
       const b = await http.body(req)
       return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil })
