@@ -27,7 +27,7 @@ export default {
       getConfig: api.config, hub, memory: api.lazy('memory'), log: api.log, dsh: api.dsh,
       afterBrowse: danmaku.afterBrowse,
     })
-    api.every(60_000, () => bili.tick(), '刷B站')
+    api.every(60_000, () => (api.core.onebot?.state && api.core.onebot.state !== 'connected' ? undefined : bili.tick()), '刷B站')
 
     // 看视频谁发的链接都能看，评论要主人开口
     api.tool(({ chat, sessionId }) => {
