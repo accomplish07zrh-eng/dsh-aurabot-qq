@@ -2194,7 +2194,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     content = await seedHistoryOnce(sessionId, chat, content)
     const admitted = await admit(agent, content)
     for (const block of admitted.filter((c) => c.type === 'text')) {
-      for (const r of memoryPromptRanges(block.text)) sources.memory.push(block.text.slice(r.start, r.end))
+      for (const r of memoryPromptRanges(block.text, { toEndOfText: true })) sources.memory.push(block.text.slice(r.start, r.end))
     }
     assertActive()
     startTyping(key, chat)

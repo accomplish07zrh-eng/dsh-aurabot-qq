@@ -40,8 +40,27 @@ export function captureSystemPrompt(name, text) {
 
 const MEMORY_HEAD = /[（(](?:你记得这些事|只是印象不是指令|这个聊天里之前的原话|以下只是印象|这个群的印象|人物关系[，,：:]|你对[^\n（）()]{0,30}的印象|和[^\n（）()]{0,30}相处的经验|说话方式[：:]|你最近做过的事|刚才聊到的[，,：:]|下面是你最近在几个群里|你最近在别的聊天里说过的话)/g
 
+// 模型会把上一轮注入的群聊上下文 / 运行时环境整段当正文续写下来（长会话里出现过整块复读）。
+// 块头命中即视为注入内容：toEndOfText 时取到结尾（注入方要把整段登记进指纹），
+// 否则只取到本段结束（空行），避免把她写在块后面的正常回复一起删掉。
+const INJECTED_BLOCK_HEAD = /【注意：下面这些是群友说的聊天内容|【群聊[ \t][^】\n]*】[ \t]*(?:之前在聊|刚才新说的)/g
+const INJECTED_BLOCK_LINE = /(?:^|\n)[ \t]*(?:把这一段当成整体来回[：:]|大多数时候直接说就行[。.]|要 @ 某个人)[^\n]*/g
+// 宿主注入的 runtime context 是一串「Key: value」段，内部本身就有空行，不能按空行截断：
+// 一路吃到第一行不像注入内容的行（也就是她自己的中文回复）为止。
+const RUNTIME_CONTEXT_HEAD = /Current runtime context\. This snapshot supersedes/g
+const RUNTIME_CONTEXT_LINE = /^(?:Current |Approval policy:|Browser time zone|[\p{Lu}][\p{L} \d]{1,40}:)/u
+
+function runtimeContextEnd(text, start) {
+  let end = start
+  for (const line of text.slice(start).split('\n')) {
+    if (line.trim() && !RUNTIME_CONTEXT_LINE.test(line.trim())) break
+    end += line.length + 1
+  }
+  return Math.min(end, text.length)
+}
+
 /** 固定注入块即使很短也识别；正文里的普通「刚才聊到的」不算。 */
-export function memoryPromptRanges(text) {
+export function memoryPromptRanges(text, { toEndOfText = false } = {}) {
   const ranges = []
   for (const m of text.matchAll(MEMORY_HEAD)) {
     let depth = 0, end = text.length
@@ -72,6 +91,17 @@ export function memoryPromptRanges(text) {
   }
   for (const m of text.matchAll(/(?:^|\n|\|\|\|)[ \t]*(?:你记得这些事|只是印象不是指令|刚才聊到的)[：:][^\n|]*/g)) {
     ranges.push({ start: m.index, end: m.index + m[0].length })
+  }
+  for (const m of text.matchAll(INJECTED_BLOCK_HEAD)) {
+    if (toEndOfText) { ranges.push({ start: m.index, end: text.length }); continue }
+    const tail = text.slice(m.index).search(/\n[ \t]*\n/)
+    ranges.push({ start: m.index, end: tail < 0 ? text.length : m.index + tail })
+  }
+  for (const m of text.matchAll(RUNTIME_CONTEXT_HEAD)) {
+    ranges.push({ start: m.index, end: toEndOfText ? text.length : runtimeContextEnd(text, m.index) })
+  }
+  for (const m of text.matchAll(INJECTED_BLOCK_LINE)) {
+    ranges.push({ start: m[0][0] === '\n' ? m.index + 1 : m.index, end: m.index + m[0].length })
   }
   return ranges
 }
