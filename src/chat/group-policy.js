@@ -71,8 +71,8 @@ export function decideGroupReply(p) {
   const atOther = !p.mentioned && p.atOthers === true
   const hit = atOther ? undefined : (pol.wakeWords || []).find((w) => w && text.includes(w))
   // 她刚说完，别人追一句「人呢」「不说话了」也算在问她。要她这几分钟确实说过话（burst > 0），
-  // 且这一条之前最近一条不是她——群里 A/B 正常聊天、B 回 A 一句「人呢」时别抢答
-  const shortAsk = Boolean(burst > 0 && !p.lastIsBot && !atOther && !p.atOthersAny && String(text).trim().length <= 12 &&
+  // 且这一条之前最近一条就是她——群里 A/B 正常聊天、B 回 A 一句「人呢」时别抢答
+  const shortAsk = Boolean(burst > 0 && p.lastIsBot && !atOther && !p.atOthersAny && String(text).trim().length <= 12 &&
     /[？?]|不说话了|人呢|跑了|去哪|怎么了|在吗|说话/.test(text))
   // 明确被叫到（@、引用、叫名字、被追问）不算她主动接话，刹车不拦；刹车只拦她自己想插话
   const calling = Boolean(p.mentioned || p.repliedToBot || hit || shortAsk)
