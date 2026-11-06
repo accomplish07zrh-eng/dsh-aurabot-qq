@@ -916,10 +916,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex' }, h('b', null, '已更新到 v' + st.version), h('div', { className: 'ab-spacer' }), h(Btn, { small: true, kind: 'ghost', onClick: dismiss }, '知道了')),
           h('div', { style: { whiteSpace: 'pre-wrap', marginTop: 6 } }, notes)) : null,
         upd && upd.newer ? h('div', { className: 'ab-note warn' },
-          h('div', null, h('b', null, '有新版本 v' + upd.latest), '（现在是 v' + upd.current + '）。在 PowerShell 里运行下面这行，然后重启 DSH；设置、人格、记忆都会保留。'),
+          h('div', null, h('b', null, '有新版本 v' + upd.latest), '（现在是 v' + upd.current + '）。',
+            upd.platformLabel ? '当前环境：' + upd.platformLabel + (upd.modeLabel ? ' · ' + upd.modeLabel : '') + '，在对应的终端里运行下面这行，然后重启 DSH；设置、人格、记忆都会保留。' : '在终端里运行下面这行，然后重启 DSH；设置、人格、记忆都会保留。'),
           h('div', { className: 'ab-flex', style: { marginTop: 6 } },
             h('code', { style: { flex: '1 1 300px', fontSize: 11.5, wordBreak: 'break-all' } }, upd.command),
-            h(Btn, { small: true, onClick: () => { try { navigator.clipboard.writeText(upd.command); toast('复制好了', 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } } }, '复制'))) : null)
+            h(Btn, { small: true, onClick: () => { try { navigator.clipboard.writeText(upd.command); toast('复制好了', 'ok') } catch (e) { toast('复制失败，手动选中复制吧', 'err') } } }, '复制')),
+          h('div', { className: 'ab-flex', style: { marginTop: 6, gap: 12, flexWrap: 'wrap' } },
+            h('a', { href: upd.releaseUrl || 'https://github.com/aureth-labs/dsh-aurabot-qq/releases', target: '_blank', rel: 'noreferrer' }, '打开发布页 ↗'),
+            upd.tagUrl && upd.tagUrl !== upd.releaseUrl ? h('a', { href: upd.tagUrl, target: '_blank', rel: 'noreferrer' }, 'v' + upd.latest + ' 更新说明 ↗') : null)) : null)
     }
 
     function Overview({ st, toast, go }) {
