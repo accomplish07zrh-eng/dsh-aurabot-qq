@@ -27,7 +27,7 @@ import { mimeOf } from './chat/inbound.js'
 import { buildFaceIndex } from './chat/faces.js'
 import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
-import { createUpdateChecker, changelogSection } from './core/update.js'
+import { createUpdateChecker, changelogSection, hostEnv, updatePlan, repoOf } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
@@ -1188,7 +1188,14 @@ export function apply(ctx) {
   route('/commands', async () => ({ ok: true, list: commandList(mods.commands()) }))
   // 更新：检查 GitHub 上有没有新版本；这次更新了什么
   const checkUpdate = createUpdateChecker({ pkg: PKG, log, unstable: () => getConfig().update.unstable })
-  route('/update/check', async (req) => checkUpdate({ force: query(req).force === '1' }))
+  // 宿主环境（Windows/macOS/Linux + 桌面版/网页版）决定更新命令怎么写、发布页指向哪
+  const updateEnv = hostEnv()
+  const updatePlanOf = (result) => updatePlan({ repo: result.repo || repoOf(PKG), channel: result.channel || 'main', latest: result.latest || '', env: updateEnv })
+  route('/update/check', async (req) => {
+    const r = await checkUpdate({ force: query(req).force === '1' })
+    if (!r || !r.ok) return { ...r, env: updateEnv }
+    return { ...r, ...updatePlanOf(r), env: updateEnv }
+  })
   route('/changelog', async () => {
     let text = ''
     try { text = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8') } catch (error) {}

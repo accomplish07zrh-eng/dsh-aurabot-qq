@@ -1,6 +1,10 @@
 // 检查更新：读 GitHub 上主分支的 package.json，比版本号。结果缓存 6 小时。
 
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+
 const STAGE = { alpha: 1, beta: 2, rc: 3 }
+const PLATFORM_LABEL = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }
 
 /** 比较 x.y.z、x.y.z-beta.n、x.y.z-rc.n：a > b 返回正数；同一版本号里 beta < rc < 正式版。 */
 export function compareVersions(a, b) {
@@ -29,9 +33,64 @@ export function repoOf(pkg) {
   return m ? `${m[1]}/${m[2]}` : ''
 }
 
-/** 更新命令：把安装命令再跑一次就会拉到最新版。 */
-export function updateCommand(repo, channel = 'main') {
-  return `& "$env:LOCALAPPDATA\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd" plugin --profile desktop add github:${repo}${channel === 'main' ? '' : '#' + channel}`
+/** 找 dsh CLI：桌面版优先用安装目录里的 cli，找不到就用 PATH 里的 dsh。 */
+export function findCli({ platform = process.platform, exePath = process.execPath, resourcesPath = process.resourcesPath || '', env = process.env } = {}) {
+  const bin = platform === 'win32' ? 'dsh.cmd' : 'dsh'
+  const roots = []
+  if (resourcesPath) roots.push(resourcesPath)
+  if (exePath) {
+    const dir = dirname(exePath)
+    roots.push(platform === 'darwin' ? join(dir, '..', 'Resources') : join(dir, 'resources'))
+  }
+  if (platform === 'win32' && env.LOCALAPPDATA) roots.push(join(env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources'))
+  for (const root of roots) {
+    const p = join(root, 'runtime', 'cli', 'bin', bin)
+    if (existsSync(p)) return { cli: p, mode: 'desktop', resourcesPath: root }
+  }
+  return { cli: 'dsh', mode: 'web', resourcesPath: '' }
+}
+
+/** 宿主环境：面板据此决定命令怎么写、显示哪个平台标签。 */
+export function hostEnv(opts = {}) {
+  const platform = opts.platform || process.platform
+  const profile = opts.profile || process.env.DSH_PROFILE || 'desktop'
+  const found = opts.cli ? { cli: opts.cli, mode: opts.mode || 'custom', resourcesPath: opts.resourcesPath || '' } : findCli({ ...opts, platform })
+  return {
+    platform,
+    label: PLATFORM_LABEL[platform] || platform,
+    mode: found.mode,
+    modeLabel: found.mode === 'desktop' ? '桌面版' : found.mode === 'web' ? '网页版' : '自定义',
+    profile,
+    cli: found.cli,
+    resourcesPath: found.resourcesPath,
+    shell: platform === 'win32' ? 'powershell' : 'shell',
+  }
+}
+
+/** 更新命令：按平台/形态给对应写法。 */
+export function updateCommand(repo, channel = 'main', opts = {}) {
+  const env = opts.env || hostEnv({ platform: opts.platform, cli: opts.cli, profile: opts.profile })
+  const platform = env.platform || process.platform
+  const profile = env.profile || 'desktop'
+  const cli = env.cli || (platform === 'win32' ? 'dsh.cmd' : 'dsh')
+  const arg = `plugin --profile ${profile} add github:${repo}${channel === 'main' ? '' : '#' + channel}`
+  return platform === 'win32' ? `& "${cli}" ${arg}` : `"${cli}" ${arg}`
+}
+
+/** 更新计划：链接、命令、环境标签一次给全。 */
+export function updatePlan({ repo, channel = 'main', latest = '', env = hostEnv() } = {}) {
+  return {
+    platform: env.platform,
+    platformLabel: env.label,
+    mode: env.mode,
+    modeLabel: env.modeLabel,
+    profile: env.profile,
+    shell: env.shell,
+    cli: env.cli,
+    command: updateCommand(repo, channel, { env }),
+    releaseUrl: `https://github.com/${repo}/releases`,
+    tagUrl: latest ? `https://github.com/${repo}/releases/tag/v${latest}` : `https://github.com/${repo}/releases`,
+  }
 }
 
 export function createUpdateChecker({ pkg, log, fetchImpl = fetch, unstable = () => null }) {
