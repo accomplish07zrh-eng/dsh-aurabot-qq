@@ -31,7 +31,7 @@ import { createUpdateChecker, changelogSection } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
 import { createModules, API_VERSION } from './core/modules.js'
-import { createCommunity, REGISTRY_URL } from './core/community.js'
+import { createCommunity, REGISTRY_URL, GITEE_MIRROR } from './core/community.js'
 import { createApprovalRelay } from './security/approval.js'
 import { captureSystemPrompt } from './security/leak-guard.js'
 import { applyPendingRestore, cancelRestore, createBackup, listBackups, pendingModules, pendingRestore, saveUpload, setPendingModules, stageRestore } from './core/backup.js'
@@ -1430,7 +1430,16 @@ export function apply(ctx) {
       log.info(`面板已保存模块市场地址｜${u || '（留空，回到内置 GitHub 索引）'}`)
       return { ok: true, registryUrl: community.registryUrl(), message: u ? '已换成自定义模块市场地址' : '已恢复内置 GitHub 索引地址' }
     }
-    return { ok: true, registryUrl: community.registryUrl(), default: REGISTRY_URL }
+    return {
+      ok: true,
+      registryUrl: community.registryUrl(),
+      default: REGISTRY_URL,
+      sources: [
+        { id: 'github', label: 'GitHub 官方源', url: REGISTRY_URL, note: '默认；海外直连，国内偶尔慢' },
+        { id: 'gitee', label: 'Gitee 官方镜像', url: GITEE_MIRROR, note: '国内直连更稳；每天跟 GitHub 的 registry 分支同步一次' },
+        { id: 'custom', label: '自定义', url: '', note: '自建索引 / ghproxy 中转 / 内网部署' },
+      ],
+    }
   })
   route('/modules/reload', async (req) => {
     const id = String((await readBody(req)).id || '')

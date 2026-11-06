@@ -3892,12 +3892,40 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）。拉取当前值与默认值，改完可保存或恢复内置。
       const [regUrl, setRegUrl] = useState('')
       const [regDef, setRegDef] = useState('')
-      const loadReg = () => get('/panel/market/registry').then((r) => { if (r.ok) { setRegUrl(r.registryUrl || ''); setRegDef(r.default || '') } })
+      const [regSources, setRegSources] = useState([])
+      const [regMode, setRegMode] = useState('')
+      const loadReg = () => get('/panel/market/registry').then((r) => {
+        if (!r.ok) return
+        setRegUrl(r.registryUrl || '')
+        setRegDef(r.default || '')
+        setRegMode('')
+        if (Array.isArray(r.sources) && r.sources.length) setRegSources(r.sources)
+      })
       useEffect(() => { loadReg() }, [])
-      const saveReg = async () => {
+      const REG_SOURCE_FALLBACK = [
+        { id: 'github', label: 'GitHub 官方源', url: 'https://raw.githubusercontent.com/aureth-labs/dsh-aurabot-qq-mods/registry/index.json' },
+        { id: 'gitee', label: 'Gitee 官方镜像', url: 'https://raw.giteeusercontent.com/aureth-labs/dsh-aurabot-qq-mods/raw/registry/index.json' },
+        { id: 'custom', label: '自定义', url: '' },
+      ]
+      const regList = regSources.length ? regSources : REG_SOURCE_FALLBACK
+      const regClean = String(regUrl || '').trim().replace(/\/+$/, '')
+      const regMatched = (regList.find((s) => s.id !== 'custom' && s.url && s.url.replace(/\/+$/, '') === regClean) || {}).id
+      const regPreset = regMode || regMatched || (regClean ? 'custom' : 'github')
+      const pickSource = (id) => {
+        const s = regList.find((x) => x.id === id)
+        setRegMode(id)
+        setRegUrl(s && s.url ? s.url : '')
+      }
+      const regHint = regPreset === 'gitee'
+        ? 'Gitee 官方镜像：国内直连更稳，内容每天从 GitHub 的 registry 分支同步一次。'
+        : regPreset === 'custom'
+          ? '自定义地址：填指向 index.json 的完整 http(s) 链接；留空等于用 GitHub 官方源。'
+          : 'GitHub 官方源：默认地址，国内访问 raw.githubusercontent.com 可能不稳。'
+      const saveReg = async (override) => {
         setBusy('reg')
         try {
-          const r = await post('/panel/market/registry', { registryUrl: String(regUrl).trim() })
+          const value = typeof override === 'string' ? override : String(regUrl).trim()
+          const r = await post('/panel/market/registry', { registryUrl: value })
           if (!r.ok) toast(r.message || '没成功', 'err')
           else { toast(r.message || '保存好了', 'ok'); loadReg(); load(true) }
         } catch (e) { toast(e.message) } finally { setBusy('') }
@@ -3990,12 +4018,15 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           cats.length > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 10 } }, [''].concat(cats).map((c) => h('button', { key: c || 'any', type: 'button', className: cx('ab-chip', cat === c && 'on'), onClick: () => setCat(c) }, c ? CATEGORY_LABEL[c] || c : '全部分类'))) : null,
           stats.failed && list.length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '这次没读到下载次数（GitHub 接口连不上或额度用完了），先按上架顺序排。') : null,
           ((data && data.revoked) || []).map((r) => h('div', { key: r.id, className: 'ab-note err', style: { marginTop: 10 } }, '「' + r.id + '」' + r.version + ' 已撤回：' + r.reason + '。建议关闭或卸载。'))),
-        h(Card, { title: '模块市场地址', desc: '换成你自己的索引源——自建索引、国内镜像（如 gitee / ghproxy 中转）、内网部署都行。留空 = 用内置的 GitHub 地址。换好后市场会立即按新地址刷新。' },
-          h(Row, { label: '索引地址', hint: '完整 http(s) 链接，指向 index.json。默认：' + (regDef || 'GitHub 仓库') },
-            h('input', { className: 'ab-input', style: { width: 'min(420px, 100%)' }, value: regUrl, placeholder: 'https://…/registry/index.json', onChange: (e) => setRegUrl(e.target.value) })),
+        h(Card, { title: '模块市场地址', desc: '选官方源，或填自己的索引——自建索引、ghproxy 中转、内网部署都行。换好后市场会立即按新地址刷新。' },
+          h(Row, { label: '索引源', hint: regHint },
+            h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', width: '100%' } },
+              h('select', { className: 'ab-select', 'aria-label': '模块市场索引源', value: regPreset, onChange: (e) => pickSource(e.target.value) },
+                regList.map((s) => h('option', { key: s.id, value: s.id }, s.label))),
+              h('input', { className: 'ab-input', style: { flex: '1 1 320px', minWidth: 220 }, value: regUrl, placeholder: regDef || 'https://…/registry/index.json', onChange: (e) => { setRegMode('custom'); setRegUrl(e.target.value) } }))),
           h('div', { className: 'ab-flex', style: { marginTop: 8 } },
-            h(Btn, { small: true, disabled: busy === 'reg', onClick: saveReg }, busy === 'reg' ? '保存中…' : '保存地址'),
-            h(Btn, { small: true, disabled: busy === 'reg' || !regUrl, onClick: () => { setRegUrl(''); saveReg() } }, '恢复内置 GitHub 地址'))),
+            h(Btn, { small: true, disabled: busy === 'reg', onClick: () => saveReg() }, busy === 'reg' ? '保存中…' : '保存地址'),
+            h(Btn, { small: true, disabled: busy === 'reg' || regPreset === 'github', onClick: () => { setRegMode('github'); setRegUrl(regDef || ''); saveReg(regDef || '') } }, '恢复默认 GitHub 源'))),
         !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
         data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
         data && data.ok !== false && !shown.length ? h(Empty, { icon: '🐟', text: list.length ? '没有符合条件的模块' : '市场里还没有模块' }) : null,
