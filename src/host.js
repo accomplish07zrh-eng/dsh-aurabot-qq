@@ -17,6 +17,7 @@ import { loadConfig, saveConfig, publicConfig, mergeFromPanel } from './core/con
 import { createLogger } from './core/logger.js'
 import { registerSecret, redact } from './core/redact.js'
 import { createOneBotClient } from './onebot/client.js'
+import { createOutbox } from './onebot/outbox.js'
 import { createSnowLumaManager, DOWNLOAD_PAGE } from './snowluma/manager.js'
 import { createHub, workspaceDirOf } from './chat/hub.js'
 import { grantOwner, moveWorkspace, realWorkspace } from './core/workspace-move.js'
@@ -194,13 +195,15 @@ export function apply(ctx) {
       hub.onNotice(ev).catch((error) => log.debug('处理通知出错：', error.message))
     }
   }
+  // 网关未就绪时先攒着：只有「确定没发出去」的消息才入队，连接后按 TTL 补发。
+  const outbox = createOutbox({ log: logger.child('outbox') })
   const onebot = createOneBotClient({
     endpoint,
     log: logger.child('onebot'),
     onState: (s, d) => {
       onebotState = s
       if (s !== 'connected') { loginOk = false; pendingEvents = [] }
-      else checkLogin().catch((error) => log.warn('核对登录号出错：', error.message))
+      else checkLogin().then(() => { if (loginOk) flushOutbox() }).catch((error) => log.warn('核对登录号出错：', error.message))
       logger.child('onebot').info(`QQ 网关：${s}${d ? '（' + d + '）' : ''}`)
       mods?.emit('onebot/state', s)
     },
@@ -216,6 +219,17 @@ export function apply(ctx) {
       handleEvent(ev)
     },
   })
+  async function flushOutbox () {
+    if (onebotState !== 'connected' || !loginOk) return
+    try {
+      const r = await outbox.flush((action, params, opts) => onebot.call(action, params, { ...opts, retries: 0 }))
+      if (r.sent || r.dropped || r.left) log.info(`补发队列：成功 ${r.sent}，丢弃 ${r.dropped}，剩余 ${r.left}`)
+    } catch (error) {
+      logger.child('onebot').warn('补发队列出错：', error.message)
+    }
+  }
+  // 连接后漏掉的、或补发中途又断网的，定时再试；没连接时直接返回。
+  ctx.effect(() => ctx.interval(() => { flushOutbox().catch(() => {}) }, 10_000), 'aurabot: 补发队列')
   const groupRoles = createGroupRoles({ onebot, getConfig, log: logger.child('chat') })
   const local = createLocal({ getConfig, log: logger })
   const mutes = createMutes()
@@ -268,6 +282,7 @@ export function apply(ctx) {
     getConfig,
     log: logger.child('chat'),
     onebot,
+    outbox,
     stickers,
     tts,
     buildTools: (where) => mods.buildTools(where),
@@ -721,6 +736,7 @@ export function apply(ctx) {
       apiVersion: API_VERSION,
       config: publicConfig(cfg),
       onebot: { state: onebotState, login, endpoint: { httpUrl: endpoint().httpUrl, wsUrl: endpoint().wsUrl }, problem: onebotState === 'connected' && loginOk ? '' : await connectionProblem() },
+      outbox: outbox.status(),
       snowluma: { ...inst, running, consented: await consented(running), owns: snowluma.ownsProcess, lastAttach: snowluma.lastAttach, downloadPage: DOWNLOAD_PAGE, webui: snowluma.webuiUrl() },
       stats: hub.stats(),
       // 模块关着时给个空壳，面板照常显示

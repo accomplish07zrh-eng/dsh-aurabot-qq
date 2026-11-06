@@ -105,11 +105,11 @@ function config(patch = {}) {
     snowluma: { autoStart: false, autoAttach: false, dir: join(root, 'no-snowluma') }, ...patch })
 }
 
-function setup(t, { cfg = config(), brain = async () => '', hooks, buildTools, onebot, onCommand, onActivity } = {}) {
+function setup(t, { cfg = config(), brain = async () => '', hooks, buildTools, onebot, outbox, onCommand, onActivity } = {}) {
   process.env.AURABOT_DATA_DIR = mkdtempSync(join(root, 'data-'))
   const fake = createFakeDsh({ brain })
   const calls = []
-  const hub = createHub({ dsh: fake.ctx, getConfig: () => cfg,
+  const hub = createHub({ dsh: fake.ctx, getConfig: () => cfg, outbox,
     log: Object.fromEntries(['info', 'warn', 'error', 'debug'].map((k) => [k, (...v) => fake.logs.push(v.join(' '))])),
     onebot: onebot || { connected: true, async call(action, params) { calls.push({ action, params }); return { message_id: calls.length } } },
     hooks, buildTools, onCommand, onActivity })
@@ -367,5 +367,24 @@ test('卸载会结束后台回复等待，而不用等模型或超时', { timeou
   hub.dispose()
   const result = await withDeadline(work)
   assert.equal(result.code, 'AURABOT_DISPOSED')
+})
+
+test('网关明确没连上时，发送失败的消息进补发队列', { timeout: 5000 }, async (t) => {
+  const { createOutbox } = await import('../src/onebot/outbox.js')
+  const dir = mkdtempSync(join(root, 'outbox-'))
+  const outbox = createOutbox({ log: { info() {}, warn() {}, debug() {} }, file: join(dir, 'queue.json') })
+  let calls = 0
+  const onebot = {
+    connected: false,
+    async call() {
+      calls++
+      throw new OneBotError('send_private_msg', { message: '没连上 QQ 网关' }, { transport: true })
+    },
+  }
+  const { hub } = setup(t, { cfg: config({ dryRun: false }), onebot, outbox })
+  const r = await hub.sendText('private:' + OTHER, '测试补发')
+  assert.equal(r && r.queued, true, '确定没发出去的发送应返回 queued')
+  assert.equal(calls, 1)
+  assert.equal(outbox.status().count, 1, '消息应进补发队列')
 })
 
