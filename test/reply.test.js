@@ -70,3 +70,13 @@ test('半角竖线的特殊 token 也认，普通尖括号文本不能误伤', (
   assert.deepEqual(texts(parseReply('<|endoftext|>好')), ['好'])
   assert.deepEqual(texts(parseReply('a > b 和 <b>粗体</b>')), ['a > b 和 <b>粗体</b>'])
 })
+
+test('isSilence：沉默标记重复/带空白/带标点仍算沉默，正文里出现“沉默”不误伤', async () => {
+  const { isSilence } = await import('../src/chat/reply.js')
+  for (const s of ['[沉默]', '[沉默][沉默]', '[沉默] [沉默]', '[沉默]\n[沉默]', '（沉默）', '', '  \n\t', '[沉默]。', '[沉默]……']) {
+    assert.equal(isSilence(s), true, `应判沉默: ${JSON.stringify(s)}`)
+  }
+  for (const s of ['[沉默]刚看视频呢', '好的', '我刚才[沉默]了', '沉默是今晚的康桥']) {
+    assert.equal(isSilence(s), false, `不应判沉默: ${JSON.stringify(s)}`)
+  }
+})

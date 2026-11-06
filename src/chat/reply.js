@@ -53,10 +53,12 @@ export function stripModelArtifacts(text) {
     .trim()
 }
 
-/** 是不是「这次不说话」。 */
+/** 是不是「这次不说话」：整条只由沉默标记、空白、标点组成才算。 */
+const SILENCE_MARK = /\[沉默\]|［沉默］|\(沉默\)|（沉默）/g
 export function isSilence(text) {
   const t = String(text || '').trim()
-  return t === '' || t === SILENCE || t === '［沉默］' || t === '(沉默)' || t === '（沉默）'
+  if (t === '') return true
+  return t.replace(SILENCE_MARK, '').replace(/[\s\p{P}]/gu, '') === ''
 }
 
 const ZERO_WIDTH_CHARS = new Set(['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060'])
