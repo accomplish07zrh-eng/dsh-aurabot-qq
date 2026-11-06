@@ -1,4 +1,4 @@
-﻿// Aurabot · 网页半边：侧栏「自动化任务」下面的「Aurabot」入口 + 整页面板（顶部标签切换功能）。
+// Aurabot · 网页半边：侧栏「自动化任务」下面的「Aurabot」入口 + 整页面板（顶部标签切换功能）。
 // 只读写宿主半边的 /aurabot/api/* 接口，不直接碰会话和 QQ。
 // 视觉：沿用 DSH 的主题变量（--dsw-alias-*），浅色 / 深色自动跟随；点缀用大肥鱼的深蓝、海蓝、白。
 
@@ -575,11 +575,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     function Row({ label, hint, children }) {
       return h('div', { className: 'ab-row' }, h('div', { className: 'ab-label' }, h('b', null, label), hint ? h('small', null, hint) : null), h('div', { className: 'ab-ctl' }, children))
     }
-    function Card({ title, desc, icon, right, children, className }) {
-      return h('div', { className: cx('ab-card', className) },
-        title ? h('div', { className: 'ab-flex', style: { marginBottom: desc ? 0 : 10 } }, h('h3', null, icon || null, title), h('div', { className: 'ab-spacer' }), right || null) : null,
-        desc ? h('p', { className: 'ab-desc' }, desc) : null,
-        children)
+    function Card({ title, desc, icon, right, children, className, collapsible, defaultOpen = true }) {
+      const [open, setOpen] = useState(!collapsible || defaultOpen)
+      const head = title ? h('div', { className: 'ab-flex', style: { marginBottom: (desc && open) ? 0 : 10 } },
+        h('h3', { onClick: collapsible ? () => setOpen((v) => !v) : undefined, style: collapsible ? { cursor: 'pointer', userSelect: 'none' } : undefined },
+          icon || null, title,
+          collapsible ? h('span', { className: 'ab-muted', style: { marginLeft: 6, fontSize: 11 } }, open ? '▾ 收起' : '▸ 展开') : null),
+        h('div', { className: 'ab-spacer' }), right || null) : null
+      return h('div', { className: cx('ab-card', className) }, head, desc && open ? h('p', { className: 'ab-desc' }, desc) : null, open ? children : null)
     }
     function Btn({ kind, small, onClick, disabled, children, title }) {
       const [busy, setBusy] = useState(false)
@@ -4193,6 +4196,11 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [show, setShow] = useState('all')
       const [cat, setCat] = useState('')
       const [hot, setHot] = useState(true)
+      // 分页：市场模块多了全量渲染会卡，一次只画一页
+      const PAGE_SIZE = 12
+      const [page, setPage] = useState(1)
+      // 筛选条件一变就回第一页，别停在可能超出范围的旧页码
+      useEffect(() => { setPage(1) }, [q, show, cat, hot])
       const load = (force) => get('/modules/community' + (force ? '?force=1' : '')).then(setData)
       useEffect(() => { load() }, [])
       // 模块市场地址：换索引源（自建索引 / 国内镜像 / 内网部署）。拉取当前值与默认值，改完可保存或恢复内置。
@@ -4292,6 +4300,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const shown = list.filter((m) => (!cat || m.category === cat) && (show === 'all' || (show === 'installed' && m.installed) || (show === 'update' && m.update)) && (!word || (m.name + ' ' + m.id + ' ' + (m.description || '') + ' ' + (m.tags || []).join(' ')).toLowerCase().includes(word)))
       // 关掉热度排序时保持索引里的原顺序，别悄悄改成按名字排
       if (hot && canHot) shown.sort(byHot)
+      const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE))
+      const cur = Math.min(page, pages) // 数据变少后旧页码可能越界，夹回来
+      const pageShown = shown.slice((cur - 1) * PAGE_SIZE, cur * PAGE_SIZE)
+      // 模块仓库地址：每个市场模块都在模块库 modules/<id> 下，默认深入到它自己的目录
+      // /tree/main/modules/<id>（比条目里的 homepage 更准——有的 homepage 指向别处仓库根）；
+      // 认不出模块库仓库才退 homepage（只认 http/https，索引是外部数据）
+      const repoUrl = (m) => (stats.source
+        ? 'https://github.com/' + stats.source + '/tree/main/modules/' + m.id
+        : /^https?:\/\//i.test(String(m.homepage || '')) ? m.homepage : '')
+      const pager = pages > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 12, justifyContent: 'center', alignItems: 'center' } },
+        h(Btn, { small: true, disabled: cur <= 1, onClick: () => setPage(cur - 1) }, '上一页'),
+        h('span', { className: 'ab-small ab-muted', style: { margin: '0 10px' } }, '第 ' + cur + ' / ' + pages + ' 页 · 共 ' + shown.length + ' 个'),
+        h(Btn, { small: true, disabled: cur >= pages, onClick: () => setPage(cur + 1) }, '下一页')) : null
       const num = (n) => (Number(n) >= 10000 ? (Number(n) / 10000).toFixed(1).replace(/\.0$/, '') + ' 万' : String(Number(n) || 0))
       const openSettings = (m) => {
         const running = (st.modules || []).find((x) => x.id === m.id)
@@ -4301,8 +4322,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const card = (m) => {
         const settings = m.installed ? openSettings(m) : null
         const note = [m.delisted ? '已从市场下架' : '', m.foreign ? '有同名的自己写的文件夹，不会覆盖' : '', m.blocked].filter(Boolean).join(' · ')
+        const url = repoUrl(m)
+        const title = url
+          ? h('a', { href: url, target: '_blank', rel: 'noreferrer', title: '打开仓库主页', style: { color: 'inherit', textDecoration: 'none' } }, m.name)
+          : m.name
         return h('div', { key: m.id, className: 'ab-card', style: { display: 'flex', flexDirection: 'column' } },
-          h('h3', null, m.name, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
+          h('h3', null, title, m.update ? h('span', { className: 'ab-badge' }, '可更新') : null),
           h('div', { className: 'ab-small ab-muted' }, 'v' + (m.installed || m.version) + (m.update ? ' → v' + m.version : '') + (CATEGORY_LABEL[m.category] ? ' · ' + CATEGORY_LABEL[m.category] : '') + (m.author ? ' · ' + m.author : '') + (m.license ? ' · ' + m.license : '')),
           canHot ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 2 } }, '下载 ' + num(m.downloads) + ' 次' + (m.delisted ? '' : ' · 含更新')) : null,
           h('p', { className: 'ab-desc', style: { margin: '8px 0' } }, m.description),
@@ -4316,15 +4341,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       }
       return h('div', { className: 'ab-grid' },
         progBar,
-        h(Card, { title: '模块市场', desc: '给ta装更多本事。模块由社区提供、维护者审核后上架；它们和插件在同一进程运行，能接触账号配置，装之前看清下面列的能力。下载次数来自模块库 GitHub Releases（更新也算一次），只是热度参考。', right: h(Btn, { small: true, kind: 'ghost', onClick: () => load(true) }, '刷新') },
-          h('div', { className: 'ab-flex' },
-            h('input', { className: 'ab-input', placeholder: '搜模块', value: q, onChange: (e) => setQ(e.target.value) }),
-            chip('all', '全部'), chip('installed', '已安装'), chip('update', '可更新'),
-            canHot ? h('button', { type: 'button', className: cx('ab-chip', hot && 'on'), onClick: () => setHot((v) => !v), title: '按模块安装包在 GitHub 上的下载次数排序' }, '按热度') : null),
-          cats.length > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 10 } }, [''].concat(cats).map((c) => h('button', { key: c || 'any', type: 'button', className: cx('ab-chip', cat === c && 'on'), onClick: () => setCat(c) }, c ? CATEGORY_LABEL[c] || c : '全部分类'))) : null,
-          stats.failed && list.length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '这次没读到下载次数（GitHub 接口连不上或额度用完了），先按上架顺序排。') : null,
-          ((data && data.revoked) || []).map((r) => h('div', { key: r.id, className: 'ab-note err', style: { marginTop: 10 } }, '「' + r.id + '」' + r.version + ' 已撤回：' + r.reason + '。建议关闭或卸载。'))),
-        h(Card, { title: '模块市场地址', desc: '选官方源，或填自己的索引——自建索引、ghproxy 中转、内网部署都行。换好后市场会立即按新地址刷新。' },
+        // 市场地址是低频设置：默认折叠，点标题才展开，别占着市场上面一整块
+        h(Card, { title: '模块市场地址', collapsible: true, defaultOpen: false, desc: '选官方源，或填自己的索引——自建索引、ghproxy 中转、内网部署都行。换好后市场会立即按新地址刷新。' },
           h(Row, { label: '索引源', hint: regHint },
             h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', width: '100%' } },
               h('select', { className: 'ab-select', 'aria-label': '模块市场索引源', value: regPreset, onChange: (e) => pickSource(e.target.value) },
@@ -4333,10 +4351,19 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', { className: 'ab-flex', style: { marginTop: 8 } },
             h(Btn, { small: true, disabled: busy === 'reg', onClick: () => saveReg() }, busy === 'reg' ? '保存中…' : '保存地址'),
             h(Btn, { small: true, disabled: busy === 'reg' || regPreset === 'github', onClick: () => { setRegMode('github'); setRegUrl(regDef || ''); saveReg(regDef || '') } }, '恢复默认 GitHub 源'))),
+        h(Card, { title: '模块市场', desc: '给ta装更多本事。模块由社区提供、维护者审核后上架；它们和插件在同一进程运行，能接触账号配置，装之前看清下面列的能力。下载次数来自模块库 GitHub Releases（更新也算一次），只是热度参考。', right: h(Btn, { small: true, kind: 'ghost', onClick: () => load(true) }, '刷新') },
+          h('div', { className: 'ab-flex' },
+            h('input', { className: 'ab-input', placeholder: '搜模块', value: q, onChange: (e) => setQ(e.target.value) }),
+            chip('all', '全部'), chip('installed', '已安装'), chip('update', '可更新'),
+            canHot ? h('button', { type: 'button', className: cx('ab-chip', hot && 'on'), onClick: () => setHot((v) => !v), title: '按模块安装包在 GitHub 上的下载次数排序' }, '按热度') : null),
+          cats.length > 1 ? h('div', { className: 'ab-flex', style: { marginTop: 10 } }, [''].concat(cats).map((c) => h('button', { key: c || 'any', type: 'button', className: cx('ab-chip', cat === c && 'on'), onClick: () => setCat(c) }, c ? CATEGORY_LABEL[c] || c : '全部分类'))) : null,
+          stats.failed && list.length ? h('div', { className: 'ab-small ab-muted', style: { marginTop: 8 } }, '这次没读到下载次数（GitHub 接口连不上或额度用完了），先按上架顺序排。') : null,
+          ((data && data.revoked) || []).map((r) => h('div', { key: r.id, className: 'ab-note err', style: { marginTop: 10 } }, '「' + r.id + '」' + r.version + ' 已撤回：' + r.reason + '。建议关闭或卸载。'))),
         !data ? h(Empty, { icon: '⏳', text: '加载中…' }) : null,
         data && data.ok === false ? h('div', { className: 'ab-note warn' }, '市场打不开：' + data.message) : null,
         data && data.ok !== false && !shown.length ? h(Empty, { icon: '🐟', text: list.length ? '没有符合条件的模块' : '市场里还没有模块' }) : null,
-        shown.length ? h('div', { className: 'ab-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' } }, shown.map(card)) : null,
+        shown.length ? h('div', { className: 'ab-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' } }, pageShown.map(card)) : null,
+        pager,
         h(ModuleTutorial, { toast }))
     }
 
