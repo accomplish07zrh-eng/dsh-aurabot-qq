@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- 挡住模型把 dsh 的运行期上下文注入（`Time sampled while preparing turn …` / `Browser time zone for this request:` / `Elapsed since the preceding …`）当正文抄进聊天：这三行按行硬剔，模型顺手改写过的变体也拦得住；原来只有逐字复读才进指纹，私聊还会因为「主人私聊豁免」整条放行。
+
 ## 1.2.0
 
 - 「关于」页更新项目介绍，并补充模块仓库和贡献入口。感谢 @RookieApe-tao 的 #200。

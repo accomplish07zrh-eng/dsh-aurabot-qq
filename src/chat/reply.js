@@ -265,12 +265,39 @@ function visibleContent(text) {
   return isSilence(content) ? '' : content.replace(/^[\s\p{P}]*|[\s\p{P}]*$/gu, '').trim()
 }
 
+/**
+ * 运行期上下文注入（dsh-time-context 那种 snapshot user message）被模型抄进正文：
+ * 指纹只认逐字复读，模型顺手改写（"otherwise-unqualified dates and times" → "amongst questions"）就漏。
+ * 这几行是按行硬剔的补丁，前缀正常聊天不会用到，所以对主人私聊也生效。
+ */
+const CONTEXT_INJECTION_LINES = [
+  /^\s*Time sampled while preparing turn \d+, step \d+:/,
+  /^\s*Browser time zone for this request:/,
+  /^\s*Elapsed since the preceding (?:model-visible message|step context):/,
+]
+
+function contextInjectionRanges (raw) {
+  const text = String(raw || '')
+  const ranges = []
+  let offset = 0
+  for (const line of text.split('\n')) {
+    const end = offset + line.length
+    if (CONTEXT_INJECTION_LINES.some((re) => re.test(line))) {
+      ranges.push({ start: offset, end: Math.min(end + 1, text.length) })
+    }
+    offset = end + 1
+  }
+  return ranges
+}
+
 /** 所有投递路径共用这一份清洗，区间也交给消息段出口使用。 */
 export function cleanOutboundText(text, { warn, promptSources, fingerprint, userText, ownerPrivate = false, allowPromptEcho = false, onPromptDecision, onRanges } = {}) {
   const active = currentPromptSources()
   const sources = promptSources ?? [...(active?.system.values() || []), active?.context || '', ...(active?.memory || [])]
   const raw = String(text || '')
-  const tools = toolTextRanges(raw, { ownerPrivate })
+  // 注入复读先剔，再走工具/提示词清洗；坐标都在原始 raw 上算
+  const tools = [...toolTextRanges(raw, { ownerPrivate }), ...contextInjectionRanges(raw)]
+    .sort((a, b) => a.start - b.start || b.end - a.end)
   const toolClean = withoutToolRanges(raw, tools)
   const prompts = (allowPromptEcho ? [] : promptTextRanges(toolClean, fingerprint || promptFingerprint(sources, userText ?? active?.userText ?? '')))
     .sort((a, b) => a.start - b.start || b.end - a.end)
