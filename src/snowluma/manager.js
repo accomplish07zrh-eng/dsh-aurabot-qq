@@ -181,7 +181,14 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
   const rejected = new Set()
 
   const cfg = () => getConfig().snowluma
-  const base = () => `http://127.0.0.1:${cfg().webuiPort}`
+  // SnowLuma 自己的默认控制台端口是 5099（开了 Hyper-V 的 Windows 常把它划进保留段）。
+  // 插件配置里的 webuiPort 才是真相：控制台请求用它，启动时也用 SNOWLUMA_WEBUI_PORT 传给它
+  // （SnowLuma 的 env 覆盖 runtime.json，且不会写回配置，最干净）。
+  const port = () => {
+    const n = Number(cfg().webuiPort)
+    return Number.isInteger(n) && n > 0 && n < 65536 ? n : 15099
+  }
+  const base = () => `http://127.0.0.1:${port()}`
 
   async function api(path, { method = 'GET', body, auth = true } = {}) {
     const headers = { 'content-type': 'application/json' }
@@ -276,6 +283,8 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
       env.SNOWLUMA_WEBUI_BOOTSTRAP_PASSWORD = pw
       token = ''
     }
+    // 控制台端口：用 env 覆盖，SnowLuma 会按它起 WebUI（不改它的 runtime.json）
+    env.SNOWLUMA_WEBUI_PORT = String(port())
     try {
       child = spawn(exe, ['./index.mjs'], { cwd: inst.dir, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], detached: false })
     } catch (error) {
@@ -429,7 +438,7 @@ export function createSnowLumaManager({ getConfig, log, savePassword }) {
     const inst = detectInstall(cfg().dir)
     if (!inst.installed) return 0
     const out = await new Promise((res) => execFile('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true }, (e, so) => res(String(so || ''))))
-    const line = out.split(/\r?\n/).find((l) => new RegExp(`127\\.0\\.0\\.1:${cfg().webuiPort}\\s+\\S+\\s+LISTENING`).test(l))
+    const line = out.split(/\r?\n/).find((l) => new RegExp(`127\\.0\\.0\\.1:${port()}\\s+\\S+\\s+LISTENING`).test(l))
     const pid = Number(line ? line.trim().split(/\s+/).pop() : 0)
     if (!pid) return 0
     const path = await new Promise((res) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).Path`], { windowsHide: true }, (e, so) => res(String(so || '').trim())))
