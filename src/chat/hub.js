@@ -2232,36 +2232,6 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     // 群聊、私聊、图片、主动搭话和插话都从这里经过；时间只进本轮内容。
     content = cleanContent([...content, { type: 'text', text: currentTimeLine() }])
-    // 这一轮还在跑、这句是排队给下一轮的：额外记到 pendingSenders，等上一轮 turn/end 时接过去（#90）
-    // ⚠ 不能用 busy：flush 一开始就把 busy 置上了，否则会把这一批自己的说话人塞进下一轮，
-    //    主人和群友混在一起会让「仅主人」判断误拒（sticker-owner 回归抓到过）。
-    const queuedNextTurn = !opts.steer && running.has(chat.chatId)
-    if (queuedNextTurn) {
-      st.pendingArchiveNamespace = archiveNamespace; st.pendingArchiveContextAt = archiveContextAt
-    } else if (!opts.steer || !st.archiveNamespace) {
-      st.archiveNamespace = archiveNamespace; st.archiveContextAt = archiveContextAt
-    }
-    const addSender = (u) => {
-      st.senders.add(String(u))
-      if (queuedNextTurn) {
-        if (!st.pendingSenders) st.pendingSenders = new Set()
-        st.pendingSenders.add(String(u))
-      }
-    }
-    if (senderId) addSender(senderId)
-    for (const s of opts.extraSenders || []) addSender(s)
-    // 上一句也留着：这一句太短（「嗯嗯」「然后呢」）时一起拿去想起相关的事
-    if (st.lastText) st.prevText = st.lastText
-    st.lastText = userText.slice(-600)
-    st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
-    if (opts.wantVoice) st.wantVoice = true
-    if (!opts.steer) {
-      st.autoReply = opts.autoReply || null
-      // 回执跟着它所属的轮次走；排队的主动搭话不能算到上一轮。
-      if (queuedNextTurn) st.pendingOnDelivered = opts.onDelivered || null
-      else st.onDelivered = opts.onDelivered || null
-    }
-    turnState.set(key, st)
     content = await seedHistoryOnce(sessionId, chat, content)
     const admitted = await admit(agent, content)
     for (const block of admitted.filter((c) => c.type === 'text')) {
@@ -2280,10 +2250,39 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const speakers = [senderId, ...(opts.extraSenders || [])].filter(Boolean).map(String)
     const speakerRole = speakers.length && speakers.every((u) => isOwner(getConfig(), u)) ? 'owner' : 'guest'
     const message = { id: randomUUID(), role: 'user', content: admitted, source: { kind: SOURCE_KIND, speaker: { role: speakerRole, chat: chat.kind } } }
-    // 正在跑的这一轮：steer = 下一步就看到这句（DSH 界面插话走的也是它）；空闲时照旧 followup 开新一轮
+    // 所有异步准备完成后，按实际投递路径登记轮次状态；中间不能再 await，
+    // 否则上一轮可能先结束，把待登记的回执接走或清掉（#90）。
+    // 空闲 agent 的 steer 不会开启新一轮，必须改用 followup。
+    const steer = opts.steer && running.has(chat.chatId) && typeof agent.steer === 'function'
+    // 不能用 busy：flush 在这一批开始前就会置上它。
+    const queuedNextTurn = !steer && running.has(chat.chatId)
+    if (queuedNextTurn) {
+      st.pendingArchiveNamespace = archiveNamespace; st.pendingArchiveContextAt = archiveContextAt
+    } else if (!steer || !st.archiveNamespace) {
+      st.archiveNamespace = archiveNamespace; st.archiveContextAt = archiveContextAt
+    }
+    const addSender = (u) => {
+      st.senders.add(String(u))
+      if (queuedNextTurn) {
+        if (!st.pendingSenders) st.pendingSenders = new Set()
+        st.pendingSenders.add(String(u))
+      }
+    }
+    if (senderId) addSender(senderId)
+    for (const s of opts.extraSenders || []) addSender(s)
+    if (st.lastText) st.prevText = st.lastText
+    st.lastText = userText.slice(-600)
+    st.speakers = opts.speakers || (senderId ? [String(senderId), ...(opts.extraSenders || []).map(String)] : [])
+    if (opts.wantVoice) st.wantVoice = true
+    if (!steer) {
+      st.autoReply = opts.autoReply || null
+      // 回执跟着它所属的轮次走；排队的主动搭话不能算到上一轮。
+      if (queuedNextTurn) st.pendingOnDelivered = opts.onDelivered || null
+      else st.onDelivered = opts.onDelivered || null
+    }
+    turnState.set(key, st)
     outputSources.set(chat.chatId, sources)
-    // agentFor / prompt 挂钩 / 附件处理期间上一轮可能已经结束；空闲 agent 的 steer 不会开启新一轮。
-    if (opts.steer && running.has(chat.chatId) && typeof agent.steer === 'function') {
+    if (steer) {
       log.info(`${chat.chatId}：她还在忙，这句直接插进当前这一轮（steer）`)
       await withPromptCapture(sources, () => agent.steer(message))
     } else {

@@ -314,29 +314,48 @@ for (const [label, opts] of [['沉默', { reply: '[沉默]' }], ['投递失败',
   })
 }
 
-test('主动回合排在普通聊天后面时，只有自己的成功回复才记跟进次数', { timeout: 5000 }, async (t) => {
+for (const pauseAdmission of [false, true]) test(pauseAdmission
+  ? '主动回合准入期间普通聊天结束，只有自己的成功回复才记跟进次数'
+  : '主动回合排在普通聊天后面时，只有自己的成功回复才记跟进次数', { timeout: 5000 }, async (t) => {
   const s = setup(t)
   const id = s.pending()
   s.cfg.workspaceDir = join(s.dir, 'workspace')
   s.cfg.model.provider = 'fake'; s.cfg.model.model = 'fake-1'
   const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } }
   const firstEntered = deferred(), firstReply = deferred(), nextEntered = deferred(), nextReply = deferred()
+  const admissionEntered = deferred(), admissionReady = deferred()
   const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(setImmediate) }
   const fake = createFakeDsh({ brain: async ({ text }) => {
-    if (text === '普通聊天') { firstEntered.resolve(); await firstReply.promise; return '上一轮聊完啦' }
+    // 当前时间随每轮输入注入；按原始聊天正文区分两轮。
+    const body = text.split('\n').filter((line) => !line.startsWith('【当前本机时间】')).join('\n')
+    if (body === '普通聊天') { firstEntered.resolve(); await firstReply.promise; return '上一轮聊完啦' }
     nextEntered.resolve(); await nextReply.promise; return '裁员的事后来怎么样了？'
   } })
+  const admit = fake.ctx.attachments.admitPromptContent
+  fake.ctx.attachments.admitPromptContent = async (content) => {
+    if (content.some((c) => c.type === 'text' && c.text.includes('你还惦记着'))) {
+      admissionEntered.resolve()
+      if (pauseAdmission) await admissionReady.promise
+    }
+    return admit(content)
+  }
   const hub = createHub({ dsh: fake.ctx, getConfig: () => s.cfg, log,
     onebot: { async call() { return { message_id: 42 } } },
   })
   fake.ctx.effect(() => fake.ctx.on('session/event', hub.onSessionEvent))
-  t.after(() => { firstReply.resolve(); nextReply.resolve(); hub.dispose(); fake.dispose() })
+  t.after(() => { firstReply.resolve(); nextReply.resolve(); admissionReady.resolve(); hub.dispose(); fake.dispose() })
   const speak = createSpeakUp({ getConfig: () => s.cfg, hub, log, memory: () => s.mem })
   const previousTurn = hub.pushToSession(chat(OWNER), [{ type: 'text', text: '普通聊天' }], OWNER)
   await firstEntered.promise
   const followTurn = speak.fire()
+  await admissionEntered.promise
   await settle()
   firstReply.resolve()
+  await previousTurn
+  await settle()
+  assert.match(fake.turns[0].userText, /【当前本机时间】/)
+  assert.equal(s.get(id).followUp.tries, 0, '上一轮结束或发送时不能消费主动回合的跟进')
+  admissionReady.resolve()
   await nextEntered.promise
   await settle()
   assert.equal(s.get(id).followUp.tries, 0, '上一轮普通回复不能消费排队中的跟进')
