@@ -20,7 +20,7 @@ test('B站头像：last / 最近图片 / 网址、主人权限和开关在模块
   const tools = builders[1]({ chat, sessionId: 'owner' })
   const avatar = tools.find((t) => t.name === 'bili_set_avatar')
   assert.ok(avatar)
-  assert.match((await avatar.execute({ image: 'last' })).message, /还没人发过/)
+  assert.match((await avatar.execute({ image: 'last' })).message, /没人发过/)
   events.get('message')({ chatId: chat.chatId, images: [{ data: { url: 'https://image.example/owner.png' } }] })
   events.get('message')({ chatId: 'group:123', images: [{ data: { url: 'https://image.example/other.png' } }] })
   for (const image of ['last', '刚才那张图', '最近的图片']) {

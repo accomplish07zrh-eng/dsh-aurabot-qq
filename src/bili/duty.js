@@ -11,6 +11,7 @@ import { createShotStore, shotPath, clockOf } from './shots.js'
 const PAUSE_CODES = { '-101': 'B 站没登录或 Cookie 过期了', '-111': 'Cookie 里的 bili_jct 不对', '-352': '被 B 站风控了', '-509': '发得太频繁', '12015': 'B 站要求验证码' }
 import { isSilence, cleanOutboundText } from '../chat/reply.js'
 
+const FACE_MAX = 2 * 1024 * 1024 // B 站头像上限（api.js 里也有一份，这里给缩图判断用）
 const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 const link = (bvid) => `https://www.bilibili.com/video/${bvid}`
 
@@ -383,18 +384,38 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     return { ok: true, message: `B 站签名改好了：${sign}` }
   }
 
-  /** 换 B 站头像。file 是已经过 avatarSource 校验的 http(s) 网址。 */
+  /** 换 B 站头像。file 可以是 http(s) 网址，也可以是图片 Buffer（她画的图 / 聊天里收到的图）。 */
   async function setAvatar(file) {
-    if (!/^https?:\/\//i.test(String(file || ''))) return { ok: false, message: '头像只能用网址图片，或者刚才发的那张图' }
-    if (getConfig().dryRun) return { ok: true, message: `试运行：本来要把 B 站头像换成：${file}` }
+    const isBuf = Buffer.isBuffer(file)
+    if (!isBuf && !/^https?:\/\//i.test(String(file || ''))) return { ok: false, message: '头像只能用网址图片、「刚才那张图」或「画作 #1」' }
+    if (getConfig().dryRun) {
+      return { ok: true, message: isBuf ? `试运行：本来要用这张图（${Math.round(file.length / 1024)} KB）换 B 站头像` : `试运行：本来要把 B 站头像换成：${file}` }
+    }
     if (!parseCookie(cfg().cookie).bili_jct) return { ok: false, message: '没登录 B 站，换不了头像' }
     try {
-      await api.setFace(file)
+      if (isBuf) {
+        // B 站头像上限 2MB：她画的图经常 2MB 出头，先缩到 1024 以内的 JPEG
+        let buf = file
+        if (buf.length > FACE_MAX) buf = await shrinkFace(file)
+        if (!buf) return { ok: false, message: `这张图太大（${Math.round(file.length / 1024)} KB），B 站头像最多 2MB，本机也没缩成` }
+        await api.setFace(buf)
+      } else {
+        await api.setFace(String(file))
+      }
     } catch (error) {
       return { ok: false, message: `B 站头像没换成：${error.message}` }
     }
     memory?.addEvent?.({ text: '换了B站头像', tags: ['B站'], importance: 0.35 })
     return { ok: true, message: 'B 站头像换好了（B 站可能要审核一会儿才显示）' }
+  }
+
+  /** 太大就缩到 1024 以内、JPEG；缩不了返回 null。 */
+  async function shrinkFace(buf) {
+    const { findFfmpeg, findSharp, shrinkImage, shrinkWithSharp } = await import('../core/img.js')
+    const ffmpeg = findFfmpeg(cfg().bili && cfg().bili.ffmpegPath)
+    let small = ffmpeg ? await shrinkImage(buf, 1024, ffmpeg) : null
+    if (!small) small = await shrinkWithSharp(await findSharp(), buf, 1024)
+    return small && small.length <= FACE_MAX ? small : null
   }
 
   /** 每分钟调一次：醒着的时候按间隔刷、看回复。 */
