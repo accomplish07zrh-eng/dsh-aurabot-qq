@@ -2753,6 +2753,53 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
       return Object.entries(s.insights || {}).map(([key, list]) => ({ key, name: (s.insightNames || {})[key] || '', list }))
     },
     setInsights: (key, list) => setInsights(key, list.map((x) => (typeof x === 'string' ? { id: randomUUID().slice(0, 8), text: x, at: Date.now() } : x))),
+    // ═══ 记忆星图（memory-graph.js）用到的只读接口与两个写操作 ═══
+    // 星图只负责可视化，读记忆；除了 setTier（手动点层级）和 touch（点复习）之外都不改数据。
+    /**
+     * 每条记忆的「清晰度参数」：tier、lastHit、at、importance。
+     * 星图用这些算艾宾浩斯亮度。只读，不落盘。
+     */
+    metaAll: () => {
+      const now = Date.now()
+      return load().items.filter((m) => isCurrent(m)).map((m) => ({
+        id: m.id,
+        tier: Number.isInteger(m.tier) ? m.tier : (m.tier === 'core' ? 'core' : undefined),
+        // 和 retention() 里的 tau 公式保持一致：20 × (1+min(10,hitDays)) × (0.5+importance)
+        tau: 20 * (1 + Math.min(10, Number(m.hitDays) || 0)) * (0.5 + (Number(m.importance) || 0.5)),
+        lastHit: Number(m.lastHit) || 0,
+        at: Number(m.at) || 0,
+        importance: Number(m.importance) || 0.5,
+      }))
+    },
+    /**
+     * 过时/归档的记忆（星图上的「归档星云」）。
+     * rc1 没有单独的归档表，过时的就是 invalidAt 有值的那些。
+     */
+    archived: () => load().items.filter((m) => !isCurrent(m)).map((m) => ({
+      id: m.id, text: m.text, about: m.about, aboutName: m.aboutName, tags: m.tags,
+      source: m.source, at: m.at, importance: m.importance, tier: m.tier,
+      invalidAt: m.invalidAt, hitDays: m.hitDays, lastHit: m.lastHit,
+    })),
+    /**
+     * 手动改层级（星图上点「改成长期/重要」）。
+     * 只接受 0~3 的整数；'core' 是压缩产物，不许手动改成它，也不许把它改成数字档。
+     */
+    setTier: (id, tier) => {
+      const t = Number(tier)
+      if (!Number.isInteger(t) || t < 0 || t > 3) return { ok: false, message: '层级只能是 0~3' }
+      const s = load()
+      const m = (s.items || []).find((x) => x.id === String(id))
+      if (!m || !isCurrent(m)) return { ok: false, message: '找不到这条记忆' }
+      if (m.tier === 'core') return { ok: false, message: '长期印象不能被手动改层级' }
+      // 手动改档**直接生效**，不走 add/update 里的「只升不降」（那是防自动流程降档的）。
+      m.tier = t
+      if (t > 0) m.tierSince = Date.now()
+      else delete m.tierSince
+      save(s)
+      return { ok: true, message: '已改为' + ({ 0: '永久', 1: '临时', 2: '长期', 3: '重要' })[t] + '记忆' }
+    },
+    // 星图点「还记得」时用：整理一份命中，让她真的复习一次（会涨 hitDays / 刷新 lastHit）
+    touch,
     list,
     stats: () => {
       const items = load().items

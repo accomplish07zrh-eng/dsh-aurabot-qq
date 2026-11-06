@@ -5,6 +5,8 @@
 import { createMemoryStore, memoryLine, looksLikeRuleMemory } from '../../features/memory.js'
 export { looksLikeRuleMemory } from '../../features/memory.js'
 import { defineTool, str } from '../../tools/tools.js'
+// 记忆星图：算法全在 memory-graph.js（纯函数：建边/布局/亮度/tier 值域映射）。
+import { buildEdges, layoutGraph3d, brightness, regionOf, FADING_THRESHOLD, LAYOUT_VERSION, toStarTier, toHostTier, STAR_TIER_LABEL } from '../../features/memory-graph.js'
 
 export default {
   id: 'memory',
@@ -94,10 +96,35 @@ export default {
       ]
     })
 
-    api.route('/memories', async (req) => ({ ok: true, items: memory.list(http.query(req).q || '').slice(0, 300), stats: memory.stats() }))
+    api.route('/memories', async (req) => {
+      const q = http.query(req).q || ''
+      const all = memory.list(q)
+      // 以前硬写 slice(0, 300)：库过 300 条之后，「翻一翻」永远翻不到后面的，
+      // 搜索也搜不出来（那些条目在面板里是隐形的）。
+      // 现在给 offset/limit 分页，返回 total 让前端知道还有多少没加载。
+      const limitRaw = Number(http.query(req).limit)
+      const offsetRaw = Number(http.query(req).offset)
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(1000, Math.floor(limitRaw)) : 300
+      const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0
+      return {
+        ok: true,
+        items: all.slice(offset, offset + limit),
+        total: all.length,
+        hasMore: offset + limit < all.length,
+        stats: memory.stats(),
+      }
+    })
     api.route('/memory/add', async (req) => {
       const b = await http.body(req)
-      return memory.add({ text: b.text, aboutName: b.aboutName || '', about: b.about || '', importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel', validFrom: b.validFrom, validUntil: b.validUntil })
+      // tier 以前漏传了：面板/星图选「临时/长期/永久」加进来的记忆一律变成默认档。
+      // 另外面板传的是字符串（short/long/core），而 memory.add 只认 0~3 的整数，
+      // 必须用 toHostTier 转一下，否则字符串被 Number.isInteger 判为假、静默丢弃。
+      return memory.add({
+        text: b.text, aboutName: b.aboutName || '', about: b.about || '',
+        importance: b.importance ?? 0.6, tags: b.tags || [], source: 'panel',
+        validFrom: b.validFrom, validUntil: b.validUntil,
+        tier: toHostTier(b.tier) ?? undefined,
+      })
     })
     api.route('/memory/update', async (req) => {
       const b = await http.body(req)
@@ -166,6 +193,240 @@ export default {
       memory.setInsights(String(b.key || ''), (b.list || []).map((t) => String(t).trim()).filter(Boolean))
       return { ok: true, message: '相处经验已保存' }
     })
+    // ═══════════════════════════════════════════════════════════
+    // 记忆星图（memory-graph.js）
+    // 只做可视化与它的交互，**不接管自动回忆**、不搬中枢的 assoc/pipeline。
+    // 联想的唯一实现在 state.assoc + search() 里，星图这边不碰。
+    // ═══════════════════════════════════════════════════════════
+    {
+      // 星图布局状态（存模块数据目录，不写进记忆库，不污染 items）。
+      // 测试里的 mock api 没有 dataDir —— 退回到不落盘（每次重算，只是慢一点），不能因此崩掉。
+      const graphFile = (() => {
+        try { return typeof api.dataDir === 'function' ? api.dataDir('graph-state.json') : null } catch { return null }
+      })()
+      const readGraph = () => { if (!graphFile) return {}; try { return JSON.parse(readFileSync(graphFile, 'utf8')) } catch { return {} } }
+      const writeGraph = (s) => { if (!graphFile) return; try { writeFileSync(graphFile, JSON.stringify(s)) } catch (error) { api.log.warn?.('星图状态保存失败：' + error.message) } }
+
+      /** 组装一颗星：记忆条目 + 中枢算法要的清晰度参数（tier 翻成 short/long/core）。 */
+      const starOf = (m, meta) => {
+        const mt = meta.get(m.id) || {}
+        return { ...m, tier: toStarTier(m.tier), S: mt.tau, lastHit: mt.lastHit || m.lastHit }
+      }
+
+      const buildGraph = (day = 0) => {
+        const meta = new Map((memory.metaAll() || []).map((x) => [x.id, x]))
+        const live = (memory.list('') || []).filter((m) => !m.invalidAt)
+        // 「归档星云」= 过时/归档的记忆（中枢原本从 memory.archived() 拿）
+        const archived = ((typeof memory.archived === 'function' ? memory.archived() : []) || []).map((m) => ({
+          ...m, archivedAt: m.invalidAt, tier: toStarTier(m.tier),
+        }))
+        const items = [...live, ...archived].map((m) => starOf(m, meta))
+        const edges = buildEdges(items)
+        const prev = readGraph()
+        const out = layoutGraph3d(items, { edges, prev: prev.layout || null, now: Date.now(), day })
+        // 布局结果存下来，下次打开星图不用重算（和中枢一样的行为）
+        writeGraph({ ...prev, layout: out, at: Date.now(), version: LAYOUT_VERSION })
+        // stars 是面板直接渲染的数据：条目 + 坐标 + 亮度。layoutGraph3d 只回 positions，
+        // 这里把两者合起来，省得面板自己去查表。
+        const now2 = Date.now()
+        const stars = items.map((it) => {
+          const p = (out.positions && out.positions[it.id]) || null
+          return {
+            id: it.id,
+            text: it.text,
+            about: it.about || '',
+            aboutName: it.aboutName || '',
+            tags: it.tags || [],
+            tier: it.tier,
+            importance: Number(it.importance) || 0.5,
+            at: it.at,
+            lastHit: it.lastHit,
+            S: it.S,
+            source: it.source,
+            // 渲染器要的：区域决定颜色，hits 参与「代表星」排序（重要度和亮度在真实数据里几乎一致，
+            // 只有被想起的次数能看出哪些是常用记忆），child 决定子星云归属。
+            region: it.archivedAt ? 'archived' : it.invalidAt ? 'outdated' : regionOf(it),
+            hits: Number(it.hits) || 0,
+            child: (out.childOf && out.childOf[it.id]) || '',
+            archivedAt: it.archivedAt || 0,
+            invalidAt: it.invalidAt || 0,
+            brightness: brightness({ S: it.S, lastHit: it.lastHit }, it, now2),
+            x: p ? p.x : 0,
+            y: p ? p.y : 0,
+            z: p ? p.z : 0,
+            cluster: (out.clusters && out.clusters[it.id]) || '',
+          }
+        })
+        // 渲染器读 data.layout.groups / data.layout.radius，这里按它期望的形状回。
+        const layout = { version: out.version, radius: out.radius, groups: out.groups || [], clusters: out.clusters || {} }
+        // stats 给渲染器画「记忆中枢 · N 条记忆」用。
+        const stat = {
+          total: stars.length,
+          live: stars.filter((s) => !s.archivedAt && !s.invalidAt).length,
+          archived: stars.filter((s) => s.archivedAt).length,
+          outdated: stars.filter((s) => s.invalidAt && !s.archivedAt).length,
+          bright: stars.filter((s) => s.brightness >= 0.7).length,
+          dim: stars.filter((s) => s.brightness < FADING_THRESHOLD).length,
+        }
+        // edges 给渲染器画关系线用（kind: person/tag/similar/conflict，和中枢的语义一致）。
+        return { ok: true, version: out.version, radius: out.radius, layout, stats: stat, groups: out.groups, clusters: out.clusters, childOf: out.childOf, settle: out.settle, edges, stars }
+      }
+
+      api.route('/memory/graph', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        return buildGraph(Number(body.day) || 0)
+      })
+      // 点击复习：真的改 hitDays/lastHit（用户要的「主动加深」，和被动联想加深并存）
+      api.route('/memory/graph/review', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        const id = String(body.id || '')
+        if (!id) return { ok: false, message: '缺少记忆 id' }
+        const m = (memory.list('') || []).find((x) => x.id === id)
+        if (!m || m.invalidAt) return { ok: false, message: '找不到这条记忆' }
+        try {
+          memory.touch([{ it: m }])
+          // 复习后要按**新的**状态算亮度，否则提示里的清晰度还是复习前的旧值。
+          const fresh = (memory.list('') || []).find((x) => x.id === id) || m
+          const b = brightness({ S: 20 * (1 + Math.min(10, Number(fresh.hitDays) || 0)) * (0.5 + (Number(fresh.importance) || 0.5)), lastHit: fresh.lastHit }, fresh, Date.now())
+          return { ok: true, message: `已确认还记得（${STAR_TIER_LABEL[toStarTier(fresh.tier)] || '长期'}，清晰度 ${Math.round(b * 100)}%）` }
+        } catch (error) { return { ok: false, message: '复习失败：' + error.message } }
+      })
+      api.route('/memory/graph/restore', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        const id = String(body.id || '')
+        if (!id) return { ok: false, message: '缺少记忆 id' }
+        const r = memory.restore(id)
+        return r?.ok ? { ok: true, message: '已恢复这条记忆' } : { ok: false, message: r?.message || '恢复失败' }
+      })
+      api.route('/memory/graph/update', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        const id = String(body.id || '')
+        const patch = body.patch && typeof body.patch === 'object' ? body.patch : {}
+        if (!id) return { ok: false, message: '缺少记忆 id' }
+        // 星图传的 tier 是 short/long/core，要先翻成 rc1 的数字档再交给 update
+        if (patch.tier !== undefined) {
+          const t = toHostTier(patch.tier)
+          if (t === null) delete patch.tier
+          else patch.tier = t
+        }
+        return memory.update(id, patch)
+      })
+      api.route('/memory/graph/remove', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        const id = String(body.id || '')
+        // memory.remove() 对任何 id 都返回 {ok:true}（它只是 filter 一下），
+        // 面板会误报「已删除」。这里先确认这条真的存在。
+        if (!id) return { ok: false, message: '缺少记忆 id' }
+        const exists = (memory.list('') || []).some((m) => m.id === id)
+        if (!exists) return { ok: false, message: '找不到这条记忆' }
+        const r = memory.remove(id)
+        return r?.ok ? { ok: true, message: '已删除这条记忆' } : { ok: false, message: r?.message || '删除失败' }
+      })
+      api.route('/memory/graph/add', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        const text = String(body.text || '').trim().slice(0, 200)
+        if (!text) return { ok: false, message: '内容不能为空' }
+        // tier 认不出来就直接报错，别静默存成「长期」——用户选了永久却变成长期会以为没生效
+        let tier
+        if (body.tier !== undefined && body.tier !== null && body.tier !== '') {
+          const t = toHostTier(body.tier)
+          if (t === null) return { ok: false, message: '层级只能是 临时/长期/永久' }
+          tier = t
+        }
+        const tags = (Array.isArray(body.tags) ? body.tags : []).map((t) => String(t).trim()).filter(Boolean).slice(0, 5)
+        const r = memory.add({ text, importance: body.importance ?? 0.5, tags, source: 'panel', tier })
+        if (!r?.ok) return r || { ok: false, message: '新增失败' }
+        const label = tier === undefined ? '未分档' : (STAR_TIER_LABEL[String(body.tier)] || '长期')
+        return { ...r, message: r.updated ? '已更新一条相似的记忆' : `已新增到${label}记忆` }
+      })
+      api.route('/memory/graph/tier', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        const t = toHostTier(body.tier)
+        if (t === null) return { ok: false, message: '层级只能是 临时/长期/永久' }
+        // 批量：星图右键菜单可以对整个星团改档。上限 200，防止一次刷爆写盘。
+        const ids = Array.isArray(body.ids) ? body.ids.map((x) => String(x)).filter(Boolean).slice(0, 200) : []
+        if (ids.length) {
+          let done = 0
+          const failed = []
+          for (const id of ids) {
+            const r = memory.setTier(id, t)
+            if (r?.ok) done += 1
+            else failed.push(id)
+          }
+          return {
+            ok: done > 0,
+            message: `已改档 ${done} 条` + (failed.length ? `，${failed.length} 条没改成` : ''),
+            done, failed: failed.length,
+          }
+        }
+        const id = String(body.id || '')
+        if (!id) return { ok: false, message: '缺少记忆 id' }
+        return memory.setTier(id, t)
+      })
+      // 批量复习：右键「全部复习一次」。和单条一样真的涨 hitDays / 刷新 lastHit。
+      api.route('/memory/graph/review-many', async (req) => {
+        let body = {}
+        try { body = (await http.body(req)) || {} } catch {}
+        const ids = Array.isArray(body.ids) ? body.ids.map((x) => String(x)).filter(Boolean).slice(0, 200) : []
+        if (!ids.length) return { ok: false, message: '没有要复习的记忆' }
+        const live = memory.list('') || []
+        const hit = live.filter((m) => ids.includes(m.id) && !m.invalidAt)
+        if (!hit.length) return { ok: false, message: '这些记忆都不在了' }
+        try {
+          memory.touch(hit.map((it) => ({ it })))
+          return { ok: true, message: `已复习 ${hit.length} 条`, done: hit.length }
+        } catch (error) { return { ok: false, message: '复习失败：' + error.message } }
+      })
+      api.route('/memory/graph/sync', async () => buildGraph())
+      api.route('/memory/graph/optimize', async () => {
+        const r = buildGraph()
+        const moved = (r?.settle && r.settle.maxMove) || 0
+        return { ...r, message: moved > 2 ? `已优化星团位置，最大移动 ${Math.round(moved)}` : '星团位置已经是最优的' }
+      })
+      // /state 是**只读**统计接口：不能调 buildGraph，那会顺带把布局写盘（副作用）。
+      // 这里直接拿原始数据算，开销也小得多（buildGraph 要建边 + 跑布局，约 79ms）。
+      api.route('/memory/graph/state', async () => {
+        const now = Date.now()
+        const meta = new Map((memory.metaAll() || []).map((x) => [x.id, x]))
+        const live = (memory.list('') || []).filter((m) => !m.invalidAt)
+        const arch = (typeof memory.archived === 'function' ? memory.archived() : []) || []
+        const bright = live.filter((m) => {
+          const mt = meta.get(m.id) || {}
+          return brightness({ S: mt.tau, lastHit: mt.lastHit || m.lastHit }, m, now) >= 0.7
+        }).length
+        const dim = live.filter((m) => {
+          const mt = meta.get(m.id) || {}
+          return brightness({ S: mt.tau, lastHit: mt.lastHit || m.lastHit }, m, now) < FADING_THRESHOLD
+        }).length
+        // 没有缓存布局时按区域粗估一个星团数（只是给面板一个温度计，准确值走 /graph）。
+        const regionCount = new Set(live.map((m) => (m.about ? 'person' : String(m.source) === 'event' ? 'event' : 'knowledge'))).size
+        // 星团数从**已缓存的布局**里读（上次 buildGraph 存下的），没有再回落到区域估算。
+        // 这样这个只读接口不会为了一个数字去跑全量布局，也不会写盘。
+        const cached = readGraph()
+        const cachedGroups = cached && cached.layout && Array.isArray(cached.layout.groups) ? cached.layout.groups.length : 0
+        return {
+          ok: true,
+          setting: { autoRecall: api.config().memory.recallMode !== 'trigger' },
+          stats: {
+            total: live.length + arch.length,
+            live: live.length,
+            archived: arch.length,
+            outdated: 0,
+            bright,
+            dim,
+            clusters: cachedGroups || regionCount,
+            lastSync: cached.at || 0,
+          },
+        }
+      })
+    }
     api.route('/memory/extract', async (req) => {
       const b = await http.body(req)
       // 立即整理一次：连今天的也提炼（今天的聊天流水不删，写日记还要用）
