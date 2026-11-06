@@ -15,13 +15,21 @@ import { AUTOTELIC_CHAT_PREFIX } from './audit.js'
 /** 首期工具白名单：她的回合里允许出现的动作形状（L2 全排除）。 */
 export const ALLOWED_TOOLS = Object.freeze(['fs', 'fs-search', 'fetch', 'web'])
 
-/** 一轮「做事」的提示词。明确边界：只读为主、写只能写自己的目录、不许发消息。 */
+/** 一轮「做事」的提示词。明确边界：只读为主、写只能写自己的目录、不发消息。
+ *  2026-11-05 少爷定：进工作间先让模型自审「这事值不值得做」，不值得直接关掉。 */
 export function buildActPrompt(task, step, { quiet = false } = {}) {
   return [
-    `你在办自己立的任务，只管推进当前这一步。`,
-    `任务：${task.title}（当初立项的理由：${task.reason}）`,
-    `当前步骤：${step.desc}（${step.level}）`,
+    `你刚给自己立了一件事，进工作间先问自己一句：这件事到底值不值得做。`,
+    `任务：${task.title}`,
+    `当初立项的理由：${task.reason}`,
     '',
+    '【先自审】这件事真的值得我花时间去做吗？',
+    '- 如果它只是一句寒暄、一个称呼、一句闲聊应答、没有可挖的内容，或者根本不是我该操心的：',
+    '  **别硬做**，直接输出 {"abandon": true, "why": "一句话说明为什么这事不值得做"}，这件事会被关掉。',
+    '- 如果它确实有点意思、有值得弄明白的东西，再往下走。',
+    '',
+    '【再做】',
+    `当前这一步：${step.desc}（${step.level}）`,
     '边界（必须遵守）：',
     '- 只做这一步；只读为主，要写就只能写你自己数据目录里的文件（notes/ 之类）',
     '- 不许发 QQ 消息、不许碰 onebot、不许跑 shell 命令——这些不在你的工具里，也别想办法绕',
@@ -42,6 +50,9 @@ export function parseActMemo(raw) {
       if (o && typeof o === 'object') {
         return {
           ok: Boolean(o.done),
+          // 自审否决（2026-11-05 少爷定）：模型判断这事不值得做 → 任务关掉，不算失败
+          abandon: o.abandon === true,
+          why: String(o.why || ''),
           observation: String(o.observation || text.slice(0, 200)),
           hypothesis: String(o.hypothesis || ''),
           evidence: String(o.evidence || ''),
@@ -50,7 +61,7 @@ export function parseActMemo(raw) {
       }
     } catch { /* 落到纯文本 */ }
   }
-  return { ok: Boolean(text.trim()), observation: text.trim().slice(0, 200) || '（没有产出）', hypothesis: '', evidence: '', lesson: '' }
+  return { ok: Boolean(text.trim()), abandon: false, why: '', observation: text.trim().slice(0, 200) || '（没有产出）', hypothesis: '', evidence: '', lesson: '' }
 }
 
 /**
@@ -73,12 +84,15 @@ export function createExec({ settings, hub, auditNote, log } = {}) {
     const s = settings()
     const hadTools = toolsAllowed()
     const prompt = buildActPrompt(task, step, { quiet: false })
-    const opts = { timeoutMs: Number(s.actTimeoutMs) || 180000, noTools: !hadTools, key: `act-${task.id}` }
+    const opts = { timeoutMs: Number(s.actTimeoutMs) || 180000, noTools: !hadTools, key: 'workbench' }
     // §4.6b：做事用主模型（不传 model）；带工具时指 aurabot-autotelic preset（fs 只读，无 shell）
     if (hadTools) opts.presetId = 'aurabot-autotelic'
     let raw = ''
     try {
-      raw = await hub.runSystemTurn('autotelic-act', `${AUTOTELIC_CHAT_PREFIX}-act · ${task.title}`.slice(0, 40), prompt, opts)
+      // 2026-11-05 修「会话爆炸」（少爷真机反馈：任务多时侧栏一排 autotelic 会话）：
+      // 所有任务共享一个工作间会话（key=workbench），任务上下文由提示词带进去，
+      // 不再每任务一个会话（16 任务 = 16 条侧栏记录，不优雅也没必要）。
+      raw = await hub.runSystemTurn('autotelic-act', `${AUTOTELIC_CHAT_PREFIX} · 工作间`, prompt, opts)
     } catch (error) {
       log?.warn?.(`自驱：任务「${task.title}」这步出错：`, error?.message)
       return { ok: false, observation: `回合失败：${error?.message || error}`, memo: parseActMemo(''), hadTools, error: String(error?.message || error) }

@@ -12,6 +12,9 @@ export const MAX_TOTAL = 40 // 总量 ≤40（pruneLedger）
 
 const nowOf = (o) => (typeof o.now === 'function' ? o.now() : Date.now())
 
+/** 预审否决的记忆保留量（只用来挡住「同一句闲聊每轮反复送审」，不参与任何账）。 */
+const MAX_SCREEN_VETO = 60
+
 function normalize(raw) {
   const t = raw && typeof raw === 'object' ? raw : {}
   return {
@@ -19,6 +22,8 @@ function normalize(raw) {
     actions: Array.isArray(t.actions) ? t.actions.filter((n) => Number(n) > 0) : [], // 动作时间戳（预算用）
     ticks: Array.isArray(t.ticks) ? t.ticks.slice(-6) : [], // 最近 6 次心跳（§10.2 面板看节奏）
     lastTick: t.lastTick || null,
+    // 立项前预审否决过的素材（2026-11-05 少爷定）：sourceId + 时间 + 理由
+    screenVetoes: Array.isArray(t.screenVetoes) ? t.screenVetoes.filter((x) => x && x.id).slice(-MAX_SCREEN_VETO) : [],
   }
 }
 
@@ -76,7 +81,7 @@ export function createBook({ file = '', now = () => Date.now(), maxActive = MAX_
     /** 全量（面板用）。 */
     list() { return state.tasks.map((t) => ({ ...t, steps: (t.steps || []).map((s) => ({ ...s })) })) },
     activeCount: () => active().length,
-    meta: () => ({ ticks: [...state.ticks], lastTick: state.lastTick, actions: state.actions.length }),
+    meta: () => ({ ticks: [...state.ticks], lastTick: state.lastTick, actions: state.actions.length, screenVetoes: state.screenVetoes.length }),
 
     /** 记一次心跳（面板「最近 6 次心跳间隔」用）。 */
     heartbeat(outcome = '', at = nowOf({ now })) {
@@ -164,6 +169,23 @@ export function createBook({ file = '', now = () => Date.now(), maxActive = MAX_
       return { ok: true, taskStatus: t.status }
     },
 
+    /** 瞬态退避（2026-11-05 修「冷却中冤死」）：后台会话冷却/超时这类瞬态失败，
+     *  把 running 的步退回 pending、退一次失败计数——不占熔断指纹，也不该把任务憋成 blocked。
+     *  （真机账本：4 个 blocked 里 3 个是「后台会话冷却中/等太久了」这种瞬态，属冤死。） */
+    releaseStep(taskId, why = '') {
+      const t = state.tasks.find((x) => x.id === taskId)
+      if (!t) return { ok: false, why: '没有这个任务' }
+      const s = (t.steps || []).find((x) => x.status === 'running')
+      if (!s) return { ok: false, why: '没有在途的步' }
+      s.status = 'pending'
+      s.attempts = Math.max(0, (s.attempts || 1) - 1)
+      s.startedAt = 0
+      s.why = String(why || '').slice(0, 200)
+      t.updatedAt = nowOf({ now })
+      save()
+      return { ok: true }
+    },
+
     /**
      * 死循环熔断（P1.4，验收 6）：对 (tool,args,observation) 算指纹，同任务内同指纹第 2 次 → abandoned。
      * @returns {{looped:boolean, abandoned:boolean}}
@@ -195,6 +217,33 @@ export function createBook({ file = '', now = () => Date.now(), maxActive = MAX_
       pruneLedger()
       save()
       return { ok: true }
+    },
+
+    /**
+     * 记一笔「立项前预审否决」（2026-11-05 少爷定）：只用来让同一句废话别每轮反复送审，不参与账。
+     * 2026-11-06 加 fp（归一化文本指纹）：同一句话从流水里再采出来 sourceId 会变（带时间戳），
+     * 冷却按 id 记挡不住「群友复读/闲聊刷屏」，指纹才挡得住。
+     * @param {{id:string, why?:string, title?:string, fp?:string}} o
+     */
+    screenVeto({ id, why = '', title = '', fp = '' } = {}) {
+      const sid = String(id || '')
+      if (!sid && !String(fp || '')) return { ok: false }
+      const at = nowOf({ now })
+      const fresh = { id: sid, fp: String(fp || '').slice(0, 32), why: String(why).slice(0, 160), title: String(title).slice(0, 80), at }
+      state.screenVetoes = [...state.screenVetoes.filter((x) => x.id !== sid || (!sid && x.fp === fresh.fp)), fresh].slice(-MAX_SCREEN_VETO)
+      save()
+      return { ok: true }
+    },
+
+    /** 预审否决过的素材 id 列表（冷却由调用方按时间判，这里只给数据）。 */
+    screenVetoes() { return state.screenVetoes.map((x) => ({ ...x })) },
+
+    /** 否决指纹是否还在冷却期内（2026-11-06：同文本 48 小时内直接本地否，不调模型）。 */
+    screenFingerprintHot(fp, coolMs) {
+      const f = String(fp || '')
+      if (!f) return false
+      const at = nowOf({ now })
+      return state.screenVetoes.some((x) => x.fp === f && at - (x.at || 0) < coolMs)
     },
 
     /** 面板状态汇总。 */

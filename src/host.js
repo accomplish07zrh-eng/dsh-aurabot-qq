@@ -578,6 +578,9 @@ export function apply(ctx) {
     dir: dataDir('modules-data', 'autotelic', 'audit'), // host 侧拿不到模块 api，要自己带上 modules-data/autotelic 前缀
     chatOfSession: (sessionId) => { try { return hub.chatOfSession?.(sessionId) || '' } catch (error) { return '' } },
     isOwnedSession: safeOwnedSession(typeof hub?.isOwnedSession === 'function' ? (sessionId) => hub.isOwnedSession(sessionId) : null),
+    // 写工具只许写她自己的数据目录（2026-11-05 真机审计实证：她确实用 edit/write 改自己的 notes，
+    // 属于预期用法，所以不封工具、只封路径；框架代码 src/ 一律不许动）
+    ownRoot: dataDir('modules-data', 'autotelic'),
     log: logger.child('自驱审计'),
   })
   core.autotelicAuditOn = true

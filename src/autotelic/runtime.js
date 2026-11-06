@@ -7,13 +7,25 @@
 //
 // 安静时段（§4.6）：只禁「打扰主人」（P4 的发言前判定用），不禁「她自己做事」——
 // 所以立项 / 做事在安静时段照常跑，夜里消耗照常记账（每日一页单列一行）。
+//
+// 瞬态退避（2026-11-05）：hub 的后台会话冷却/「等太久了」/「上一轮还没结束」都属瞬态——
+// 她的做事回合、purpose、diary 共享同一批后台会话窗，撞车是常态，不算她把事办砸了。
 
-import { gatherMaterials, proposeTasks, mergeModelScores } from './engine.js'
+/** 瞬态失败特征（hub 的后台会话冷却 / 等太久 / 上一轮没结束）。 */
+const TRANSIENT_RE = /冷却|等太久|还没结束/
+
+import { gatherMaterials, proposeTasks, mergeModelScores, buildScreenPrompt, parseScreenVerdicts, trivialWhy, screenFingerprint } from './engine.js'
 import { createBook } from './book.js'
 import { inQuietHours } from '../purpose/engine.js'
 import {
   reviewDue, buildDailyPage, dreamDue, distillDream, writeReflection, createJournal, dayKey as dayKeyOf,
 } from './reflect.js'
+
+/** 预审否决的记忆冷却（2026-11-05 少爷定）：同一句废话别每分钟反复送审。
+ *  2026-11-06 真机实证升级：id 冷却挡不住「同句话从流水再采出来 id 变了」，
+ *  指纹冷却从 6h 提到 48h——闲聊的半衰期远不止 6 小时（「market上下的插件」
+ *  隔了一夜还被送审第三次，模型自己都写「此前已判过」）。 */
+const SCREEN_VETO_COOL_MS = 48 * 3600_000
 
 /** 解析 'provider/model' 形式的便宜模型配置（留空 = 关闭自评）。 */
 export function parseEvalModel(v) {
@@ -46,11 +58,14 @@ export function isQuietNow(settings, at = Date.now()) {
  * @param {string} [o.ledgerFile] ledger.json 路径
  * @param {object} [o.log]
  * @param {(prompt:string, opts:object)=>Promise<string>} [o.evalTurn] 便宜模型自评回合（测试注入 fake）
+ * @param {(prompt:string, opts:object)=>Promise<string>} [o.screenTurn] 立项前预审回合；
+ *   没配 evalModel 时用**主模型**跑（默认复用 evalTurn 的接线；测试注入 fake）
  */
-export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, personaName = '', ledgerFile = '', log, evalTurn = null, now = () => Date.now(), act = null, journal = null, auditNote = null, auditStat = null } = {}) {
+export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, personaName = '', ledgerFile = '', log, evalTurn = null, screenTurn = null, now = () => Date.now(), act = null, journal = null, auditNote = null, auditStat = null } = {}) {
   let running = false
   let book = null
   let bookLimits = ''
+  let currentTaskId = '' // 正在办的任务（做事回合期间非空；工具落盘文件用它打前缀，弹窗按前缀归账）
 
   /** 记忆列表（memory 模块没开 / 抛错都按空处理，采集继续）。 */
   function memoryRecordsOf(mem) {
@@ -108,28 +123,52 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
 
   /**
    * 好奇判分（不打分不落盘的部分，preview 和 tick 共用）。
+   * @param {{previewOnly?:boolean}} [o] previewOnly=true 时零副作用（不刷新预审冷却）
    * @returns {{materials, candidates, rejected}}
    */
-  function appraise() {
+  function appraise({ previewOnly = false } = {}) {
     const s = settings()
     const bk = bookFor()
     const materials = collect()
     const tasks = bk.list()
     const recentTitles = tasks.slice(-12).map((t) => t.title)
+    // 同源冷却（2026-11-05 修「重复立项饿死引擎」）：做完/放弃的同源素材 7 天内不再立项，
+    // blocked/failed 的 24 小时——「拆解刷B站原理」立 3 次、活跃坑被占满就是这么来的
+    const at = now()
+    const coolSourceIds = tasks
+      .filter((t) => t.sourceId && t.status !== 'active')
+      .filter((t) => {
+        const age = at - (t.updatedAt || 0)
+        return age < ((t.status === 'blocked' || t.status === 'failed') ? 24 : 168) * 3600_000
+      })
+      .map((t) => t.sourceId)
     const r = proposeTasks({
       materials,
       activeTasks: tasks.filter((t) => t.status === 'active'),
       recentTitles,
+      coolSourceIds,
+      // 预审否决过的素材在冷却期内不再送审（少爷定：同一句废话不许每分钟反复烧模型）
+      screenCoolIds: bk.screenVetoes().filter((x) => at - (x.at || 0) < SCREEN_VETO_COOL_MS).map((x) => x.id),
       minCuriosity: s.minCuriosity,
       maxCandidates: Number(s.maxCandidates) || 3,
-      now: now(),
+      now: at,
     })
+    // 被预审冷却挡住的素材要**刷新冷却**（2026-11-06 真机实证：不刷新的话，隔了冷却期
+    // 还会再烧一个模型回合重新确认一遍「这是闲聊」——复读一句就多烧一次）。
+    // 预览（preview）不走这里，零副作用不受影响。
+    if (!previewOnly) {
+      for (const rej of r.rejected) {
+        if (!/预审已否决/.test(String(rej.why || '')) || !rej.sourceId) continue
+        const m = materials.find((x) => String(x.id || '') === rej.sourceId)
+        if (m) bk.screenVeto({ id: rej.sourceId, fp: screenFingerprint(m.text), title: rej.title, why: '同源冷却中（刷新）' })
+      }
+    }
     return { materials, ...r, book: bk }
   }
 
   /** 零副作用预览（P1.5，验收 2/3）：今天会立什么项、为什么、分数多少。不调模型、不落盘。 */
   function preview() {
-    const { materials, candidates, rejected, lastOutcome } = appraise()
+    const { materials, candidates, rejected, lastOutcome } = appraise({ previewOnly: true })
     return {
       ok: true,
       enabled: !!settings().enabled,
@@ -139,6 +178,81 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
       rejected: rejected.slice(0, 12),
       thresholds: { minCuriosity: Number(settings().minCuriosity) },
     }
+  }
+
+  /**
+   * 【立项前预审】（2026-11-05 少爷定）：进待办之前先判值不值得办。
+   * 工作间里她自己的自审靠不住——立项后她看的是自己立的题，天然会给自己找理由
+   * （真机账本：把「我刚安装dsh那天就有」判成「完整整句，非寒暄，值得做」放行了）。
+   * 所以再往前挪一道：**审查员视角、进账本之前**，不值得的直接不立项，记冷却 + 审计。
+   *
+   * 模型不可用（回合失败 / 回包解析不出来）时**不默认放行**：本地启发式能判定的直接否掉，
+   * 判不出来的**押到下一拍**（deferred），宁可晚一轮，也别偷偷放一句废话进待办。
+   * @param {object[]} candidates proposeTasks 的候选
+   * @returns {Promise<{kept:object[], vetoed:object[], deferred:object[]}>}
+   */
+  async function screenCandidates(candidates = []) {
+    if (!candidates.length) return { kept: [], vetoed: [], deferred: [] }
+    const bk = bookFor()
+    const veto = (c, why) => {
+      bk.screenVeto({ id: c.sourceId || c.title, fp: screenFingerprint(c.title), title: c.title, why })
+      auditNote?.({ kind: 'autotelic/screen', tool: 'pre-review', args: { task: c.title }, outcome: why })
+    }
+    // 【指纹直否】（2026-11-06 修「同一句闲聊每 6 小时重烧一个模型回合」，真机账本实证：
+    // 「market上下的插件」这条群友闲聊前后被送审 3 次，模型每次都答「此前已判过」——
+    // 冷却按 sourceId 记挡不住复读，因为同句话再采出来 id 是新的。改按归一化文本指纹：
+    // 48 小时内否过的原话（含群友复读、同义重复），本地直接否，一个模型回合都不花。）
+    const fresh = []
+    const vetoed = []
+    for (const c of candidates) {
+      const fp = screenFingerprint(c.title)
+      if (fp && bk.screenFingerprintHot(fp, SCREEN_VETO_COOL_MS)) {
+        const why = '同文本此前已预审否决（48h 指纹冷却），不再送审'
+        vetoed.push({ ...c, why: `立项前预审否决：${why}` })
+        bk.screenVeto({ id: c.sourceId || c.title, fp, title: c.title, why })
+        auditNote?.({ kind: 'autotelic/screen', tool: 'fingerprint', args: { task: c.title }, outcome: why })
+        continue
+      }
+      fresh.push(c)
+    }
+    if (!fresh.length) return { kept: [], vetoed, deferred: [] }
+    const model = parseEvalModel(settings().evalModel)
+    let verdicts = null
+    // 预审这条不能依赖「主人配了便宜模型」——真机上 evalModel 是空的（少爷没配），
+    // 那样预审就永远走本地启发式、等于没装闸。所以没配便宜模型时用**主模型**审：
+    // 代价是每个候选多一次主模型后台回合，但它是「进待办前」的唯一一道语义闸。
+    const turn = typeof screenTurn === 'function' ? screenTurn : (model && typeof evalTurn === 'function' ? evalTurn : null)
+    if (!turn) log?.warn?.('自驱：立项前预审没接线（没有 screenTurn / evalTurn），这轮候选全部押后——检查模块接线')
+    if (turn) {
+      try {
+        const opts = model ? { model, timeoutMs: 60000 } : { timeoutMs: 60000, noTools: true, key: 'screen' }
+        verdicts = parseScreenVerdicts(await turn(buildScreenPrompt(fresh), opts))
+      } catch (error) { log?.debug?.('自驱：立项前预审回合失败，押后或本地判：', error?.message) }
+    }
+    const kept = []
+    const deferred = []
+    fresh.forEach((c, idx) => {
+      // 模型给了裁决就按裁决；没给（或这条没评到）→ 本地兜底；本地再判不出来就**押后**，
+      // 绝不当成「值得」放行——闸失效等于没装闸（2026-11-05 少爷口径）。
+      let worth = null
+      let why = ''
+      if (verdicts) {
+        const v = verdicts.find((x) => x.i === idx + 1)
+        if (v) { worth = v.worth; why = v.why }
+      }
+      if (worth === null) {
+        const local = trivialWhy(c.title)
+        if (local) { worth = false; why = local }
+      }
+      if (worth === null) { deferred.push({ ...c, why: '预审这轮没给出裁决（模型不可用或没评到），押到下一拍再审' }); return }
+      if (worth) { kept.push(c); return }
+      const reason = why || '预审判这件事不值得办'
+      vetoed.push({ ...c, why: `立项前预审否决：${reason}` })
+      veto(c, reason)
+    })
+    if (vetoed.length) log?.info?.(`自驱：立项前预审否决 ${vetoed.length} 条（${vetoed.map((v) => v.title).join('、')}）`)
+    if (deferred.length) log?.debug?.(`自驱：预审没裁决 ${deferred.length} 条，押到下一拍`)
+    return { kept, vetoed, deferred }
   }
 
   /** 心跳（§4.5）：每分钟判定该不该立项；立项落账。返回 tick 结局（面板心跳节奏用）。 */
@@ -152,6 +266,7 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
     let detail = {}
     try {
       const { materials, candidates, rejected, lastOutcome } = appraise()
+      let noWhy = ''
       if (!materials.length) outcome = 'skipped-no-material' // 场景 2
       else if (!candidates.length) outcome = lastOutcome // 场景 3：低于阈值，素材留池
       else {
@@ -170,14 +285,26 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
             if (m) mergeModelScores(JSON.parse(m[0]), candidates).forEach((c, i) => { if (c && candidates[i]) candidates[i] = c })
           } catch (error) { log?.debug?.('自驱：模型自评失败，用公式分：', error?.message) }
         }
+        // 【立项前预审】（2026-11-05 少爷定）：值不值得办，进账本之前就判掉——
+        // 别等立项了再让她在工作间里自审（自己审自己靠不住，真机已证）。
+        const screened = await screenCandidates(candidates)
+        const kept = screened.kept
         const added = []
-        for (const c of candidates) {
+        if (screened.vetoed.length) detail.vetoed = screened.vetoed.map((v) => ({ title: v.title, why: v.why }))
+        if (screened.deferred.length) detail.deferred = screened.deferred.map((v) => ({ title: v.title, why: v.why }))
+        for (const c of kept) {
           const r = bk.addTask(c)
           if (r.ok) added.push({ id: r.task.id, title: r.task.title, score: r.task.score, reason: r.task.reason })
-          else log?.debug?.(`自驱：候选「${c.title}」没立项：${r.why}`)
+          else { log?.debug?.(`自驱：候选「${c.title}」没立项：${r.why}`); noWhy = noWhy || r.why }
         }
-        outcome = added.length ? 'proposed' : 'skipped-budget' // 场景 7：预算超限不开新坑
-        detail = { added, rejected: rejected.length }
+        // 场景 7 与「活跃已满」分开标注：预算见底 ≠ 手头满了；
+        // 「全被预审否决」与「预审没裁决押后」也各自单独标注，面板能看出卡在哪一道。
+        outcome = added.length
+          ? 'proposed'
+          : (kept.length === 0 && screened.vetoed.length ? 'screened-out'
+            : (kept.length === 0 && screened.deferred.length ? 'screen-deferred'
+              : (/活跃任务已满/.test(noWhy || '') ? 'active-full' : 'skipped-budget')))
+        detail = { ...detail, added, rejected: rejected.length }
       }
       bk.heartbeat(outcome)
       if (outcome === 'proposed') log?.info?.(`自驱：立项 ${detail.added.length} 个（${detail.added.map((a) => a.title).join('、')}）`)
@@ -210,8 +337,32 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
     const begin = bk.beginStep(task.id)
     if (!begin.ok) return { outcome: 'no-step', why: begin.why }
     const stepDesc = (task.steps || []).find((x) => ['running'].includes(x.status)) || begin.step || { desc: '', level: 'L0' }
+    currentTaskId = task.id // 这期间她的工具调用能对上「现在是在给哪条任务做事」（notes 前缀等）
+    try {
     const r = await act.runStep(task, stepDesc)
-    if (r.hadTools) bk.recordAction() // L1 记账：带工具的做事回合才占动作预算（L0 只想不算）
+    // 【进工作间自审】2026-11-05 少爷定：进工作间第一件事由模型判断「这事值不值得做」，
+    // 不值得就由她回报 abandon → 任务直接关掉（不算失败、不写反思、不重复烧预算）。
+    // 提示词在 exec.buildActPrompt 里；这条接住她的否决。
+    if (r.abandon) {
+      bk.recordAction() // 这一轮确实起了回合，仍占一次动作预算
+      const why = String(r.why || r.observation || '她判断这事不值得做').slice(0, 200)
+      bk.close(task.id, 'abandoned', `进工作间自审不通过：${why}`)
+      auditNote?.({ kind: 'autotelic/abandon', tool: 'self-review', args: { task: task.title }, outcome: why })
+      log?.info?.(`自驱：「${task.title}」进工作间后自审不通过，关掉 —— ${why}`)
+      return { outcome: 'act-abandoned', taskId: task.id, why }
+    }
+    // 瞬态退避（2026-11-05 修「冷却中冤死」）：后台会话冷却/超时这类瞬态失败不算步失败——
+    // 不计 attempts、不进熔断指纹，退回 pending 下个心跳自然重试。
+    // （真机账本：4 个 blocked 里 3 个是「后台会话冷却中/等太久了」，全属冤死。）
+    if (!r.ok && TRANSIENT_RE.test(String(r.observation || '') + String(r.error || ''))) {
+      bk.releaseStep(task.id, `瞬态退避：${String(r.observation || '').slice(0, 80)}`)
+      log?.info?.(`自驱：「${task.title}」撞上后台瞬态，这步退回待办，下轮再试`)
+      return { outcome: 'act-backoff', taskId: task.id, hadTools: r.hadTools }
+    }
+    // 2026-11-05 修「一小时动二十多次」（少爷真机反馈）：做事回合一律记账——
+    // 原口径 L0 回合不占预算，等于「想」不要钱，心跳每分钟推一步就免费无限跑。
+    // 现在每个做事回合都占预算，预算到顶自然停，等下一小时。
+    bk.recordAction() // 做事回合（含 L0）都占动作预算：预算是「她这一小时动了几次」，不是「她花了多少工具调用」
     // 死循环熔断（场景 6）：同任务同「步骤+观察」第 2 次 → abandoned
     const loop = bk.guardLoop(task.id, `${stepDesc.desc}|${r.observation}`)
     if (loop.abandoned) { log?.info?.(`自驱：「${task.title}」死循环熔断`); return { outcome: 'loop-broken', taskId: task.id } }
@@ -220,11 +371,14 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
     const nowTask = bk.list().find((t) => t.id === task.id)
     let reflected = false
     if (nowTask && ['done', 'failed', 'blocked', 'abandoned'].includes(nowTask.status)) {
-      const w = writeReflection(memoryOf(), nowTask, r.memo || r, log)
+      const w = writeReflection(memoryOf?.(), nowTask, r.memo || r, log)
       reflected = w.ok
     }
     if (manual || !r.ok) log?.info?.(`自驱：「${task.title}」这步${r.ok ? '办完了' : '没办成'}${r.hadTools ? '（带工具）' : '（只想）'}`)
     return { outcome: r.ok ? 'step-done' : 'step-failed', taskId: task.id, hadTools: r.hadTools, reflected, taskStatus: end.taskStatus }
+    } finally {
+      currentTaskId = '' // 做事回合结束就摘掉当前任务标记，别让下一轮的工具误挂到这条上
+    }
   }
 
   /**
@@ -331,6 +485,7 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p
     preview,
     book: bookFor,
     get running() { return running },
+    get currentTaskId() { return currentTaskId },
     isQuietNow: (at = now()) => isQuietNow(settings(), at),
   }
 }

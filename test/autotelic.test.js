@@ -15,7 +15,7 @@ function tmpDir(t, name) {
 }
 
 /** 构造审计器：chatOfSession 只认她的会话；isOwnedSession 照 hub 口径。 */
-function mkAuditor(t, name, { chatMap = {}, owned = () => true, flushMs = 1 } = {}) {
+function mkAuditor(t, name, { chatMap = {}, owned = () => true, flushMs = 1, ownRoot = '' } = {}) {
   const dir = tmpDir(t, name)
   const debug = []
   const auditor = createAuditor({
@@ -24,6 +24,7 @@ function mkAuditor(t, name, { chatMap = {}, owned = () => true, flushMs = 1 } = 
     isOwnedSession: owned,
     log: { debug: (...v) => debug.push(v.join(' ')) },
     flushMs,
+    ownRoot,
   })
   t.after(() => auditor.dispose())
   return { dir, auditor, debug }
@@ -116,18 +117,103 @@ test('账本被删 / 被改会露：断链能被校验出来并报出位置（�
   assert.match(broken.brokenAt.reason, /断链|对不上/)
 })
 
-test('结果补记：session/event 的 tool/* 事件进账本，非 tool 事件不进', async (t) => {
+test('结果回填：结果不另起一行，回填到她这次动作的那行（2026-11-05 修 3 连冗余）', async (t) => {
   const { dir, auditor } = mkAuditor(t, 'result', { chatMap: { her: 'system:autotelic' } })
   const session = { id: 'her' }
+  await auditor.preExecute({ name: 'fs', arguments: { path: 'x' }, agent: { session: { id: session.id } } }, async () => ({ kind: 'allow' }))
   auditor.onSessionEvent(session, { type: 'tool/result', data: { toolName: 'fs', result: 'ok' } })
   auditor.onSessionEvent(session, { type: 'assistant/message', data: { message: {} } })
   auditor.onSessionEvent(session, { type: 'turn/end', data: { turn: 1 } })
   await auditor.flush()
   const chain = await verifyAuditChain(dir)
-  assert.equal(chain.total, 1)
+  assert.equal(chain.total, 1, '同一动作只落一行（意图 + 结果回填，不再是 3 行）')
   const text = readFileSync(join(dir, chainFile(dir)), 'utf8')
-  assert.match(text, /tool\/result/)
+  assert.match(text, /tool\/call/)
   assert.match(text, /"tool":"fs"/)
+  assert.match(text, /outcome.*ok/, '结果回填到同一行的 outcome')
+})
+
+// —— 2026-11-05 真机审计实证补的两个缺陷 ——
+
+test('结果回填按 DSH 真实事件形状（tool/result 的载荷是 {turn,step,message}，工具名不在顶层）', async (t) => {
+  // 真机证据：171 条 tool/result 全是空 tool / 空 outcome——旧实现按 d.toolName 取，永远取不到。
+  // DSH 的真实形状：tool/call = {turn,step,callId,name,arguments}；tool/result = {turn,step,message}
+  const { dir, auditor } = mkAuditor(t, 'realshape', { chatMap: { her: 'system:autotelic' } })
+  const session = { id: 'her' }
+  const next = async () => ({ kind: 'allow' })
+  await auditor.preExecute({ name: 'read', callId: 'call-1', arguments: { path: 'a.md' }, agent: { session: { id: 'her' } } }, next)
+  // 真实形状的结果事件
+  auditor.onSessionEvent(session, {
+    type: 'tool/result',
+    data: {
+      turn: 1,
+      step: 1,
+      message: { role: 'tool', toolCallId: 'call-1', content: [{ type: 'text', text: '文件内容：大肥鱼' }] },
+    },
+  })
+  await auditor.flush()
+  const lines = readFileSync(join(dir, chainFile(dir)), 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+  assert.equal(lines.length, 1, '同一动作仍然只落一行')
+  assert.match(lines[0].outcome, /文件内容：大肥鱼/, `结果要真回填（真机旧实现这里是空的）：${JSON.stringify(lines[0])}`)
+})
+
+test('结果回填按 callId 关联：同一工具并发调用不会串行（按工具名会串）', async (t) => {
+  const { dir, auditor } = mkAuditor(t, 'callid', { chatMap: { her: 'system:autotelic' } })
+  const next = async () => ({ kind: 'allow' })
+  // 两次 read 并发：pending 里按工具名只有一个槽，旧实现第二条会覆盖第一条／串台
+  await auditor.preExecute({ name: 'read', callId: 'c-1', arguments: { path: 'first.md' }, agent: { session: { id: 'her' } } }, next)
+  await auditor.preExecute({ name: 'read', callId: 'c-2', arguments: { path: 'second.md' }, agent: { session: { id: 'her' } } }, next)
+  const session = { id: 'her' }
+  auditor.onSessionEvent(session, { type: 'tool/result', data: { message: { toolCallId: 'c-1', content: [{ type: 'text', text: '第一个的结果' }] } } })
+  await auditor.flush()
+  const lines = readFileSync(join(dir, chainFile(dir)), 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
+  assert.equal(lines.length, 2, '两次调用各一行')
+  const hit = lines.filter((l) => /第一个的结果/.test(l.outcome || ''))
+  assert.equal(hit.length, 1, `结果只能落到一条上，实得 ${hit.length} 条`)
+})
+
+test('第二道门补拦 MCP / 团队类工具（真机审计：browser_navigate、team_task_list、list_agents 被她调到了）', async (t) => {
+  const { dir, auditor } = mkAuditor(t, 'mcpgate', { chatMap: { her: 'system:autotelic', owner: 'private:10000' } })
+  const next = async () => ({ kind: 'allow' })
+  const exec = (sid, tool) => ({ name: tool, arguments: {}, agent: { session: { id: sid } } })
+  for (const tool of ['mcp__browser__browser_navigate', 'mcp__browser__browser_snapshot', 'team_task_list', 'task_board_list', 'list_agents']) {
+    const r = await auditor.preExecute(exec('her', tool), next)
+    assert.equal(r.kind, 'deny', `她的会话不许碰 ${tool}`)
+  }
+  // 只读 fs 仍然放行（别把闸做成一刀切）
+  const ok = await auditor.preExecute(exec('her', 'read'), next)
+  assert.deepEqual(ok, { kind: 'allow' }, 'read 照常放行')
+  // 主人私聊不受影响
+  const ownerOk = await auditor.preExecute(exec('owner', 'mcp__browser__browser_navigate'), next)
+  assert.deepEqual(ownerOk, { kind: 'allow' }, '主人自己用浏览器不受她的闸管')
+  await auditor.flush()
+  const text = readFileSync(join(dir, chainFile(dir)), 'utf8')
+  assert.match(text, /tool\/denied/, '被拒的要留账')
+})
+
+test('写工具只许写她自己目录：目录外拒绝，目录内放行（真机审计：她用 edit/write 改过自己的 notes）', async (t) => {
+  const root = tmpDir(t, 'writeroot')
+  const { dir, auditor } = mkAuditor(t, 'writescope', { chatMap: { her: 'system:autotelic' }, ownRoot: root })
+  const next = async () => ({ kind: 'allow' })
+  const exec = (tool, p) => ({ name: tool, arguments: { file_path: p }, agent: { session: { id: 'her' } } })
+  const inside = await auditor.preExecute(exec('write', join(root, 'notes', 'a.md')), next)
+  assert.deepEqual(inside, { kind: 'allow' }, '写自己 notes 放行')
+  const outside = await auditor.preExecute(exec('edit', 'D:/Trae CN/project/pulis/aurabot/repo/src/host.js'), next)
+  assert.equal(outside.kind, 'deny', '写框架代码要被拒')
+  const escape = await auditor.preExecute(exec('write', join(root, '..', 'outside.md')), next)
+  assert.equal(escape.kind, 'deny', '用 .. 跳出目录也要被拒')
+  await auditor.flush()
+  const text = readFileSync(join(dir, chainFile(dir)), 'utf8')
+  assert.match(text, /tool\/denied/)
+})
+
+/** 造一个写工具测试用的临时根（跟审计目录分开）。 */
+test('孤儿结果：没有对应意图的结果事件不落行（非她会话的结果被前置过滤挡住）', async (t) => {  const { dir, auditor } = mkAuditor(t, 'orphan', { chatMap: { her: 'system:autotelic' } })
+  const session = { id: 'her' }
+  auditor.onSessionEvent(session, { type: 'tool/result', data: { toolName: 'fs', result: 'ok' } })
+  await auditor.flush()
+  const chain = await verifyAuditChain(dir)
+  assert.equal(chain.total, 0, '没有意图的结果事件没有行可回填，直接丢')
 })
 
 test('参数截断：超长参数只留头部，落盘不炸', async (t) => {
@@ -183,7 +269,7 @@ test('模块壳：默认全关、状态路由返回审计链校验，enabled=fal
   assert.deepEqual(status.heartbeats, [])
   assert.equal(status.summary.total, 0)
   assert.deepEqual(status.tasks, [], '默认关时账本是空的')
-  assert.deepEqual(Object.keys(routes).sort(), ['/autotelic/env', '/autotelic/journal', '/autotelic/preview', '/autotelic/proposals', '/autotelic/run', '/autotelic/skills', '/autotelic/status', '/autotelic/step', '/autotelic/tune'].sort(), 'P0~P4：状态/预览/手动跑/推进一步/调参/复盘/技能/提案/环境')
+  assert.deepEqual(Object.keys(routes).sort(), ['/autotelic/day', '/autotelic/env', '/autotelic/journal', '/autotelic/preview', '/autotelic/proposals', '/autotelic/run', '/autotelic/skills', '/autotelic/status', '/autotelic/step', '/autotelic/takeover', '/autotelic/takeover-status', '/autotelic/tune'].sort(), 'P0~P4 + 接管：状态/预览/手动跑/推进一步/调参/复盘/技能/提案/环境/某天记录/接管与还原/接管状态')
 })
 
 test('模块壳：host 接线后状态路由显示「审计已开启」与当日条数', async (t) => {
@@ -210,11 +296,16 @@ test('模块壳：host 接线后状态路由显示「审计已开启」与当日
   assert.equal(status.audit.chain.total, 0) // 空行不算条目
 })
 
-test('声明式配置：settings 键与 defaults 一一对应，首期不存在的键不许混进来', () => {
+test('声明式配置：settings 覆盖所有用户可见键，内部键不进面板', () => {
   const keys = module.settings.map((s) => s.key)
-  assert.deepEqual(keys.sort(), Object.keys(module.defaults).sort(), 'settings 数组与 defaults 完全对齐（面板按数组生成）')
+  // 内部状态键（takenOver = 接管原值备份）：不进 settings 数组，面板不展示表单，只在状态里只读显示
+  const INTERNAL = ['takenOver']
+  const visible = Object.keys(module.defaults).filter((k) => !INTERNAL.includes(k)).sort()
+  assert.deepEqual(keys.sort(), visible, 'settings 数组与 defaults 对齐（内部键除外；面板按数组生成）')
+  for (const k of INTERNAL) assert.equal(keys.includes(k), false, `内部键 ${k} 不该出现在面板表单里`)
   assert.equal(module.defaults.enabled, false, '总开关默认关')
   assert.equal(module.defaults.presetIdOverride, false, 'presetId 覆盖开关默认关（§9）')
+  assert.equal(module.defaults.takeover, false, '接管默认关（主人手动点才生效，TAKEOVER §3）')
   for (const forbidden of ['l2PerDay', 'budgetTokensPerDay']) {
     assert.equal(keys.includes(forbidden), false, `${forbidden} 首期不存在（§2.2 / §4.8）`)
   }
