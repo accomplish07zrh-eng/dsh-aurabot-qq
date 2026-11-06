@@ -482,7 +482,27 @@ test('broker 档：决断不发 + 日志口各种坏形态都不炸链路（2026
   }
 })
 
-test('broker 档：群聊 / 朋友私聊不走代发（保持原路径）', async (t) => {  const svc = createOutboundPolicy({
+test('broker 档：代发本身抛异常也收敛成 null（异常路径不让链路炸）', async (t) => {
+  const svc = createOutboundPolicy({
+    getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
+    dataDir: null, hooks: { fsSync: false },
+  })
+  svc.registerPolicySource({
+    name: 'purpose', state: () => 'ready', ready: () => true,
+    reserve: () => ({ ok: true, reserveId: 'r1' }), commit: () => ({ ok: true }), release: () => ({ ok: true }),
+  })
+  // 代发入口直接抛：模块层必须收成 null（旧调用口的失败值），不能把异常抛回业务代码
+  svc.submit = async () => { throw new Error('宿主代发器崩了') }
+  const { hub } = makeHub(t)
+  // 日志口同样是坏形态：抛错的 warn 不能再把 catch 里的收敛路径炸掉（双层兜底）
+  const core = { hub, outbound: svc, logger: { child: () => ({ warn: () => { throw new Error('日志器也炸了') } }) } }
+  const scoped = scopeCoreForModule(core, 'probe-delegate-throw')
+  const r = await scoped.hub.sendText('private:10001', '代发异常的一条')
+  assert.equal(r, null, '代发抛异常收敛为 null')
+})
+
+test('broker 档：群聊 / 朋友私聊不走代发（保持原路径）', async (t) => {
+  const svc = createOutboundPolicy({
     getConfig: () => ({ ownerQQ: '10001', ext: { outboundPolicy: { tier: 'broker' } } }),
     dataDir: null, hooks: { fsSync: false },
   })
