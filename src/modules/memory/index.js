@@ -96,27 +96,28 @@ export default {
       ]
     })
 
-    api.route('/memories', async (req) => ({ ok: true, items: memory.list(http.query(req).q || '').slice(0, 300), stats: memory.stats() }))
-    api.route('/memory/assoc/preview', async (req) => {
-      const q = String(http.query(req).q || '').trim()
-      if (!q) return { ok: false, message: '给个查询词' }
-      const owner = String(api.config().ownerQQ || '')
-      const chatId = owner ? `private:${owner}` : ''
+    api.route('/memories', async (req) => {
+      const q = http.query(req).q || ''
+      // 面板「翻一翻」也带向量检索：只按字面找的话，搜「最近老是睡不好」是找不到「主人经常熬夜」的
       let vec = []
-      try { vec = await memory.vectorHits(q) } catch (error) {}
-      // shown: false —— 预览不能算「真想起过」，否则你点几下预览就把记忆加深了、还乱涨 critical 计数
-      const hits = memory.recall(q, { where: chatId, about: owner, limit: 6, groupChatId: '', vectorHits: vec, shown: false })
-      const rows = hits.map((h) => ({
-        id: h.it.id,
-        text: (h.it.text || '').slice(0, 80),
-        score: Math.round(h.score * 100) / 100,
-        hop: h.assocHop ?? 0,
-        via: h.assocOf || '',
-        why: (h.why || []).join('　'),
-      }))
-      const ap = api.config().memory.assoc || {}
-      return { ok: true, query: q, hops: ap.hops ?? 2, recall: ap.recall ?? 3, items: rows,
-        counts: { direct: rows.filter((r) => !r.hop).length, hop1: rows.filter((r) => r.hop === 1).length, hop2: rows.filter((r) => r.hop === 2).length, hop3: rows.filter((r) => r.hop === 3).length } }
+      if (q) {
+        try { vec = await memory.vectorHits(q) } catch (error) {}
+      }
+      const all = memory.list(q, vec)
+      // 以前硬写 slice(0, 300)：库过 300 条之后，「翻一翻」永远翻不到后面的，
+      // 用户搜也搜不出来（实机 500 条时有 200 条是隐形的）。
+      // 现在给 offset/limit 分页，返回 total 让前端知道还有多少没加载。
+      const limitRaw = Number(http.query(req).limit)
+      const offsetRaw = Number(http.query(req).offset)
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(1000, Math.floor(limitRaw)) : 300
+      const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0
+      return {
+        ok: true,
+        items: all.slice(offset, offset + limit),
+        total: all.length,
+        hasMore: offset + limit < all.length,
+        stats: memory.stats(),
+      }
     })
     // 面板「立即重建联想」：平时 tick 会自动建，这里给手动排查用
     api.route('/memory/assoc/rebuild', async () => memory.buildAssoc())
