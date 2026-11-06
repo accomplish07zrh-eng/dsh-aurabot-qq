@@ -146,7 +146,8 @@ export function createMemoryStorage({ directory = () => dataDir(), log = console
   function openDatabase() {
     selectDirectory()
     if (backend === 'json') return
-    if (existsSync(path('memory-json-fallback.json'))) {
+    // 只有「库还在」时，回退标记才有意义：库被删掉后标记必须失效，否则会永久卡在 JSON 后端。
+    if (existsSync(path('memory.sqlite')) && existsSync(path('memory-json-fallback.json'))) {
       fallback(new Error('上次 SQLite 写入失败，继续使用 JSON，避免读到旧数据'))
       return
     }
