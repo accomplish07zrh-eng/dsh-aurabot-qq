@@ -50,6 +50,13 @@ const INJECTED_BLOCK_LINE = /(?:^|\n)[ \t]*(?:把这一段当成整体来回[：
 const RUNTIME_CONTEXT_HEAD = /Current runtime context\. This snapshot supersedes/g
 const RUNTIME_CONTEXT_LINE = /^(?:Current |Approval policy:|Browser time zone|[\p{Lu}][\p{L} \d]{1,40}:)/u
 
+// 宿主 time-context 每一步都注入一段三行文本（Time sampled … / Browser time zone … / Elapsed since …），
+// 模型会顺着它往下续写。这里只认前缀不认整句 —— 续写时模型会改写后半句
+// （otherwise-unqualified dates and times → amongst questions），整句指纹拦不住。
+// 注意：matchAll 会沿用共享 /g 正则的 lastIndex，这里用源头字符串每次新建。
+const TIME_CONTEXT_HEAD_SOURCE = '^[ \\t]*Time sampled while preparing turn \\d+, step \\d+:'
+const TIME_CONTEXT_LINE = /^(?:Time sampled while preparing turn \d+, step \d+:|Browser time zone for this request:|Elapsed since the preceding (?:model-visible message|step context):)/
+
 function runtimeContextEnd(text, start) {
   let end = start
   for (const line of text.slice(start).split('\n')) {
@@ -57,6 +64,39 @@ function runtimeContextEnd(text, start) {
     end += line.length + 1
   }
   return Math.min(end, text.length)
+}
+
+/** 与 runtime context 同理：块头命中后一路吃到第一行不是注入内容的行。 */
+function timeContextEnd(text, start) {
+  let end = start
+  for (const line of text.slice(start).split('\n')) {
+    if (line.trim() && !TIME_CONTEXT_LINE.test(line.trim())) break
+    end += line.length + 1
+  }
+  return Math.min(end, text.length)
+}
+
+/**
+ * time-context 的块头可能出现在正文中间（模型先写一句再抄），也可能块里只剩一两行，
+ * 所以除了「从块头吃到她自己的话」，任何单独命中前缀的行都要剔。
+ * 这段不是提示词复读，不能走主人私聊的复读豁免，所以调用方要单独并进出站区间。
+ */
+export function contextInjectionRanges(text, { toEndOfText = false } = {}) {
+  const raw = String(text ?? '')
+  const ranges = []
+  for (const m of raw.matchAll(new RegExp(TIME_CONTEXT_HEAD_SOURCE, 'gm'))) {
+    ranges.push({ start: m.index, end: toEndOfText ? raw.length : timeContextEnd(raw, m.index) })
+  }
+  if (toEndOfText) return ranges
+  let offset = 0
+  for (const line of raw.split('\n')) {
+    const end = Math.min(offset + line.length + 1, raw.length)
+    if (TIME_CONTEXT_LINE.test(line.trim()) && !ranges.some((r) => r.start <= offset && end <= r.end)) {
+      ranges.push({ start: offset, end })
+    }
+    offset += line.length + 1
+  }
+  return ranges
 }
 
 /** 固定注入块即使很短也识别；正文里的普通「刚才聊到的」不算。 */
@@ -103,6 +143,7 @@ export function memoryPromptRanges(text, { toEndOfText = false } = {}) {
   for (const m of text.matchAll(RUNTIME_CONTEXT_HEAD)) {
     ranges.push({ start: m.index, end: toEndOfText ? text.length : runtimeContextEnd(text, m.index) })
   }
+  ranges.push(...contextInjectionRanges(text, { toEndOfText }))
   for (const m of text.matchAll(INJECTED_BLOCK_LINE)) {
     ranges.push({ start: m[0][0] === '\n' ? m.index + 1 : m.index, end: m.index + m[0].length })
   }

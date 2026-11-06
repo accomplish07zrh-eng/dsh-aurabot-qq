@@ -1,5 +1,9 @@
 # 更新记录
 
+## 未发布
+
+- 挡住模型把 dsh 的运行期上下文注入（`Time sampled while preparing turn …` / `Browser time zone for this request:` / `Elapsed since the preceding …`）当正文抄进聊天：在 `memoryPromptRanges()` 里按前缀认这三行，出站清理和指纹登记一处修两处生效；模型顺手改写过的变体也拦得住。原来的指纹只认逐字复读，而 `promptSources` 里又从来没并进 snapshot 注入，加上主人私聊的复读豁免，这几种情况都会整条放行。
+
 ## 1.3.0-beta.1（开发型 Beta）
 
 - 开发型 Beta，功能开发中；可能包含破坏性变更，不建议生产使用。
