@@ -969,9 +969,18 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const repo = 'https://github.com/aureth-labs/dsh-aurabot-qq'
       const mods = 'https://github.com/aureth-labs/dsh-aurabot-qq-mods'
       const gh = (name) => h('a', { key: 'gh-' + name, href: 'https://github.com/' + name, target: '_blank', rel: 'noreferrer' }, '@' + name)
-      // GitHub contributors API（按提交数排序）+ 版本说明里记录的 issue 报告 / 反馈者（没有 commit，单列）
-      const coders = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao', 'GitNekopedia', 'Chsw-CC', 'chsw', 'Emotionana', 'Nightc-c', 'Fallen-plum-blossom']
+      // 兜底名单：接口读不到时用这份；平时优先用 /about/contributors 动态拉取（GitHub contributors）
+      const fallbackCoders = ['accomplish07zrh-eng', 'baihengaead', 'RookieApe-tao', 'GitNekopedia', 'Chsw-CC', 'chsw', 'Emotionana', 'Nightc-c', 'Fallen-plum-blossom']
       const reporters = ['cxin21', 'zhuyi314', '38213063', 'HuaGyuu', 'CYyare', 'yunxirumo', 'XiongYachao']
+      const [remote, setRemote] = useState(null)
+      useEffect(() => {
+        let alive = true
+        get('/about/contributors').then((r) => { if (alive && r && r.ok && Array.isArray(r.list) && r.list.length) setRemote(r) })
+        return () => { alive = false }
+      }, [])
+      const coders = remote ? remote.list.map((x) => x.login) : fallbackCoders
+      // 头像墙每天换一个查询参数，避免浏览器/CDN 按 3 天缓存卡住不更新
+      const wallSrc = 'https://contrib.rocks/image?repo=aureth-labs/dsh-aurabot-qq&v=' + new Date().toISOString().slice(0, 10)
       const kv = (rows) => h('div', { className: 'ab-kv' }, rows.flatMap(([k, v]) => [h('span', { key: k }, k), h('span', { key: k + '-v' }, v)]))
       const copyGroup = (e) => { try { navigator.clipboard.writeText('1130575035'); e.target.textContent = '已复制'; setTimeout(() => { e.target.textContent = '复制' }, 1500) } catch (error) {} }
       // 核心开发者：仓库创建者 + 两位主要贡献者（只展示头像与名字，不标具体模块）
@@ -1012,8 +1021,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
           h('div', null,
             // 头像墙由 contrib.rocks 按仓库提交记录自动生成，有新人提交就会自己更新，不用改代码
             h('a', { key: 'wall', className: 'ab-contrib', href: repo + '/graphs/contributors', target: '_blank', rel: 'noreferrer', title: '在 GitHub 上查看贡献者列表' },
-              h('img', { src: 'https://contrib.rocks/image?repo=aureth-labs/dsh-aurabot-qq', alt: '贡献者头像墙', loading: 'lazy', referrerPolicy: 'no-referrer', onError: (e) => { e.currentTarget.style.display = 'none' } })),
-            h('p', { className: 'ab-muted ab-small', style: { marginTop: 0, marginBottom: 12 } }, '上面这排头像由 contrib.rocks 按提交记录自动更新，有新人提交就会自己变（加载不出来就点它，跳 GitHub 看）。下面按「写代码的 / 报问题提建议的」分开列。'),
+              h('img', { src: wallSrc, alt: '贡献者头像墙', loading: 'lazy', referrerPolicy: 'no-referrer', onError: (e) => { e.currentTarget.style.display = 'none' } })),
+            h('p', { className: 'ab-muted ab-small', style: { marginTop: 0, marginBottom: 12 } }, '上面这排头像由 contrib.rocks 按提交记录自动更新（地址每天换一次，避免被浏览器缓存卡住）；下面「写代码的」名单从 GitHub contributors 实时拉取，读不到时用内置名单兜底。'),
             h('div', { style: { marginBottom: 8 } }, h('b', { style: { fontSize: 13 } }, '写代码的')),
             h('div', { className: 'ab-flex', style: { flexWrap: 'wrap', gap: 8 } },
               coders.map((n) => h('span', { key: n, className: 'ab-pill' }, gh(n)))),
