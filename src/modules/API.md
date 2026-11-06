@@ -82,6 +82,7 @@ export default {
   ],
   panel: 'panel.js',          // 可选：自己画面板（见「面板」）
   tab: 'song',                // 可选：设置和面板放进哪个内置标签页（不写就单独一页，见「面板」）
+  group: 'self',              // 可选：自己占一页时挂到哪一组（home/self/express/platform/system，或组里任一页 id）；不影响 tab
   setup(api) {                // 必填：启动时调用一次，可以是 async
     // 在这里注册事件、工具、命令、定时任务……
     return { /* 导出给别的模块用的东西 */ }
@@ -269,6 +270,10 @@ api.tool(({ chat, level, sessionId }) => {
 
 **自动表单**：写了 `settings`，面板会多一个这个模块的标签页，自动生成设置表单，用户改完点保存。
 定义里写了 `tab: '内置标签页'`（`voice` `stickers` `imagegen` `diary` `speakup` `mood` `song` `bili` `local` `group` `model` `persona` `access` `connect` `overview`），设置和面板就放进那一页的最下面，不单独占一页。比如给翻唱加功能的模块写 `tab: 'song'`。
+
+想自己占一个子标签页、又不想按名字被分到「系统」组里，就在定义里写 `group`：`home`（概览）/ `self`（人设）/ `express`（表达）/ `platform`（平台）/ `system`（系统），也可以写组里任一页的 id（比如 `character`）。`tab` 和 `group` 是两回事：`tab` 是塞进已有页面里，`group` 是自己一页、只换分组。
+
+`defaults` 里有 `enabled` 的扩展，页面标题栏右侧会显示和「表情包」那些内置页同一个位置的总开关（改的是草稿，底部「保存设置」生效），设置列表里不再重复「总开关」那一条；子标签页上的开/关小圆点也跟着草稿立即变化。想换个设置项当圆点（比如 `active`），就写 `flag: 'active'`。
 
 ```js
 settings: [

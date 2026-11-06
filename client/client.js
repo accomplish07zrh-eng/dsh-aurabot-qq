@@ -727,7 +727,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     ]
     // 自己写的模块：名字像逛平台的放「平台」，其余放「系统」（排在「日志」前面）
     const PLATFORM_EXT = /逛|刷|B站|抖音|小红书|闲鱼|淘宝|微博|知乎|贴吧|快手|触站|小黑盒/
-    const navGroupOf = (t) => NAV_GROUPS.find((g) => g.tabs.includes(t.id)) || (t.ext && PLATFORM_EXT.test(t.label) ? NAV_GROUPS[3] : NAV_GROUPS[4])
+    // 自己写的模块可以写 group（home/self/express/platform/system，或组里任一内置页 id）指定挂到哪一组；
+    // 不写就按名字猜：像逛平台的进「平台」，其余进「系统」。
+    const navGroupOf = (t) => NAV_GROUPS.find((g) => g.id === t.group) || NAV_GROUPS.find((g) => g.tabs.includes(t.group)) || NAV_GROUPS.find((g) => g.tabs.includes(t.id)) || (t.ext && PLATFORM_EXT.test(t.label) ? NAV_GROUPS[3] : NAV_GROUPS[4])
     const navOrder = (g, t) => { const i = g.tabs.indexOf(t.id); return i >= 0 ? i : g.tabs.length - (g.tabs.includes('logs') ? 1.5 : 0) }
     const NAV_ALIAS = {
       overview: '首页 状态', connect: 'qq 网关 snowluma onebot 登录 工作区', character: '人设 性格 设定 头像', persona: '人物 画像 小档案 群印象 梗概 时间轴 相处经验 说话方式', access: '主人 白名单 权限 群管 改资料',
@@ -3795,10 +3797,18 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         if (s.type === 'password') return f.text(p, { type: 'password', placeholder: getPath(draft, p + 'Set') ? '已保存（不改就留空）' : s.placeholder || '' })
         return f.text(p, { placeholder: s.placeholder })
       }
+      // 有 enabled 开关的扩展：标题栏右边直接放总开关（和「表情包」那些内置页一个位置），
+      // 设置列表里就不再重复一条；开关改的是草稿，和别的设置一起在底部「保存设置」生效。
+      const switchKey = m.flag === 'enabled' || (m.settings || []).some((s) => s.key === 'enabled') ? 'enabled' : ''
+      const hasSwitch = !embedded && Boolean(switchKey)
+      const visibleSettings = (m.settings || []).filter((s) => !(hasSwitch && s.key === 'enabled'))
+      const headRight = hasSwitch
+        ? f.sw(base + switchKey, { title: '开 / 关这个扩展' })
+        : h('span', { className: 'ab-badge mine' }, embedded ? '扩展模块 · ' + m.id : m.id)
       return h('div', { className: 'ab-grid' },
-        ((m.settings || []).length || (m.errors || []).length || !m.panel) ? h(Card, { title: m.name, desc: m.description, right: h('span', { className: 'ab-badge mine' }, embedded ? '扩展模块 · ' + m.id : m.id) },
-          (m.settings || []).map((s) => h(Row, { key: s.key, label: s.label || s.key, hint: s.hint }, field(s))),
-          (m.settings || []).length ? h('div', { className: 'ab-small ab-muted' }, '改完点下面的「保存设置」。') : null,
+        (visibleSettings.length || (m.errors || []).length || !m.panel || hasSwitch) ? h(Card, { title: m.name, desc: m.description, right: headRight },
+          visibleSettings.map((s) => h(Row, { key: s.key, label: s.label || s.key, hint: s.hint }, field(s))),
+          visibleSettings.length ? h('div', { className: 'ab-small ab-muted' }, '改完点下面的「保存设置」。') : null,
           (m.errors || []).length ? h('div', { className: 'ab-note err', style: { marginTop: 8 } }, '最近的报错：' + m.errors[0].message) : null) : null,
         m.panel ? h(ExtPanel, { m, settings, draftSettings, setSettings, toast, reload }) : null)
     }
@@ -5035,7 +5045,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       // 旧模块的 tab: 'persona' 原本嵌在「人格」，继续放回原页。
       const tabOf = (m) => m.tab === 'persona' ? 'character' : m.tab
       const intoTab = (m) => Boolean(tabOf(m) && TABS.some((t) => t.id === tabOf(m)))
-      const extTabs = mods.filter((m) => hasUi(m) && !intoTab(m)).map((m) => ({ id: 'ext:' + m.id, label: m.name, ext: m.id, flag: m.flag ? `ext.${m.id}.${m.flag}` : '', flagDefault: getPath(m.defaults || {}, m.flag || '') }))
+      // group 在宿主版本较老时不会返回，退而读 defaults 里的 __panelGroup（扩展自己写的兼容标记）。
+      const extGroupOf = (m) => m.group || (m.defaults && (m.defaults.__panelGroup || m.defaults.panelGroup)) || ''
+      const extTabs = mods.filter((m) => hasUi(m) && !intoTab(m)).map((m) => ({ id: 'ext:' + m.id, label: m.name, ext: m.id, group: extGroupOf(m), flag: m.flag ? `ext.${m.id}.${m.flag}` : '', flagDefault: getPath(m.defaults || {}, m.flag || '') }))
       const tabs = TABS.filter((t) => !TAB_MODS[t.id] || TAB_MODS[t.id].some(running))
       tabs.splice(tabs.findIndex((t) => t.id === 'logs'), 0, ...extTabs)
       const curTab = tabs.find((t) => t.id === tab) || tabs[0]
@@ -5070,7 +5082,8 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             mark: (t) => {
               if (tabDirty(t.id)) return h('i', { className: 'dirty', title: '有没保存的改动' })
               if (!t.flag) return null
-              const flag = t.flag === 'group' ? cfg.allow.groups.length > 0 : getPath(cfg, t.flag) ?? t.flagDefault
+              // 用草稿态：标题栏的总开关一拨，上面的小圆点立刻跟着变（不用等保存）。
+              const flag = t.flag === 'group' ? (draft.allow.groups || []).length > 0 : getPath(draft, t.flag) ?? t.flagDefault
               return h('i', { className: cx('ab-dot', flag && 'ok'), title: flag ? '开着' : '关着' })
             },
           }),
