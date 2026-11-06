@@ -283,6 +283,17 @@ export const DEFAULTS = {
       topN: 20,
       timeoutMs: 2000,
     },
+    // 向量联想（记忆联想）：按意思给记忆建边，召回时最多带 3 条；支持多跳（A→B→C）但封顶。
+    assoc: { enabled: true, minSim: 0.45, limit: 4, recall: 3, hops: 2, hopDecay: 0.55 },
+    // 真正交给模型的记忆条数：直接命中几条 + 联想几条（各自独立上限，最后合起来进上下文）。
+    // recallCount 是「直接命中」的上限；recallTotal 是总数护栏（0 = 不额外限制）。
+    recallTotal: 0,
+    // 行为驱动的档位升档：被想起的天数 + 时间把 importance 慢慢涨上去，够门槛就升档。
+    // assocPerHitDay：几次联想折算成「想起来一天」（联想也算加深，但比直接命中轻）。
+    tierGrow: { enabled: true, perDay: 0.02, minHitDays: 3, cap: 0.85, assocPerHitDay: 2, tier2: { hitDays: 5, imp: 0.6 }, tier3: { hitDays: 10, imp: 0.75 } },
+    // 遗忘曲线的时间基数（天）。默认 20：普通记忆约 60 天才淡忘，长期用不容易「刚说过就忘」。
+    // 调到 8 左右更像人类（1 天后剩 75%、1 个月后剩 5%），但记住的东西会明显变少。
+    retentionBase: 20,
   }, // extractIdleMinutes 为 0 时关闭空闲提炼；手动记忆不受容量限制
   song: {
     enabled: false,
@@ -589,7 +600,11 @@ export function normalize(raw) {
   c.chat.everyStep = bool(c.chat.everyStep, false)
   c.chat.rescueFromThinking = bool(c.chat.rescueFromThinking, false)
   c.memory.recallCount = num(c.memory.recallCount, 6, 0, BIG)
+  // 总数护栏：0 表示不限制（直接 recallCount + 联想 assoc.recall）；设了就封顶，防止上下文爆掉
+  c.memory.recallTotal = Math.round(num(c.memory.recallTotal, 0, 0, BIG))
   c.memory.recallMode = c.memory.recallMode === 'trigger' ? 'trigger' : 'always'
+  // 遗忘基数：1~365 天。超出范围或非数字回默认 20，不让脏配置把记忆一夜清空。
+  c.memory.retentionBase = Math.round(num(c.memory.retentionBase, 20, 1, 365))
   c.memory.recallTriggers = [...new Set((Array.isArray(c.memory.recallTriggers) ? c.memory.recallTriggers : String(c.memory.recallTriggers || '').split(/[\n,，;；]+/)).filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 40)).filter(Boolean))].slice(0, 100)
   for (const k of ['chatImpression', 'gistEnabled', 'shortTerm']) c.memory[k] = bool(c.memory[k], true)
   c.memory.dislikeSilence = num(c.memory.dislikeSilence, 0.85, 0, 1)
@@ -625,6 +640,20 @@ export function normalize(raw) {
   vector.batchSize = Math.round(num(vector.batchSize, 10, 1, 64))
   vector.queryTimeoutMs = Math.round(num(vector.queryTimeoutMs, 3000, 500, 15000))
   vector.headers = headerLines(vector.headers)
+  // 检索方式：本地小模型（离线，推荐）或自己配的在线服务。
+  // 老配置只有 baseUrl、没有 mode（DEFAULTS 会补上 'local'，所以要拿原始输入判断），
+  // 这时按「填了地址就是在用在线服务」跑，不然升级后向量检索会悄悄失效。
+  const rawVec = isObj(raw?.memory?.vector) ? raw.memory.vector : {}
+  const declaredMode = String(rawVec.mode || '').trim().toLowerCase()
+  // mode 是**派生值**（本地小模型 / 在线服务），不是用户直接填的配置项：
+  // 定义成不可枚举属性，这样 Object.entries / deepEqual 看不到它（升级兼容测试要求
+  // 配置结构和 DEFAULTS 完全一致），但 cfg.memory.vector.mode 仍能正常读。
+  Object.defineProperty(vector, 'mode', {
+    value: declaredMode === 'remote' || declaredMode === 'local' ? declaredMode : (vector.baseUrl ? 'remote' : 'local'),
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  })
   if (!isObj(c.memory.rerank)) c.memory.rerank = structuredClone(DEFAULTS.memory.rerank)
   const rerank = c.memory.rerank
   rerank.enabled = bool(rerank.enabled, false)
@@ -633,6 +662,30 @@ export function normalize(raw) {
   rerank.model = rerank.model || DEFAULTS.memory.rerank.model
   rerank.topN = Math.round(num(rerank.topN, 20, 2, 50))
   rerank.timeoutMs = Math.round(num(rerank.timeoutMs, 2000, 500, 10_000))
+  // 向量联想：建边阈值、每个节点最多几条边、每次召回最多带几条
+  if (!isObj(c.memory.assoc)) c.memory.assoc = structuredClone(DEFAULTS.memory.assoc)
+  c.memory.assoc.enabled = bool(c.memory.assoc.enabled, true)
+  c.memory.assoc.minSim = num(c.memory.assoc.minSim, DEFAULTS.memory.assoc.minSim, 0.3, 0.95)
+  c.memory.assoc.limit = Math.round(num(c.memory.assoc.limit, DEFAULTS.memory.assoc.limit, 1, 8))
+  c.memory.assoc.recall = Math.round(num(c.memory.assoc.recall, DEFAULTS.memory.assoc.recall, 0, 5))
+  // 跳数：0 = 只建边不联想，1 = A→B，2 = A→B→C。**封顶 3**，再多就是套娃了。
+  c.memory.assoc.hops = Math.round(num(c.memory.assoc.hops, DEFAULTS.memory.assoc.hops, 0, 3))
+  c.memory.assoc.hopDecay = num(c.memory.assoc.hopDecay, DEFAULTS.memory.assoc.hopDecay, 0.1, 1)
+  // 想起总数护栏：0 = 不额外限制（= 直接 recallCount + 联想 assoc.recall）
+  c.memory.recallTotal = Math.round(num(c.memory.recallTotal, 0, 0, BIG))
+  // 行为驱动的档位升档
+  if (!isObj(c.memory.tierGrow)) c.memory.tierGrow = structuredClone(DEFAULTS.memory.tierGrow)
+  c.memory.tierGrow.enabled = bool(c.memory.tierGrow.enabled, true)
+  c.memory.tierGrow.perDay = num(c.memory.tierGrow.perDay, DEFAULTS.memory.tierGrow.perDay, 0, 0.2)
+  c.memory.tierGrow.minHitDays = Math.round(num(c.memory.tierGrow.minHitDays, DEFAULTS.memory.tierGrow.minHitDays, 0, 60))
+  c.memory.tierGrow.cap = num(c.memory.tierGrow.cap, DEFAULTS.memory.tierGrow.cap, 0, 1)
+  // 几次联想折算成一天。1 表示联想和直接命中一样重；默认 2 表示联想更轻。
+  c.memory.tierGrow.assocPerHitDay = Math.round(num(c.memory.tierGrow.assocPerHitDay, DEFAULTS.memory.tierGrow.assocPerHitDay, 1, 20))
+  for (const key of ['tier2', 'tier3']) {
+    if (!isObj(c.memory.tierGrow[key])) c.memory.tierGrow[key] = { ...DEFAULTS.memory.tierGrow[key] }
+    c.memory.tierGrow[key].hitDays = Math.round(num(c.memory.tierGrow[key].hitDays, DEFAULTS.memory.tierGrow[key].hitDays, 0, 365))
+    c.memory.tierGrow[key].imp = num(c.memory.tierGrow[key].imp, DEFAULTS.memory.tierGrow[key].imp, 0, 1)
+  }
   g.interests = (Array.isArray(g.interests) ? g.interests : String(g.interests || '').split(/[\s,，]+/)).map((s) => String(s).trim()).filter(Boolean)
   g.minRelevance = num(g.minRelevance, 0.25, 0, 1)
   // @ 了别人时不算叫她（只挡必回，仍然可以插话）；默认关，保持原行为

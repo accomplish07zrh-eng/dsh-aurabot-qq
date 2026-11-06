@@ -43,6 +43,45 @@
 | 每批多少条 | 10 | 方舟等单次 input 上限小，10 最稳；本地服务可调大 |
 | 查询超时 | 3000ms | 超过就这一轮先用关键词，不拖慢回复 |
 
+## 本地模型（不带网络，推荐）
+
+除了上面这些在线服务，1.3.0 还带了一条**完全离线**的本地路径：插件自带的 bge-small 中文向量模型。
+
+- **模型随插件发布**，在仓库的 `models/` 目录里（`model_int8.onnx` 23 MB + `vocab.txt`）。
+  `package.json` 的 `files` 已经把 `models` 列进白名单，装包时会一起带过去。
+- **不再联网下载**。早期版本试过从 GitHub Release 拉资源，但那个 Release 从来没有上传过文件，
+  实测是 404，只会让面板一直显示「下载失败」。现在模型缺失时直接提示文件该放哪。
+- 面板上「检索方式」选 **本地模型（离线，推荐）**，不用填地址、不用 Key、不产生任何费用。
+
+### 运行时依赖 onnxruntime-node
+
+本地模型靠 `onnxruntime-node` 跑推理，它列在 `package.json` 的 `optionalDependencies`：
+
+| 项 | 说明 |
+|---|---|
+| 是否需要编译 | **不需要**。该包没有 `install` 脚本，直接带各平台的 prebuild 二进制（实测 win32 下是 23 MB 的 `onnxruntime.dll` + 0.3 MB `onnxruntime_binding.node`） |
+| 支持平台 | `win32` / `darwin` / `linux`（包内 `os` 字段），解压后约 293 MB（含三平台） |
+| optional 的含义 | **装不上也不影响插件安装和其余功能**。记忆功能本身照常工作，只是「按意思找」退回关键词 |
+
+**装不上时到底会怎样（这是关键）**：`src/features/vector-embed.js` 里有个同步的 `probe()`，
+`ready()` 每次都会调它去 `require('onnxruntime-node')`。
+
+- 探不到 → `ready()` 返回 `false`，面板明确显示「向量运行时没装好：…」，**不会假装就绪**；
+- 这时所有向量相关路径（联想、语义检索）都会被跳过，记忆照常按关键词召回；
+- 换句话说：**缺运行时 = 联想不生效，但记忆不会坏**，也不会阻塞回复。
+
+> 这里踩过一个坑：`createEmbedder` 是懒加载的，早期 `ready()` 只看 `embedder.error`，
+> 而那个值在真正加载前永远是空字符串，于是 `onnxruntime-node` 没装也会报告「就绪」，
+> 面板显示开着、实际一条向量都算不出来。`probe()` 就是为修这个加的。
+
+### 手动安装模型（不想用插件自带的）
+
+把 `model_int8.onnx` 和 `vocab.txt` 放进数据目录的 `models/` 即可。查找顺序：
+
+1. `<数据目录>/models/`（用户自己放的，优先）
+2. `<数据目录>/memory-assets/`（旧路径，兼容）
+3. `<插件目录>/models/`（插件自带）
+
 ## 可选精排（Reranker）
 
 Embedding 负责“找得到”，reranker 负责“找得准”。打开「重排候选」后：

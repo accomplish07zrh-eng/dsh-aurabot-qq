@@ -27,10 +27,7 @@
 - 返回：音频文件路径（wav / mp3 / silk），或 `{ file }`
 
 ### image.mjs
-- 参数：`{ prompt, size, image?, outDir, log }`（`size` 形如 `"1024x1024"`，`prompt` 已带上面板里的固定风格）
-- `image` 是可选参考图的纯 base64，不带 `data:` 前缀；来自当前聊天收到 / 引用的图或她自己的画作。没传时照常文生图，传了就必须使用参考图。
-- 支持参考图时，在脚本顶层加 `export const supportsImage = true`，并把 `image` 接到服务的图生图接口（模板用 SD WebUI 的 `img2img` / `init_images`）。已有脚本不会自动覆盖，需要自行适配。
-- 没声明支持，或服务本身不支持时，应报「这个生图服务不支持参考图」，不能忽略 `image` 继续文生图。
+- 参数：`{ prompt, size, outDir, log }`（`size` 形如 `"1024x1024"`，`prompt` 已带上面板里的固定风格）
 - 返回：图片 `Buffer`，或 `{ buffer }` / `{ file }` / `{ base64 }` / `{ url }`
 
 ### song-convert.mjs
@@ -47,10 +44,3 @@
 ## 让 DSH 帮你改
 
 在面板「本地接口」页点「复制给 DSH 的话」，粘给 DSH，再补一句你用的是什么服务、地址和关键参数，它会读这份说明、帮你把脚本改好。
-
-## 生视频 video.mjs
-
-输入 `{ prompt, seconds, outDir, log }`，返回视频文件的完整路径或 `{ file }`。出错就 throw。
-
-生视频很慢，插件默认等 20 分钟，可以在面板「本地接口」页改。她会先回复，做好后自动发到聊天，一次只跑一段，只有主人能让她生成。
-

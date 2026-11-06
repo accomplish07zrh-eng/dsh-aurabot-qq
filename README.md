@@ -156,7 +156,7 @@ dsh plugin --profile <profile> add github:aureth-labs/dsh-aurabot-qq
 <details>
 <summary><b>数据会上传到哪？</b></summary>
 
-默认都在本地数据目录；模型走你配置的模型服务；只有你主动开启的功能（向量检索、云 TTS、B 站、空间等）才会访问对应服务。开启前面板都会写清楚。
+默认都在本地数据目录；模型走你配置的模型服务；向量检索默认用随身带的本地小模型，纯离线、不联网（如果你改成在线服务，才会把记忆文字发给你填的地址）；云 TTS、B 站、空间这些只有你主动开启才会访问对应服务。开启前面板都会写清楚。
 </details>
 
 <details>
