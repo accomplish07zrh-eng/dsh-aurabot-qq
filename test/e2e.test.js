@@ -770,6 +770,32 @@ test('面板接口：概览、人格切换', async () => {
   await fake.call('/persona/use', { id: 'dafeiyu' })
 })
 
+test('面板接口：token 用量（今日 / 昨日 / 近 7 天 / 近 30 天 + 模块 / 聊天 / 模型明细）', async () => {
+  const u = (await fake.call('/usage')).json()
+  assert.equal(u.ok, true)
+  assert.ok(u.currency, '要带币种')
+  for (const key of ['today', 'yesterday', 'last7', 'last30']) {
+    const r = u.ranges[key]
+    assert.equal(typeof r.runs, 'number', key + ' 要有调用次数')
+    assert.equal(typeof r.totalTokens, 'number', key + ' 要有合计 token')
+    assert.equal(typeof r.promptTokens, 'number', key + ' 要有输入 token')
+    assert.equal(typeof r.cachedTokens, 'number', key + ' 要有缓存命中 token')
+    assert.equal(typeof r.cost, 'number', key + ' 要有花费')
+  }
+  assert.equal(u.ranges.last30.runs >= u.ranges.last7.runs, true, '近 30 天不会比近 7 天少')
+  assert.ok(u.current, '要带所选区间的明细')
+  for (const dim of ['byModule', 'byChat', 'byModel']) assert.ok(Array.isArray(u.current[dim]), dim + ' 要是个列表')
+  assert.equal(typeof u.current.cacheHitRate, 'number')
+  assert.equal(typeof u.current.peakRatio, 'number')
+  // ?range= 决定 current 是哪个区间（面板点指标卡就是切这个）
+  const today = (await fake.call('/usage?range=today')).json()
+  assert.equal(today.range, 'today')
+  assert.equal(today.current.runs, today.ranges.today.runs, 'range=today 时 current 就是今日')
+  const d30 = (await fake.call('/usage?range=30')).json()
+  assert.equal(d30.range, '30')
+  assert.equal(d30.current.runs, d30.ranges.last30.runs, 'range=30 时 current 就是近 30 天')
+})
+
 test('头像：上传自定义头像、同步成 QQ 头像、恢复默认', async () => {
   const before = (await fake.call('/avatar')).raw()
   assert.ok(before.length > 1000, '默认头像是插件自带的那张')
