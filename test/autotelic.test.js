@@ -51,7 +51,7 @@ test('审计只记她自己的会话：主人私聊 / 群聊 / GUI 会话都不�
     owned: (sid) => sid !== 'gui', // GUI 会话连 aurabot 的会话都不算
   })
   const next = async () => ({ kind: 'allow' })
-  for (const [sid, tool] of [['her', 'pwsh'], ['owner', 'qq_send_message'], ['group', 'fs'], ['gui', 'pwsh']]) {
+  for (const [sid, tool] of [['her', 'fs'], ['owner', 'qq_send_message'], ['group', 'fs'], ['gui', 'pwsh']]) {
     const r = await auditor.preExecute({ name: tool, arguments: { command: 'echo hi' }, agent: { session: { id: sid } } }, next)
     assert.deepEqual(r, { kind: 'allow' }, '审计钩子永远放行，不改变执行结果')
   }
@@ -59,9 +59,27 @@ test('审计只记她自己的会话：主人私聊 / 群聊 / GUI 会话都不�
   const chain = await verifyAuditChain(dir)
   assert.equal(chain.total, 1, '只有她那一调用进了账本')
   const text = readFileSync(join(dir, chainFile(dir)), 'utf8')
-  assert.match(text, /"tool":"pwsh"/)
+  assert.match(text, /"tool":"fs"/)
   assert.match(text, /system:autotelic/)
   assert.doesNotMatch(text, /qq_send_message|private:|group:/)
+})
+
+test('第二道门（P2.3）：她的会话碰 shell / 进程级工具直接拒并记账；别人的会话不拦', async (t) => {
+  const { dir, auditor } = mkAuditor(t, 'gate', { chatMap: { her: 'system:autotelic', owner: 'private:10000' } })
+  const next = async () => ({ kind: 'allow' })
+  const exec = (sid, tool) => ({ name: tool, arguments: { command: 'Remove-Item /' }, agent: { session: { id: sid } } })
+  const denied = await auditor.preExecute(exec('her', 'pwsh'), next)
+  assert.equal(denied.kind, 'deny', '她的 pwsh 被拒（第一道门在 preset 不给，这里是兜底）')
+  assert.match(denied.reason, /动作菜单|提案/)
+  const spawnDenied = await auditor.preExecute(exec('her', 'spawn_teammate'), next)
+  assert.equal(spawnDenied.kind, 'deny')
+  const ownerOk = await auditor.preExecute(exec('owner', 'pwsh'), next)
+  assert.deepEqual(ownerOk, { kind: 'allow' }, '主人私聊不受第二道门管')
+  await auditor.flush()
+  const chain = await verifyAuditChain(dir)
+  assert.equal(chain.total, 2, '她两次被拒的调用留了账；主人的调用不进她的账本')
+  const text = readFileSync(join(dir, chainFile(dir)), 'utf8')
+  assert.match(text, /tool\/denied/)
 })
 
 test('哈希链：连续记录 prevHash 首尾相接，面板校验通过（场景 24 的正面）', async (t) => {
@@ -164,7 +182,7 @@ test('模块壳：默认全关、状态路由返回审计链校验，enabled=fal
   assert.deepEqual(status.heartbeats, [])
   assert.equal(status.summary.total, 0)
   assert.deepEqual(status.tasks, [], '默认关时账本是空的')
-  assert.deepEqual(Object.keys(routes).sort(), ['/autotelic/preview', '/autotelic/run', '/autotelic/status'].sort(), 'P0+P1：状态 / 预览 / 手动跑一轮')
+  assert.deepEqual(Object.keys(routes).sort(), ['/autotelic/journal', '/autotelic/preview', '/autotelic/run', '/autotelic/status', '/autotelic/step', '/autotelic/tune'].sort(), 'P0+P1+P2：状态/预览/手动跑/推进一步/调参/复盘刊物')
 })
 
 test('模块壳：host 接线后状态路由显示「审计已开启」与当日条数', async (t) => {
