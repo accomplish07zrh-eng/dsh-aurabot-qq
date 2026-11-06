@@ -1773,20 +1773,12 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '聊天用的模型', desc: '新建的 QQ 会话按这里的设置来；已有会话也可以在 DSH 里点开单独切换。聊天对速度很敏感，可以先点「测速」挑个快的。' },
           h(Row, { label: '思考强度', hint: noReasoning ? '这个模型不支持思考强度，会自动忽略' : '聊天建议「低」，回得快' }, h(Seg, { value: draft.model.reasoningEffort || 'low', disabled: noReasoning, onChange: (v) => setDraft(setPath(draft, 'model.reasoningEffort', v)), options: [{ value: 'low', label: '低' }, { value: 'high', label: '高' }, { value: 'max', label: '最高' }] })),
+          vmVal ? h(Row, { label: '识图思考强度', hint: vmNoReasoning ? '这个模型不支持思考强度，会自动忽略' : '只影响识图，和上面聊天的「思考强度」互不影响；模型不支持会自动省略' }, h(Seg, { value: draft.model.visionReasoningEffort || 'low', disabled: vmNoReasoning, onChange: (v) => setDraft(setPath(draft, 'model.visionReasoningEffort', v)), options: [{ value: 'low', label: '低' }, { value: 'high', label: '高' }, { value: 'max', label: '最高' }] })) : null,
           h(Row, { label: '视觉能力', hint: visionHint }, h(Seg, {
             value: draft.model.vision || 'auto',
             onChange: (v) => setDraft(setPath(draft, 'model.vision', v)),
             options: [{ value: 'auto', label: '自动' }, { value: 'on', label: '支持' }, { value: 'off', label: '不支持' }],
           })),
-          h(Row, { label: '识图模型', hint: vmHint }, h(Select, {
-            value: vmVal, width: 280,
-            options: vmOptions,
-            onChange: (v) => {
-              const [p, ...m] = v.split('::')
-              setDraft(setPath(setPath(draft, 'model.visionModel.provider', v ? p : ''), 'model.visionModel.model', v ? m.join('::') : ''))
-            },
-          })),
-          vmVal ? h(Row, { label: '识图思考强度', hint: vmNoReasoning ? '这个模型不支持思考强度，会自动忽略' : '只影响识图，和上面聊天的「思考强度」互不影响；模型不支持会自动省略' }, h(Seg, { value: draft.model.visionReasoningEffort || 'low', disabled: vmNoReasoning, onChange: (v) => setDraft(setPath(draft, 'model.visionReasoningEffort', v)), options: [{ value: 'low', label: '低' }, { value: 'high', label: '高' }, { value: 'max', label: '最高' }] })) : null,
           h(Row, { label: '模型' },
             h(Select, {
               value: cur, width: 280,
@@ -1795,6 +1787,14 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             }),
             cur ? h(Btn, { small: true, onClick: () => test({ provider: draft.model.provider, model: draft.model.model }) }, '测速') : null,
             cur && ping[cur] ? h('span', { className: 'ab-muted ab-small' }, ping[cur]) : null),
+          h(Row, { label: '识图模型', hint: vmHint }, h(Select, {
+            value: vmVal, width: 280,
+            options: vmOptions,
+            onChange: (v) => {
+              const [p, ...m] = v.split('::')
+              setDraft(setPath(setPath(draft, 'model.visionModel.provider', v ? p : ''), 'model.visionModel.model', v ? m.join('::') : ''))
+            },
+          })),
         ),
         h(ChatModels, { draft, setDraft, list }),
         h(CostCard, { draft, setDraft }),
