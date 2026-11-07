@@ -437,9 +437,17 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
         outcome = 'delivery-failed' // dispatch 结果不确定：不补发，避免重复
       } else {
         try {
+          // 引擎自发发言走 §5.3 私有凭据（enginePolicy）：tickOne 已经用 evaluatePurposeTick
+          // 做过全部排程/额度判定，投递时不再过模块包装层门闸——否则策略源账本与引擎账本
+          // 双轨漂移（2026-11-04 实测：引擎到点开口反被策略账本旧排程以 cooldown 拦死）。
+          // hub 的 enginePolicy 路径自己向策略源 reserve/commit（sent/failed/uncertain），
+          // 同时仍照旧走总开关 / 试运行 / 禁言。
+          const cred = friend ? null : engineCredential() // 朋友各有各的账本，仍走引擎自己直投
           // 不带 own:true：这条是别处（目的回合）发的，hub 只把「实际成功发出」的文本记进 saidElsewhere，
-          // 主人在 QQ 私聊回复时补进她的上下文，她才知道自己刚发过什么（#133 同款桥接；#211 review 后改为按真发出结果记）。
-          const r = await hub.deliver(chatIdOf(cfg, friend), text, { userText: MOOD_PREFIX })
+          // 主人在 QQ 私聊回复时补进她的上下文（#133 同款桥接；#211 review 后改为按真发出结果记）。
+          const deliverOpts = { userText: MOOD_PREFIX }
+          if (cred) { deliverOpts.enginePolicy = cred; deliverOpts.enginePolicyName = 'purpose' }
+          const r = await hub.deliver(chatIdOf(cfg, friend), text, deliverOpts)
           // 真发出去过才算 sent：deliver 返回 {sent, failed}，sent 空 = 一条都没发出去（吞错/拦截/dry-run）
           outcome = r && typeof r === 'object' && String(r.sent || '').trim() ? 'sent' : 'silent'
         } catch (error) {
@@ -471,6 +479,207 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       slot.neutral = clampInt((Number(slot.neutral) || 0) + (Number(s.neutral) || 0), 0, 0, 9999)
     }
     state.needFeedback = cur
+  }
+
+  // ---------- 代发决断（broker 档：模块经 api.proactive.submit 提交的内容先给引擎过目） ----------
+  // 设计稿 §7「提交后由引擎全权决定」（feed 语义）：宿主投递器在发送前调用这里，
+  // 引擎开一轮轻量「目的回合」：按当前目的/素材改写这句话，或选 [沉默] 不发。
+  // 决断通过（有文本）→ 宿主走 hub.deliver 投递（自动落聊天流水 + saidElsewhere 桥接 + 心情链路）；
+  // 决断沉默 / 引擎没开 / 生成出错 → 返回 false，宿主把条目按 dropped/failed 结算。
+  // 注意这里不做额度预占：额度已经由 submit 过门闸时占掉了，决断只是内容把关。
+  /**
+   * 代发决断：返回 true = 按（可能改写后的）文本投递；false = 这条不发。
+   * @param {{ to: string, text: string, moduleId?: string, itemId?: string }} input
+   */
+  async function brokerReview({ to, text, moduleId = '', itemId = '' } = {}) {
+    const cfg = getConfig()
+    const config = purposeConfig(cfg)
+    // 引擎没开就不过目：保持「门闸已放行即直发」的兜底语义（决断是增强，不是新闸门）
+    if (!config.enabled) return { ok: true, send: true, text, reviewed: false }
+    const target = String(to || '')
+    const ownerKey = chatIdOf(cfg)
+    // 只对发往主人私聊的内容过目；别的接收人（白名单朋友等）各有各的额度，宿主直发
+    if (target !== ownerKey) return { ok: true, send: true, text, reviewed: false }
+    const srcModule = String(moduleId || '模块')
+    const ownerName = cfg.ownerName || '主人'
+    // ---- 审查上下文：人格 + 心情 + 相关记忆 + 人物档案 + 最近来往 ----
+    // 刻意不给引擎排程/额度：代发审查不参考她自己的说话剩余时间。
+    // 决断要「像不像她会说的话」，就必须让她看见自己是谁、现在什么心情、记着主人什么。
+    const persona = (() => {
+      try {
+        const t = typeof personaText === 'function' ? String(personaText() || '').trim() : ''
+        return t.slice(0, 1500)
+      } catch { return '' }
+    })()
+    const moodLine = (() => {
+      try {
+        const m = moodOf()
+        if (!m) return ''
+        // contextLine 自带「你现在 X，因为 Y。这会影响你说话：Z」，比裸数字有用得多
+        if (typeof m.contextLine === 'function') {
+          const line = String(m.contextLine() || '').trim()
+          if (line) return line
+        }
+        if (typeof m.state === 'function') {
+          const st = m.state()
+          if (st) return `（你现在心情 ${Number(st.value ?? 60)}/100（${st.label || ''}）${st.reason ? `，因为${st.reason}` : ''}。）`
+        }
+      } catch {}
+      return ''
+    })()
+    // 相关记忆：按提交内容检索（不是随便抓最近五条），再由重要性补几条。
+    //
+    // 重要的顺序陷阱（2026-11-04 主人实测踩到）：
+    // 浏览型模块（bili / douyin / tophub）的工作流是「先写记忆，再推送消息」，
+    // 而代发决断发生在推送环节——此时读到的记忆，往往正是这条消息自己刚记下的草稿。
+    // 如果把它当成「她之前已经跟主人讲过」，就会误判成「重复打扰」而沉默。
+    // 所以这里必须区分「记下」与「说过」：记忆只说明她知道这件事，
+    // 「有没有跟主人说过」一律以聊天流水为准（见下面的「你们最近聊过」与提示词规则）。
+    const memLine = (() => {
+      try {
+        const mem = memoryOf()
+        if (!mem) return ''
+        const probe = String(text || '').slice(0, 200)
+        const nowMs = Date.now()
+        // 多路检索：原文 + 主人名字，命中合并去重（比单次检索更全）
+        const queries = [probe]
+        if (ownerName) queries.push(ownerName)
+        const seen = new Set()
+        const rows = []
+        const push = (t, at, source) => {
+          const s = String(t || '').trim()
+          if (!s || seen.has(s)) return
+          seen.add(s)
+          rows.push({ text: s, at: Number(at) || 0, source: String(source || '') })
+        }
+        for (const q of queries) {
+          try {
+            if (typeof mem.recall !== 'function') break
+            const hits = mem.recall(q, { limit: 8, about: '', where: '代发决断', shown: false, excludeAbout: '' }) || []
+            for (const h of hits) {
+              const it = h?.it || h || {}
+              push(it.text, it.at, it.source)
+            }
+          } catch {}
+        }
+        if (rows.length < 6) {
+          // 补：记忆库里重要性高的事（约定、关系、核心喜好）
+          const more = (mem.list?.('') || [])
+            .filter((x) => x && x.text && !x.invalidAt && !['hearsay', 'guess'].includes(x.status))
+            .sort((a, b) => (Number(b.importance) || 0) - (Number(a.importance) || 0))
+          for (const x of more) {
+            if (rows.length >= 8) break
+            push(x.text, x.at, x.source)
+          }
+        }
+        const lines = rows.slice(0, 8).map((r) => {
+          // 10 分钟内记下的标注「刚刚」：极可能是本条消息自己写进去的，不能当作「已经说过」
+          const fresh = r.at > 0 && nowMs - r.at < 10 * 60 * 1000
+          const when = fresh ? '（刚刚记下的，可能正是这条消息自己写的）' : ''
+          return `· ${r.text.slice(0, 90)}${when}`
+        })
+        return lines.length ? `【她记得的事】\n${lines.join('\n')}` : ''
+      } catch { return '' }
+    })()
+    // 人物档案 + 最近的私聊来往（判断「这条是不是已经说过了」「口吻对不对」）
+    const profileLine = (() => {
+      try {
+        const mem = memoryOf()
+        const p = mem?.personaPerson?.(ownerKey.slice('private:'.length))
+        if (!p) return ''
+        const parts = []
+        if (p.alias) parts.push(`你平时叫 TA「${p.alias}」`)
+        if (p.persona) parts.push(`TA 是${String(p.persona).slice(0, 60)}`)
+        if (p.handle) parts.push(`你们的相处：${String(p.handle).slice(0, 60)}`)
+        return parts.length ? `关于${ownerName}：${parts.join('；')}` : ''
+      } catch { return '' }
+    })()
+    const recentLine = (() => {
+      try {
+        const days = hub.chatLogDays?.() || []
+        const rows = []
+        for (const day of days.slice(-1)) {
+          for (const e of hub.chatLogOf?.(day) || []) {
+            if (!e || e.forgottenAt) continue
+            if (String(e.chatId) !== ownerKey) continue
+            rows.push(e)
+          }
+        }
+        const tail = rows.slice(-8)
+        if (!tail.length) return ''
+        // 顺便判断：主人私聊流水里，她最近有没有真的发过几乎一样的内容（这才是「说过了」的硬证据）
+        const norm = (s) => String(s || '').replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').slice(0, 120)
+        const probe = norm(text)
+        let repeated = null
+        if (probe && probe.length >= 8) {
+          const recentBot = rows.filter((e) => e.who === 'bot').slice(-30)
+          for (const e of recentBot) {
+            const t = norm(e.text)
+            if (!t) continue
+            // 用「前 12 字相同」或「重合字占比高」粗略判重，够用且不误伤
+            const head = probe.slice(0, 12)
+            if ((head.length >= 8 && t.includes(head)) || t.slice(0, 12) === probe.slice(0, 12)) { repeated = e; break }
+          }
+        }
+        const lines = tail.map((e) => `${e.who === 'bot' ? '你' : ownerName}：${String(e.text || '').replace(/\n/g, ' ').slice(0, 50)}`)
+        const dupNote = repeated
+          ? `\n（注意：你最近已经发过很像的话：「${String(repeated.text || '').replace(/\n/g, ' ').slice(0, 60)}」——这条如果再发就是重复打扰。）`
+          : '\n（你在私聊里最近没发过几乎一样的内容。）'
+        return `你们最近聊过（越靠后越新）：\n${lines.join('\n')}${dupNote}`
+      } catch { return '' }
+    })()
+    const prompt = [
+      `【系统提醒，不是${ownerName}说的话】模块「${srcModule}」想以你的名义私聊${ownerName}一条消息，原文如下：`,
+      '━━━━━━━━━━━━',
+      String(text || '').slice(0, 800),
+      '━━━━━━━━━━━━',
+      persona ? `【你是谁】\n${persona}\n` : '',
+      moodLine ? `【你现在的心情】\n${moodLine}\n` : '',
+      profileLine ? `【${ownerName}在你眼里】\n${profileLine}\n` : '',
+      memLine ? `${memLine}\n` : '',
+      recentLine ? `【${recentLine}】\n` : '',
+      `你要决定的是：这条消息要不要以你的名义发给${ownerName}，发的话用什么口吻。`,
+      '- 判断依据：像不像你说话、值不值得说、会不会让 TA 觉得烦或者误会（结合上面的人格、心情、记忆与最近聊天）。',
+      '- 如果原文太生硬/太长/太书面/太像通知，就用你平时的口气改写；如果已经是你会说的话，就原样发。',
+      '- 觉得没必要、时机不对、口吻不像你、容易引起误会，就不发。',
+      '',
+      '【重要：关于「是不是已经说过了」】',
+      '- 「她记得的事」只说明你**知道**这件事，不等于你已经**讲过**给TA听。',
+      '- 浏览模块（bili / 抖音 / 热榜等）的习惯是**先把看到的东西记进记忆，再推送消息**。',
+      '  所以你看到「刚刚记下的」那条，很可能就是本条消息自己刚写进去的草稿，不是旧话重提。',
+      '- 判断「这条已经讲过了」，只以【你们最近聊过】里**实际发出去的消息**为准：',
+      '  那段里如果已经有几乎一样的话发给了TA，才算重复，才不发；记在记忆里但没出现在聊天里的，照发。',
+      '',
+      `（另：这与你自己的主动搭话计划无关，不影响你下次什么时候找${ownerName}，也不占你的说话次数。）`,
+      '输出规则（只输出下面三种之一，不要解释）：',
+      '· 原样发：只输出 原样',
+      `· 改写后发：直接输出改写后的那句话（会原文转发给${ownerName}，不要加引号或前缀）`,
+      `· 不发：只输出 ${SILENCE}`,
+    ].filter(Boolean).join('\n')
+    try {
+      log.info?.(`目的（代发决断）：模块「${srcModule}」提交了「${String(text || '').slice(0, 30)}」`)
+      // 工作区固定一条会话窗口（不带 key → chatId 恒为 system:purpose-broker）：
+      // 每次代发决断都在这里留下一轮「提交内容 → 她怎么决断」的记录，供主人在 DSH 里翻看。
+      // 不按 moduleId/itemId 分会话，否则每来一个模块就灌一条碎会话进工作区。
+      // 标题按主人定的名字：目的引擎（代发决断）。不带「QQ · 」前缀，titleFor 统一拼。
+      // 仍 noTools：memory 模块的工具对 system 会话本就返回空（memory/index.js L35），
+      // 开了也查不到记忆，反而会挂上别的 QQ 工具；上下文已在上面注入足够的人格/心情/记忆。
+      const raw = await hub.runSystemTurn('purpose-broker', '目的引擎（代发决断）', prompt, { timeoutMs: 120000, noTools: true })
+      const verdict = String(raw ?? '').trim()
+      const cleaned = cleanReply(verdict, { warn: (message) => log.warn?.(`目的：${message}`) })
+      // 原样代发 / 沉默 / 改写后的文本
+      if (!cleaned || cleaned.replace(/\s/g, '').startsWith(SILENCE)) {
+        log.info?.(`目的（代发决断）：模块「${srcModule}」这条决定不发`)
+        return { ok: true, send: false, reviewed: true }
+      }
+      const finalText = /^原样$/.test(cleaned.trim()) ? String(text || '') : cleaned
+      log.info?.(`目的（代发决断）：模块「${srcModule}」这条${finalText === String(text || '') ? '原样代发' : '改写后发'}`)
+      return { ok: true, send: true, text: finalText, reviewed: true }
+    } catch (error) {
+      // 决断回合出错不能把门闸已放行的消息卡死：按原文放行（与门闸故障放行同一口径）
+      log.warn?.('目的（代发决断）出错，按原文放行：', error?.message)
+      return { ok: true, send: true, text: String(text || ''), reviewed: false }
+    }
   }
 
   // 9 维驱动 → mood 单标量。mood 关闭时 nudge 自静默。
@@ -519,6 +728,16 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   }
 
   // ---------- 对外 ----------
+  /**
+   * 引擎自发发言的 §5.3 私有凭据：deliver 的 enginePolicy 路径会直接向这个策略源对象
+   * reserve（走策略源账本：安静时段/额度/在途串行，不再有第二本排程），结算由 hub 按
+   * 真实发送结果 commit。宿主装配策略源后经 setEnginePolicySource 注入；没注入时
+   * enginePolicy=null → deliver 走旧路径直投（与改造前行为一致）。
+   */
+  let enginePolicySource = null
+  function setEnginePolicySource(p) { enginePolicySource = p || null }
+  function engineCredential() { return enginePolicySource }
+
   /** 到点就跑一轮，跑了返回 true。 */
   async function tickOne(cfg, config, friend = '') {
     const now = Date.now()
@@ -628,5 +847,5 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     return `（你最近心里比较想要：${top.map((t) => t.label).join('、')}。它会自然影响你想聊什么，不用说出来。）`
   }
 
-  return { tick, fire, state, status, preview, run: fire, drivesRule }
+  return { tick, fire, state, status, preview, run: fire, drivesRule, brokerReview, setEnginePolicySource }
 }

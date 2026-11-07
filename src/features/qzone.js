@@ -61,6 +61,10 @@ export function createQzone({ getConfig, onebot, hub, log, onDiary, pickImage, c
       audience = resolveAudience(latest, visibility)
       if (!latest.enabled || latest.dryRun) return { ok: false, message: '发布前开关已变化，本次未发布。' }
       beforeSend?.()
+      // 说说走 QQ 空间（公开 / 部分好友可见），**不是私聊主人**，所以不进出站门闸：
+      // 主动发言策略治理的是「主动私聊当前 owner」这个场景（设计稿 §2 范围），
+      // 空间动态不影响主人的私聊体验，也没有「打扰主人几次」的额度概念。
+      // 它有自己的开关（qzone.enabled / visibility）和 dryRun，不走 proactive 账本。
       const r = await onebot.call('send_qzone_msg', { content: text, ugc_right: audience.ugc_right, ...(audience.target_uins ? { target_uins: audience.target_uins } : {}), ...(imgs.length ? { images: imgs } : {}) }, { timeoutMs: 60000 })
       const tid = String(r?.tid ?? r?.id ?? r ?? '')
       log.info(`发了一条说说（${audience.label}，tid ${tid || '?'}）`)

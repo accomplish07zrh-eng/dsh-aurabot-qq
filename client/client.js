@@ -2679,66 +2679,6 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         (data.audit || []).length ? h('div', null, (data.audit || []).map(auditLine))
           : h('div', { className: 'ab-small ab-muted' }, '这条任务期间账本上没有工具调用（她只是想了想，或做事回合还没落账）。'))
     }
-
-    // 「主动发言出站策略」卡片：档位、引擎状态、拦截统计。数据走 /panel/outbound-policy，
-    // 后端已把机器值翻成中文（view 字段），前端只管排版，不另维护翻译表。
-    function OutboundPolicy({ toast }) {
-      const [d, setD] = useState(null)
-      const [busy, setBusy] = useState('')
-      const load = () => get('/panel/outbound-policy').then((r) => { if (r.ok) setD(r.view) })
-      useEffect(() => { load(); const t = setInterval(load, 10000); return () => { clearInterval(t) } }, [])
-      if (!d) return null
-      const save = (patch, key) => async () => {
-        setBusy(key)
-        try {
-          const r = await post('/panel/outbound-policy', patch)
-          if (!r.ok) toast(r.message || '没保存上', 'err')
-          else { setD(r.view); toast('保存好了', 'ok') }
-        } catch (e) { toast(e.message) } finally { setBusy('') }
-      }
-      const toneColor = d.tone === 'ok' ? '#2e7d32' : d.tone === 'bad' ? '#c62828' : '#ef6c00'
-      return h(Card, {
-        title: '主动发言出站策略',
-        desc: '决定刷抖音、逛小黑盒、热榜巡游这类模块「刷完之后能不能直接私聊你」。关掉纳管时它们照旧直接发；开成门闸后，要先问主动搭话/目的引擎的意见。',
-      },
-        // 总体状态条：一句话说清现在到底管没管
-        h('div', { className: 'ab-card', style: { padding: '10px 12px', marginBottom: 10, borderLeft: '3px solid ' + toneColor } },
-          h('b', { style: { color: toneColor } }, d.headline),
-          h('div', { className: 'ab-muted ab-small', style: { marginTop: 4, lineHeight: 1.6 } }, d.summary)),
-        // 档位
-        h(Row, { label: '纳管档位', hint: d.tierHint },
-          h(Select, {
-            value: d.tier,
-            options: (d.tiers || []).map((t) => ({ value: t.value, label: t.label })),
-            onChange: (v) => save({ tier: v }, 'tier')(),
-          })),
-        h('div', { className: 'ab-muted ab-small', style: { margin: '-4px 0 8px 2px' } }, d.tierLabel),
-        // 策略源（谁在做决定）
-        h(Row, { label: '谁来判该不该说', hint: '自动 = 用当前就绪的那个引擎' },
-          h(Select, {
-            value: d.activeMode,
-            options: (d.activeOptions || []).map((o) => ({ value: o.value, label: o.label })),
-            onChange: (v) => save({ activePolicy: v }, 'active')(),
-          })),
-        d.sources && d.sources.length
-          ? h('div', { className: 'ab-list', style: { margin: '6px 0' } }, d.sources.map((s) => h('div', { key: s.name, className: 'ab-li' },
-            h('div', { className: 'meta' },
-              s.title + ' · ' + s.stateLabel + (s.reason ? ' · ' + s.reason : '')))))
-          : h('div', { className: 'ab-note' }, '还没有可用的引擎：请先打开「主动搭话」或「目的引擎」，否则没人来决定该不该说。'),
-        // 统计
-        d.stats && d.stats.length
-          ? h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', margin: '8px 0' } },
-            d.stats.map((s) => h('div', { key: s.label, className: 'ab-card', style: { flex: '1 1 88px', padding: '8px 10px' }, title: s.hint },
-              h('div', { className: 'ab-muted ab-small' }, s.label),
-              h('b', null, s.value))))
-          : null,
-        d.ledger && d.ledger.length
-          ? h(Row, { label: '投递账本', hint: '由宿主代发的条目当前分布' },
-            h('span', { className: 'ab-muted ab-small' }, d.ledger.map((x) => x.label + ' ' + x.count).join(' · ')))
-          : null,
-      )
-    }
-
     // 「目的机制」状态卡：链路计数、驱力条、目标假设、载体与节奏。数据走 /panel/purpose/* 代理（模块缺新接口时降级提示）。
     const DRIVE_LABELS = { play: '玩', learn: '学', install: '装', connect: '连', care: '陪', share: '分', identity: '我', create: '创', consume: '收' }
     const GOAL_OWNER_LABELS = { self: '自己', owner: '主人', member: '群友', media: '媒体' }
@@ -2817,6 +2757,65 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
               cand ? '\n候选：\n' + cand : '',
               r.stats ? '\n素材 ' + (r.stats.selected ?? r.stats.total ?? '?') + ' 条，驱力 top：' + Object.entries(r.drives || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => DRIVE_LABELS[k] || k).join('、') : '')
           })()) : null,
+      )
+    }
+
+    // 「主动发言出站策略」卡片：档位、引擎状态、拦截统计。数据走 /panel/outbound-policy，
+    // 后端已把机器值翻成中文（view 字段），前端只管排版，不另维护翻译表。
+    function OutboundPolicy({ toast }) {
+      const [d, setD] = useState(null)
+      const [busy, setBusy] = useState('')
+      const load = () => get('/panel/outbound-policy').then((r) => { if (r.ok) setD(r.view) })
+      useEffect(() => { load(); const t = setInterval(load, 10000); return () => { clearInterval(t) } }, [])
+      if (!d) return null
+      const save = (patch, key) => async () => {
+        setBusy(key)
+        try {
+          const r = await post('/panel/outbound-policy', patch)
+          if (!r.ok) toast(r.message || '没保存上', 'err')
+          else { setD(r.view); toast('保存好了', 'ok') }
+        } catch (e) { toast(e.message) } finally { setBusy('') }
+      }
+      const toneColor = d.tone === 'ok' ? '#2e7d32' : d.tone === 'bad' ? '#c62828' : '#ef6c00'
+      return h(Card, {
+        title: '主动发言出站策略',
+        desc: '决定刷抖音、逛小黑盒、热榜巡游这类模块「刷完之后能不能直接私聊你」。关掉纳管时它们照旧直接发；开成门闸后，要先问主动搭话/目的引擎的意见。',
+      },
+        // 总体状态条：一句话说清现在到底管没管
+        h('div', { className: 'ab-card', style: { padding: '10px 12px', marginBottom: 10, borderLeft: '3px solid ' + toneColor } },
+          h('b', { style: { color: toneColor } }, d.headline),
+          h('div', { className: 'ab-muted ab-small', style: { marginTop: 4, lineHeight: 1.6 } }, d.summary)),
+        // 档位
+        h(Row, { label: '纳管档位', hint: d.tierHint },
+          h(Select, {
+            value: d.tier,
+            options: (d.tiers || []).map((t) => ({ value: t.value, label: t.label })),
+            onChange: (v) => save({ tier: v }, 'tier')(),
+          })),
+        h('div', { className: 'ab-muted ab-small', style: { margin: '-4px 0 8px 2px' } }, d.tierLabel),
+        // 策略源（谁在做决定）
+        h(Row, { label: '谁来判该不该说', hint: '自动 = 用当前就绪的那个引擎' },
+          h(Select, {
+            value: d.activeMode,
+            options: (d.activeOptions || []).map((o) => ({ value: o.value, label: o.label })),
+            onChange: (v) => save({ activePolicy: v }, 'active')(),
+          })),
+        d.sources && d.sources.length
+          ? h('div', { className: 'ab-list', style: { margin: '6px 0' } }, d.sources.map((s) => h('div', { key: s.name, className: 'ab-li' },
+            h('div', { className: 'meta' },
+              s.title + ' · ' + s.stateLabel + (s.reason ? ' · ' + s.reason : '')))))
+          : h('div', { className: 'ab-note' }, '还没有可用的引擎：请先打开「主动搭话」或「目的引擎」，否则没人来决定该不该说。'),
+        // 统计
+        d.stats && d.stats.length
+          ? h('div', { className: 'ab-flex', style: { gap: 8, flexWrap: 'wrap', margin: '8px 0' } },
+            d.stats.map((s) => h('div', { key: s.label, className: 'ab-card', style: { flex: '1 1 88px', padding: '8px 10px' }, title: s.hint },
+              h('div', { className: 'ab-muted ab-small' }, s.label),
+              h('b', null, s.value))))
+          : null,
+        d.ledger && d.ledger.length
+          ? h(Row, { label: '投递账本', hint: '由宿主代发的条目当前分布' },
+            h('span', { className: 'ab-muted ab-small' }, d.ledger.map((x) => x.label + ' ' + x.count).join(' · ')))
+          : null,
       )
     }
 
