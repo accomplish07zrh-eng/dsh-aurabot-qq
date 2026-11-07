@@ -14,14 +14,15 @@ import { cleanOutboundText } from '../chat/reply.js'
 import { isSessionBackoff } from '../chat/session-backoff.js'
 import { followUpHint } from '../features/memory.js'
 import { selfName, selfNames } from '../persona/personas.js'
+import { normalizeSelection } from '../chat/chat-model.js'
 import {
-  DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS,
+  DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS, EMOTION_LABELS, EMOTION_PROFILES,
   normalizePurposeConfig, createPurposeState, normalizePurposeState,
   ensurePurposeDay, ensurePurposeSchedule, planNextFire, evaluatePurposeTick,
   markPurposeDelivered, markPurposeSkip, applyPurposeOutcome,
-  collectMaterials, analyzePersona, deriveDrives, formGoalHypotheses,
-  minePurposeSeeds, selectPurpose, buildPurposePrompt, parsePurposeMemo,
-  summarizePurposeState, recordOwnerReplyHours,
+  collectMaterials, analyzePersona, deriveDrives, formGoalHypotheses, applyPersonaOverrides,
+  minePurposeSeeds, selectPurpose, buildPurposePrompt, parsePurposeMemo, emotionProfile,
+  summarizePurposeState, recordOwnerReplyHours, formatMaterialLine,
 } from './engine.js'
 
 const MINUTE = 60_000
@@ -31,6 +32,11 @@ const MOOD_PREFIX = '【系统提醒，不是主人说的话】（她主动找�
 const SILENCE = '[沉默]'
 
 const pad2 = (n) => String(n).padStart(2, '0')
+// 文本截断：模块内随手用（引擎侧有同名工具，这里不跨文件依赖）。
+const clip = (text, max = 120) => {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
 const clampInt = (v, d, lo, hi) => {
   const n = Number(v)
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d
@@ -50,22 +56,27 @@ export function purposeConfig(cfg = {}) {
   const quiet = awakeTo >= 24 || awakeFrom >= awakeTo
     ? { quietStart: '00:00', quietEnd: '00:00' }
     : { quietStart: `${pad2(awakeTo % 24)}:00`, quietEnd: `${pad2(awakeFrom)}:00` }
-  return normalizePurposeConfig({
-    // 总开关只看本模块自己的设置（ext.purpose.enabled，默认 false）；
-    // 与旧的「主动搭话」互不影响——两套同时开会重复打扰，迁移说明里提醒主人别同时开。
-    enabled: cfg.enabled !== false && ext.enabled === true,
-    ownerUin: cfg.ownerQQ,
-    gapMinMs: clampInt(ext.minIntervalMinutes ?? su.minIntervalMinutes, 90, 5, 2880) * MINUTE,
-    gapMaxMs: clampInt(ext.maxIntervalMinutes ?? su.maxIntervalMinutes, 240, 5, 2880) * MINUTE,
-    initialDelayMinMs: clampInt(ext.initialDelayMinutes, 15, 1, 720) * MINUTE,
-    dailyMax: clampInt(ext.maxPerDay ?? su.maxPerDay, 3, 0, 20),
-    idleThresholdMs: clampInt(ext.idleMinutes ?? su.idleMinutes, 40, 0, 1440) * MINUTE,
-    minMaterials: clampInt(ext.minMaterials, DEFAULT_PURPOSE_CONFIG.minMaterials, 0, 20),
-    maxMaterials: clampInt(ext.maxMaterials, DEFAULT_PURPOSE_CONFIG.maxMaterials, 6, 80),
-    maxCandidates: clampInt(ext.maxCandidates, DEFAULT_PURPOSE_CONFIG.maxCandidates, 3, 10),
-    promptMaxChars: clampInt(ext.promptMaxChars, DEFAULT_PURPOSE_CONFIG.promptMaxChars, 4000, 30000),
-    ...quiet,
-  })
+  // normalizePurposeConfig 只认引擎字段，打分模型在归一化后补挂（面板下拉同款结构校验）
+  return {
+    ...normalizePurposeConfig({
+      // 总开关只看本模块自己的设置（ext.purpose.enabled，默认 false）；
+      // 与旧的「主动搭话」互不影响——两套同时开会重复打扰，迁移说明里提醒主人别同时开。
+      enabled: cfg.enabled !== false && ext.enabled === true,
+      ownerUin: cfg.ownerQQ,
+      gapMinMs: clampInt(ext.minIntervalMinutes ?? su.minIntervalMinutes, 90, 5, 2880) * MINUTE,
+      gapMaxMs: clampInt(ext.maxIntervalMinutes ?? su.maxIntervalMinutes, 240, 5, 2880) * MINUTE,
+      initialDelayMinMs: clampInt(ext.initialDelayMinutes, 15, 1, 720) * MINUTE,
+      dailyMax: clampInt(ext.maxPerDay ?? su.maxPerDay, 3, 0, 20),
+      idleThresholdMs: clampInt(ext.idleMinutes ?? su.idleMinutes, 40, 0, 1440) * MINUTE,
+      minMaterials: clampInt(ext.minMaterials, DEFAULT_PURPOSE_CONFIG.minMaterials, 0, 20),
+      maxMaterials: clampInt(ext.maxMaterials, DEFAULT_PURPOSE_CONFIG.maxMaterials, 6, 80),
+      maxCandidates: clampInt(ext.maxCandidates, DEFAULT_PURPOSE_CONFIG.maxCandidates, 3, 10),
+      promptMaxChars: clampInt(ext.promptMaxChars, DEFAULT_PURPOSE_CONFIG.promptMaxChars, 4000, 30000),
+      ...quiet,
+    }),
+    // 素材打分模型（面板「目的引擎」卡下拉选；不配 = 用关键词法，零额外成本）。
+    scoringModel: normalizeSelection(ext.scoringModel),
+  }
 }
 
 /** 模型回包清洗：去掉备忘段、引号、自称前缀；空/沉默返回 ''。 */
@@ -84,7 +95,7 @@ export function cleanReply(raw, options, cfg) {
   return s
 }
 
-export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, memory, personaText, pet: petOf }) {
+export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, memory, personaText, pet: petOf, use }) {
   const moodOf = () => { try { return mood?.() || null } catch { return null } }
   const memoryOf = () => { try { return memory?.() || null } catch { return null } }
   // 下面的 friend 是主动搭话白名单里的 QQ 号，不传就是主人。朋友各有各的状态，素材只看和这个人的私聊、关于这个人的记忆。
@@ -168,8 +179,81 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     try { return analyzePersona(personaText?.() || '') } catch { return analyzePersona('') }
   }
 
-  // ①~④ 收素材 → 驱动 → 目标假设 → 候选（只读，不落盘）
-  function prepare(cfg, config, state, now = Date.now(), friend = '') {
+  // ---------- 素材打分（可选：面板下拉配了「打分模型」才启用） ----------
+  // 一次后台回合把整批素材交给模型定 need 与情绪，替换关键词法的粗判。
+  // 没配模型、回合出错或回包解析不出，都静默回退关键词亲和（enrichMaterial 已算好），零额外成本。
+  async function scoreMaterials(config, materials, now = Date.now()) {
+    const sel = config.scoringModel
+    if (!sel || !Array.isArray(materials) || !materials.length) return materials
+    const list = materials.slice(0, 28)
+    const lines = list.map((m, i) => `${i + 1}. ${formatMaterialLine(m, now)}`)
+    const prompt = [
+      '下面是 AI 伙伴「大肥鱼」最近看到/经历的事情列表（已脱敏）。给每一条判断：',
+      `① 它最指向哪种内心需要（只能是：${PURPOSE_NEEDS.join('/')}）；`,
+      `② 它让大肥鱼产生什么情绪（只能是：${Object.keys(EMOTION_LABELS).join('/')}）。`,
+      '只输出一个 JSON 数组，不要解释：[{"i":1,"need":"play","emotion":"curious"}, …]，i 对应条目序号。',
+      '',
+      ...lines,
+    ].join('\n')
+    try {
+      const raw = await hub.runSystemTurn('purpose-score', 'QQ · 素材打分', prompt, {
+        timeoutMs: 90000, noTools: true, key: 'score', model: sel,
+      })
+      const arr = parseScoreReply(raw)
+      let hit = 0
+      for (const item of Array.isArray(arr) ? arr : []) {
+        const m = list[(Number(item?.i) || 1) - 1]
+        if (!m || !PURPOSE_NEEDS.includes(item?.need)) continue
+        hit += 1
+        m.needAffinity = Object.fromEntries(PURPOSE_NEEDS.map((n) => [n, n === item.need ? 1 : 0]))
+        const emotion = EMOTION_LABELS[item?.emotion] ? item.emotion : ''
+        if (emotion) {
+          m.scoredEmotion = emotion
+          // 情绪画像回写 cues：后续 appraiseMaterial 直接吃模型判的情绪强弱。
+          const p = EMOTION_PROFILES[emotion]
+          m.cues = { positive: p.valence > 0.1, negative: p.valence < -0.1, arousal: p.arousal }
+        }
+      }
+      log.info?.(`目的：素材打分完成（模型 ${sel.provider}/${sel.model}，命中 ${hit}/${list.length}）`)
+    } catch (error) {
+      log.warn?.('目的：素材打分失败，回退关键词法：', error?.message)
+    }
+    return materials
+  }
+
+  // 回包清洗：剥掉代码围栏与前后杂文，取第一个 JSON 数组；解析不出返回 null。
+  function parseScoreReply(raw) {
+    const s = String(raw ?? '').replace(/```(?:json)?/gi, '')
+    const start = s.indexOf('[')
+    const end = s.lastIndexOf(']')
+    if (start < 0 || end <= start) return null
+    try { return JSON.parse(s.slice(start, end + 1)) } catch { return null }
+  }
+
+  // 「自主上网」等浏览型模块的素材口（可选）：模块没装/没开就返回空，行为与从前一致。
+  // 取 use('rss-reader').materials() —— 那些是模块已经筛过、交给决策层的条目（纯文本、已截断）。
+  function rssEntries(friend = '') {
+    if (friend) return [] // 朋友的线不喂全站浏览素材：那是主人自己的阅读兴趣
+    try {
+      const mod = typeof use === 'function' ? use('rss-reader') : null
+      const list = typeof mod?.materials === 'function' ? mod.materials() : null
+      if (!Array.isArray(list)) return []
+      return list.slice(0, 10).map((m) => ({
+        id: String(m?.id || ''),
+        // 引擎素材分类里「外部看到的东西」走 video 这一支（权重低于主人私聊、高于群聊）
+        type: 'video',
+        title: clip(String(m?.title || ''), 90),
+        text: clip(String(m?.text || ''), 200),
+        url: String(m?.url || ''),
+        at: Number(m?.at) || Date.now(),
+      }))
+    } catch {
+      return []
+    }
+  }
+
+  // ①~④ 收素材 → 驱动 → 目标假设 → 候选（不落盘；打分配了模型才有一次额外回合）
+  async function prepare(cfg, config, state, now = Date.now(), friend = '') {
     const followUp = memoryOf()?.dueFollowUp?.(friend || cfg.ownerQQ, now) || null
     const materials = collectMaterials({
       now, config,
@@ -177,16 +261,20 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       roleName: selfName(cfg),
       roleAliases: selfNames(cfg),
       conversations: conversations(cfg, now, friend),
-      biliEntries: [], // 首期不接 B站/Qzone 素材，字段留扩展
+      biliEntries: rssEntries(friend), // 浏览型模块的素材口（rss-reader「自主上网」等）；空数组=与从前一致
       memoryRecords: memoryRecords(friend),
       followUpRecords: followUp ? [followUp] : [],
     })
-    const persona = personaOf(cfg)
+    await scoreMaterials(config, materials.items, now)
+    // 人格卡只作用于主人这条线：朋友的排程不吃主人人格卡里的黏人/话痨等覆写，
+    // 否则对朋友的主动搭话频率与方向会被主人的人格先验带偏（review 意见）。
+    const persona = friend ? null : personaOf(cfg)
     const lastMasterAt = lastPrivateAt(cfg, friend)
     const { drives } = deriveDrives({
       drives: state.drives, drivesAt: state.drivesAt,
-      materials: materials.items, now, lastMasterAt, personaBias: persona.bias,
+      materials: materials.items, now, lastMasterAt, personaBias: persona?.bias,
       needFeedback: state.needFeedback, halfLifeHours: config.driveHalfLifeHours,
+      connectFloor: persona?.overrides?.connectFloor,
     })
     const { goals, observations, needFeedback } = formGoalHypotheses({
       // 跟进的排程和次数只属于事实，不再生成另一份目标或观察账本。
@@ -245,7 +333,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
    * 在线才调 pet.dispatch（避免它内部回落路径绕过 own/userText 心情链路）；离线由 purpose 自己决定回落或静默；
    * dispatch 返回非 ok（如专注模式 focus：不发也不回落）按契约映射，绝不在一个回合里两头都发。
    */
-  async function deliverByCarrier(text, purposeLabel) {
+  async function deliverByCarrier(text, purposeLabel, emotion = '', emotionProfile = null) {
     const su = carrierSettings()
     if (su.carrier !== 'pet') return 'qq' // carrier=qq（默认）：行为与从前完全一致
     const pet = typeof petOf === 'function' ? petOf() : null
@@ -255,7 +343,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       syncPetCarrierMirror(su)
       let r = null
       try {
-        r = await pet.dispatch({ text, purpose: String(purposeLabel || '').slice(0, 40) })
+        // emotion/emotionProfile：桌宠气泡按情绪画像上辉光（冷暖随 valence、强弱随 arousal）
+        r = await pet.dispatch({ text, purpose: String(purposeLabel || '').slice(0, 40), emotion, emotionProfile })
       } catch (error) {
         // dispatch 可能已经发出后才抛错；结果不确定时不能再发一次。
         log.warn?.('目的：桌宠气泡投递出错，结果不确定，不再重发：', error?.message)
@@ -279,7 +368,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const cfg = getConfig()
     const now = Date.now()
     ensurePurposeDay(state, now)
-    const ctx = prepare(cfg, config, state, now, friend)
+    const ctx = await prepare(cfg, config, state, now, friend)
     state.drives = ctx.drives
     state.drivesAt = now
     state.goals = ctx.goals
@@ -293,7 +382,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       ? ctx.materials.items.length >= Math.max(1, config.minMaterials)
       : ctx.materials.items.length >= config.minMaterials || state.pending.length > 0 || ctx.persona.hasText)
     if (!hasEnough) {
-      markPurposeSkip(state, { now, reason: 'materials', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday, replyHours: state.replyHours }) })
+      markPurposeSkip(state, { now, reason: 'materials', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday, replyHours: state.replyHours, replyWeekday: state.replyWeekday }) })
       saveState(state, friend)
       log.info?.(`目的（${reason}）：素材太少，改约下一次`)
       return { outcome: 'skipped-materials' }
@@ -306,7 +395,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     state.lastMaterialCount = ctx.materials.items.length
     state.lastCandidateCount = picked.candidates.length
     if (!picked.purpose) {
-      markPurposeSkip(state, { now, reason: 'no-candidate', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday, replyHours: state.replyHours }) })
+      markPurposeSkip(state, { now, reason: 'no-candidate', nextFireAt: planNextFire({ now, config, lastRunAt: state.lastRunAt, countToday: state.countToday, replyHours: state.replyHours, replyWeekday: state.replyWeekday }) })
       saveState(state, friend)
       log.info?.(`目的（${reason}）：这轮没选出目的，改约下一次`)
       return { outcome: 'skipped-no-candidate' }
@@ -339,7 +428,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     if (!text) {
       outcome = genError ? 'failed' : 'silent' // 模型有权跳过（【状态】跳过 / [沉默]），silent 不硬发
     } else {
-      const where = friend ? 'qq' : await deliverByCarrier(text, picked.purpose.text) // 桌宠气泡只给主人看
+      const where = friend ? 'qq' : await deliverByCarrier(text, picked.purpose.text, picked.purpose.emotion || '', emotionProfile(picked.purpose.emotion)) // 桌宠气泡只给主人看
       if (where === 'sent') {
         outcome = 'sent' // dispatch 已推气泡或回落 QQ：正常结算次数与心情
       } else if (where === 'silent') {
@@ -451,12 +540,14 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     return true
   }
 
-  /** 主人和白名单的朋友各算各的，一次最多找一个人，不一口气群发。 */
+  /** 主人和白名单的朋友各算各的，一次最多找一个人，不一口气群发。
+   *  人格卡的性格覆写（胆量/话多/黏人地板）只作用于主人这条线；朋友的排程沿用基础配置。 */
   async function tick() {
     const cfg = getConfig()
     const config = purposeConfig(cfg)
     if (!config.enabled || !cfg.ownerQQ) return
-    if (!isMuted?.(chatIdOf(cfg)) && !memoryOf()?.dislikes?.(cfg.ownerQQ) && await tickOne(cfg, config)) return
+    const ownerConfig = applyPersonaOverrides(config, personaOf(cfg))
+    if (!isMuted?.(chatIdOf(cfg)) && !memoryOf()?.dislikes?.(cfg.ownerQQ) && await tickOne(cfg, ownerConfig)) return
     for (const qq of cfg.speakUp?.allow || []) {
       if (String(qq) === String(cfg.ownerQQ) || isMuted?.(chatIdOf(cfg, qq)) || memoryOf()?.dislikes?.(qq)) continue
       if (await tickOne(cfg, config, String(qq))) return
@@ -466,7 +557,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   /** 手动触发（面板「现在就让她来找我」）：跳过排程类闸门，不跳过总开关/禁言。 */
   async function fire(reason = '手动') {
     const cfg = getConfig()
-    const config = purposeConfig(cfg)
+    const config = applyPersonaOverrides(purposeConfig(cfg), personaOf(cfg))
     if (!config.enabled) return { outcome: 'disabled' }
     if (isMuted?.(chatIdOf(cfg))) return { outcome: 'muted' }
     if (memoryOf()?.dislikes?.(cfg.ownerQQ)) return { outcome: 'disliked' }
@@ -496,12 +587,12 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
   }
 
   /** 零副作用预览：真收素材、真拼提示词，但不写状态、不生成、不投递。 */
-  function preview() {
+  async function preview() {
     const cfg = getConfig()
     const config = purposeConfig(cfg)
     const now = Date.now()
     const state = structuredClone(loadState(config, now))
-    const ctx = prepare(cfg, config, state, now)
+    const ctx = await prepare(cfg, config, state, now)
     const lastMasterAt = ctx.lastMasterAt
     const picked = selectPurpose({
       seeds: ctx.seeds, goals: ctx.goals, pending: state.pending, history: state.history,
@@ -510,7 +601,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const prompt = picked.purpose ? promptFor(cfg, config, picked.purpose, { ...ctx, candidates: picked.candidates }, state, now) : ''
     return {
       stats: ctx.materials.stats,
-      materials: ctx.materials.items.map((m) => ({ kind: m.kind, source: m.source, who: m.who, text: m.text })),
+      materials: ctx.materials.items.map((m) => ({ kind: m.kind, source: m.source, who: m.who, text: m.text, scoredEmotion: m.scoredEmotion || '' })),
       drives: ctx.drives,
       goals: ctx.goals.slice(0, 5).map((g) => ({ owner: g.owner, domain: g.domain, intent: g.intent, confidence: g.confidence, risk: g.risk, status: g.status })),
       candidates: picked.candidates.map((c) => ({ owner: c.goalOwner, need: c.need, action: c.action, text: c.text, confidence: c.confidence, risk: c.risk })),

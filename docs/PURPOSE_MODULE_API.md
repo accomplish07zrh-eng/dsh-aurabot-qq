@@ -41,10 +41,12 @@
 
 - 路径：`api.dataDir('purpose', 'purpose-state.json')` → `~/.dsh/plugins-data/aurabot/purpose/purpose-state.json`
 - 结构照 surfcore 引擎（`createPurposeState`）：`version, day, countToday, lastRunAt, lastAttemptAt, lastSentAt, lastOutcome('sent'|'silent'|'failed'|'delivery-failed'|'interrupted'|'pending'), lastPurpose, lastText, nextFireAt, attempts, drives{9维0~1}, drivesAt, lastEmotion(+Text), lastGoalId, lastMaterialCount, lastCandidateCount, goals[], observations[], pending[], history[], lastSkip`
-- 行为学习字段：`replyHours[24]`（主人私聊时刻直方图，`replyHoursSeen` 记已计素材 id 防重复）——
-  排程在间隔基础上向主人更常回话的小时轻推（最多 3h，样本 <5 不偏置）；
+- 行为学习字段：`replyHours[24]`（主人私聊时刻直方图）与 `replyWeekday[7]`（星期分桶，
+  两者共用 `replyHoursSeen` 记已计素材 id 防重复）——排程在间隔基础上向主人更常回话的小时轻推
+  （最多 3h，样本 <5 不偏置）、向更常回话的日子轻推（≤7 天，样本 <7 不偏置）；
   `needFeedback{need:{positive,negative,neutral}}`（主人回执按需要维度记账）——
   ≥5 样本后正反馈率 ≥60% 抬该维驱动地板 +0.08，≤30% 向默认值加速回落。
+  朋友线各有各的状态文件，直方图/反馈账本天然分账，互不污染。
 - goals 条目：`id, owner('self'|'owner'|'member'|'media'), domain(9 need), object{type,name}, intent, evidence[≤4], confidence, value, urgency, risk, action, nextStep, status('hypothesis'|'active'|'confirmed'|'rejected'|'done'|'expired'), emotion, createdAt, lastSeenAt, expiresAt, attempts, sightings, source`
 - 另有 `purpose/nudge.json`（追问去重标记，非引擎字段，勿展示）。
 - 从旧版升级：`speakup.json` 只读迁移当日 count，之后不再读写（可保留不删）。
@@ -63,6 +65,13 @@
 - **心情判定兼容**：投递走 `hub.runSystemTurn` + `hub.deliver(text, { own:true, userText:'【系统提醒，…】' })`，
   userText 带前缀所以 mood.judge 的 `origin='speak-up'` 判定照常生效。
 - top2 驱动（≥0.35）经 `api.rule` 写进每轮上下文：「你最近心里比较想要：玩、陪」。
+- **情绪画像**：每个情绪标签带 `valence`（-1~1）与 `arousal`（0~1）二维数值
+  （`emotionProfile()`），候选与面板摘要都会带；提示词的强弱措辞（强烈地/明显/隐约）跟 arousal 走，
+  桌宠端表情/语气强度可以直接吃这两个数。
+- **人格覆写**（`analyzePersona` 的 `overrides` + `applyPersonaOverrides`）：人格卡里写了
+  「胆小/谨慎」→ riskScale ×1.25，「大胆/爱折腾」→ ×0.8；「话痨/话多」→ dailyMax +1
+  （「高冷/少打扰」→ -1；dailyMax=0 不限时不动）；「黏人/怕孤独」→ connect 驱动地板 +0.1。
+  同 key 冲突按词出现位置先者生效；只作用于主人这条线，朋友排程用基础配置。
 
 ## 5. 配置
 
@@ -72,16 +81,26 @@
 选择层与驱动调参（本轮新增，均有安全钳制）：`pendingShareProbability`（惦记优先概率，默认 0.5）、
 `lonelyEmotionWeight / enviousEmotionWeight`（情绪排序加成，默认 1.2 / 1.1）、
 `needRepeatPenalty / needRepeatPenalty2`（连续同需要降权，默认 0.72 / 0.65）、
-`driveHalfLifeHours`（驱动衰减半衰期，默认 8）。
+`driveHalfLifeHours`（驱动衰减半衰期，默认 8）、`riskScale`（风险全表乘数，默认 1，钳 0.3~2；
+目标风险 = 内置风险表 × riskScale，人格卡可再覆写）。
 提示词超长时先按素材权重从尾部逐行丢弃（主人私聊永远最后丢），整段丢完才退回首尾盲切；
 备忘解析有兜底：忘写【】但写了「目的：…」裸标签行、或回执为 JSON（中/英文键）都能解析。
+**素材打分模型**（`ext.purpose.scoringModel`，面板「目的引擎」卡下拉选，结构与「按聊天选模型」同款
+`{provider, model, reasoningEffort?}`）：配了就走一次 `purpose-score` 后台回合
+（`hub.runSystemTurn` 新增 `model` 参数，只影响该会话），批量给素材定 need 与情绪，
+回写 `needAffinity` 与 `cues`（情绪画像）；不配/出错/解析不出 = 关键词法，零额外成本。
+preview 变为 async（打分是 I/O）；`/panel/purpose/status` 附 `models` 下拉选项，
+`/panel/purpose/config` 收 `scoringModel`。
 **沿用主动搭话的设置**（保持作息单一真相）：`config.speakUp.awakeFrom/awakeTo`（派生引擎安静时段；全天=关闭安静）、
 `idleMinutes`（→ idleThreshold）、`minIntervalMinutes/maxIntervalMinutes`（→ gap）、`maxPerDay`（→ dailyMax）——
 ext.purpose 同名键可覆写。
 
 ## 6. 其它接线事实
 
-- 素材：聊天流水（hub.chatLogOf 最近 2 天，主人私聊 + 群）+ 记忆（`api.use('memory').list('')`，importance×100 适配）+ 人格（`api.core.personas.current()`）+ pending；B站留空扩展。
+- 素材：聊天流水（hub.chatLogOf 最近 2 天，主人私聊 + 群）+ 记忆（`api.use('memory').list('')`，importance×100 适配）+ 人格（`api.core.personas.current()`）+ pending；
+  **浏览型模块素材口**：装了「自主上网」（`rss-reader`）且已挑出条目时，经 `api.use('rss-reader').materials()`
+  取最多 10 条纯文本条目，按引擎「外部看到的东西」分支并入素材——只喂主人线（朋友线不吃），
+  模块没装/没开/取用出错一律静默跳过，行为与从前完全一致。B站素材仍留空扩展。
 - 生成：`hub.runSystemTurn('purpose', …, { noTools:true })`，提示词无 QQ 发送工具指令；回包清洗：去内部备忘段/引号/「大肥鱼：」前缀，`[沉默]`/空 → `silent` 不硬发。
 - 投递：`hub.deliver('private:'+ownerQQ)`；deliver 内部吞错，`sent` = deliver 返回 `{missedAt}` 对象，`undefined`（钩子拦截）记 silent，抛错记 `delivery-failed`。
 - 闸门：`evaluatePurposeTick`（enabled/quiet/dailyMax/nextFireAt/ownerIdleMs）；`nextFireAt` 落盘 tick 重算，重启时在途 `pending` 改判 `interrupted` 不补发。

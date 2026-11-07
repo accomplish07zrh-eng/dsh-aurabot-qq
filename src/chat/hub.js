@@ -2669,8 +2669,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
    *  不带 key 走 `<name>` 那条（向后兼容，老会话继续复用），带 key 走 `<name>:<key>`，
    *  于是工作区里各自一条会话、进度互不阻塞，也不会把两种提示词混进同一段上下文。
    *  presetId：可选，后台会话点名用哪个 preset（如 aurabot-autotelic）。默认空字符串行为完全不变；
-   *  是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。 */
-  async function runSystemTurn(name, title, prompt, { timeoutMs = 180000, noTools = false, key: scope = '', presetId = '' } = {}) {
+   *  是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。
+   *  model：可选 { provider, model, reasoningEffort? }。给了就这个 system 会话从本轮起用指定模型
+   *  （只动这个后台会话，不改 DSH 全局默认；轻活想用便宜模型的模块走这个口）。 */
+  async function runSystemTurn(name, title, prompt, { timeoutMs = 180000, noTools = false, key: scope = '', presetId = '', model = null } = {}) {
     // presetId（P0.4）：后台会话点名用哪个 preset（如 aurabot-autotelic）。默认 undefined 行为完全不变；
     // 是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。
     const chat = { chatId: systemChatId(name, scope), kind: 'system', title, noTools: !!noTools, presetId: String(presetId || '') }
@@ -2691,6 +2693,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         }
       } else if (current) systemTurns.delete(chat.chatId)
       const { agent, sessionId } = await agentFor(chat)
+      // 模块点名要用别的模型（轻活用便宜档）：只动这个 system 会话的下一次请求，不改全局默认。
+      if (model && model.provider && model.model) applyModel(agent, model)
       assertActive()
       const key = sessionKey(sessionId)
       const st = turnState.get(key) || { lastTurn: -1, text: '', senders: new Set() }

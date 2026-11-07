@@ -122,6 +122,8 @@ test('预览零副作用：/panel/purpose/preview 收素材拼提示词，但不
   assert.ok(r.result, '有预览结果')
   assert.ok(r.result.stats, '预览含素材统计：' + JSON.stringify(r).slice(0, 400))
   assert.ok(Array.isArray(r.result.materials), '预览含素材列表')
+  // preview() 是 async：路由必须 await，否则序列化成 {}（接口回归回归用例）
+  assert.ok(r.result.materials.length >= 0 && r.result.stats, '预览对象不是空 Promise 序列化')
   assert.ok(!JSON.stringify(r).includes('a'.repeat(32)), '预览返回不得出现 32 位令牌明文')
   await sleep(50)
   assert.equal(sentToOwner().length, before, '预览不得向 QQ 发送任何消息')

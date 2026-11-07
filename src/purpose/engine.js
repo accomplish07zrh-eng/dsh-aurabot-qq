@@ -58,6 +58,8 @@ export const DEFAULT_PURPOSE_CONFIG = Object.freeze({
   needRepeatPenalty2: 0.65,
   // 驱动向默认值衰减的半衰期（小时）。
   driveHalfLifeHours: 8,
+  // 人格「胆量」：风险全表乘数（1 = 原表；人格卡可覆写）。
+  riskScale: 1,
 });
 
 const MINUTE = 60 * 1000;
@@ -176,6 +178,7 @@ export function normalizePurposeConfig(input = {}, { ownerQQ = '' } = {}) {
     needRepeatPenalty: Math.min(1, Math.max(0.3, Number(src.needRepeatPenalty) || DEFAULT_PURPOSE_CONFIG.needRepeatPenalty)),
     needRepeatPenalty2: Math.min(1, Math.max(0.3, Number(src.needRepeatPenalty2) || DEFAULT_PURPOSE_CONFIG.needRepeatPenalty2)),
     driveHalfLifeHours: clampInt(src.driveHalfLifeHours, DEFAULT_PURPOSE_CONFIG.driveHalfLifeHours, 1, 72),
+    riskScale: Math.min(2, Math.max(0.3, Number(src.riskScale) || 1)),
   };
 }
 
@@ -195,8 +198,9 @@ export function createPurposeState(now = Date.now()) {
     // 驱动向量：为什么今天特别想玩 / 特别想找人说话。跨天保留，随时间衰减。
     drives: { ...DEFAULT_DRIVES },
     drivesAt: now,
-    // 主人回复时段直方图（24 桶计数 + 已记素材 id）：往主人更容易在线的小时轻推排程。
+    // 主人回复时段直方图（24 桶计数 + 星期 7 桶 + 已记素材 id）：往主人更容易在线的小时/日子轻推排程。
     replyHours: new Array(24).fill(0),
+    replyWeekday: new Array(7).fill(0),
     replyHoursSeen: [],
     // 需要维度的长期正反馈账本：{ play: {positive, negative, neutral} ... }。
     needFeedback: {},
@@ -270,6 +274,7 @@ export function normalizePurposeState(raw, now = Date.now()) {
   base.drives = normalizeDrives(raw.drives);
   base.drivesAt = Number(raw.drivesAt) || 0;
   base.replyHours = normalizeReplyHours(raw.replyHours);
+  base.replyWeekday = normalizeCounts(raw.replyWeekday, 7);
   base.replyHoursSeen = (Array.isArray(raw.replyHoursSeen) ? raw.replyHoursSeen : []).map(String).slice(-200);
   base.needFeedback = normalizeNeedFeedback(raw.needFeedback);
   base.lastEmotion = String(raw.lastEmotion ?? '').slice(0, 20);
@@ -311,16 +316,18 @@ export function ensurePurposeSchedule(state, { now = Date.now(), config = DEFAUL
 }
 
 // ── 主人回复时段直方图（轻量学习：她慢慢知道主人几点最容易回）────────────────
-function normalizeReplyHours(raw) {
-  const out = new Array(24).fill(0);
+function normalizeCounts(raw, len) {
+  const out = new Array(len).fill(0);
   if (Array.isArray(raw)) {
-    for (let h = 0; h < 24; h += 1) {
+    for (let h = 0; h < len; h += 1) {
       const n = Number(raw[h]);
       if (Number.isFinite(n) && n > 0) out[h] = Math.min(9999, Math.round(n));
     }
   }
   return out;
 }
+
+const normalizeReplyHours = (raw) => normalizeCounts(raw, 24);
 
 /** 需要维度的反馈账本：坏值丢弃，计数钳到 0~9999。 */
 function normalizeNeedFeedback(raw) {
@@ -339,9 +346,10 @@ function normalizeNeedFeedback(raw) {
   return out;
 }
 
-/** 把素材里主人的私聊发言时刻记进 24 小时直方图（按素材 id 去重，无 id 用时刻键）。 */
+/** 把素材里主人的私聊发言时刻记进 24 小时 × 星期直方图（按素材 id 去重，无 id 用时刻键）。 */
 export function recordOwnerReplyHours(state, materials, now = Date.now()) {
   const hist = normalizeReplyHours(state.replyHours);
+  const week = normalizeCounts(state.replyWeekday, 7);
   const seen = new Set(Array.isArray(state.replyHoursSeen) ? state.replyHoursSeen.map(String) : []);
   let changed = false;
   for (const m of Array.isArray(materials) ? materials : []) {
@@ -351,11 +359,14 @@ export function recordOwnerReplyHours(state, materials, now = Date.now()) {
     const id = String(m.id ?? '') || `t:${at}`;
     if (seen.has(id)) continue;
     seen.add(id);
-    hist[new Date(at).getHours()] += 1;
+    const d = new Date(at);
+    hist[d.getHours()] += 1;
+    week[d.getDay()] += 1;
     changed = true;
   }
   if (changed) {
     state.replyHours = hist;
+    state.replyWeekday = week;
     state.replyHoursSeen = [...seen].slice(-200);
   }
   return state;
@@ -380,10 +391,31 @@ export function bestReplyHourShift(at, replyHours = [], { maxShiftMs = 3 * HOUR 
 }
 
 /**
+ * 星期分桶：今天是不是主人常回话的日子？不是就往未来 7 天里第一个高回流日挪（≤7 天）。
+ * 样本 <7 条不偏置；今天已是高回流日（≥最佳日 50%）不动。
+ */
+export function bestReplyWeekdayShift(at, replyWeekday = [], { minSamples = 7 } = {}) {
+  const hist = normalizeCounts(replyWeekday, 7);
+  const total = hist.reduce((s, v) => s + v, 0);
+  if (total < minSamples) return 0;
+  const best = Math.max(...hist);
+  if (best <= 0) return 0;
+  const cur = hist[new Date(at).getDay()];
+  if (cur >= best * 0.5) return 0;
+  for (let add = 1; add <= 7; add += 1) {
+    const t = new Date(at);
+    t.setDate(t.getDate() + add);
+    if (hist[t.getDay()] >= best * 0.8) return t.getTime() - at;
+  }
+  return 0;
+}
+
+/**
  * 下一次该在什么时候主动找主人。
  * · 距上次「真正完成」至少 gapMin~gapMax；
  * · 桥接停机很久后只补一枪（不连着补）；
  * · 有回复时段直方图时，向主人更可能在线的小时轻推（最多 3 小时）；
+ *   星期分桶再往主人常回话的日子轻推（最多 7 天，样本 <7 不偏置）；
  * · 算出来落在安静时段就推到安静结束 + 0~20 分钟抖动。
  */
 export function planNextFire({
@@ -392,6 +424,7 @@ export function planNextFire({
   lastRunAt = 0,
   countToday = 0,
   replyHours = [],
+  replyWeekday = [],
   random = Math.random,
 } = {}) {
   const min = Math.max(5 * MINUTE, Number(config.gapMinMs) || DEFAULT_PURPOSE_CONFIG.gapMinMs);
@@ -410,6 +443,9 @@ export function planNextFire({
   // 时段学习：主人常在几点回，就往那几点轻推一下（停在安静时段判定之前，之后还会被推离安静）。
   const shift = bestReplyHourShift(at, replyHours);
   if (shift > 0) at += shift;
+  // 星期学习：今天不是主人常回话的日子，就挪到下一个高回流日的同一时刻。
+  const dayShift = bestReplyWeekdayShift(at, replyWeekday);
+  if (dayShift > 0) at += dayShift;
   if (inQuietHours(at, config)) at = quietEndAfter(at, config) + Math.round(random() * 20 * MINUTE);
   return at;
 }
@@ -566,7 +602,7 @@ export function applyPurposeOutcome(state, {
     && Number(state.attempts) < Number(config.maxAttempts);
   state.nextFireAt = retry
     ? now + Math.max(MINUTE, Number(config.retryMs) || DEFAULT_PURPOSE_CONFIG.retryMs)
-    : planNextFire({ now, config, lastRunAt: now, countToday: state.countToday, replyHours: state.replyHours, random });
+    : planNextFire({ now, config, lastRunAt: now, countToday: state.countToday, replyHours: state.replyHours, replyWeekday: state.replyWeekday, random });
   prunePurposeState(state, { now, config });
   return state;
 }
@@ -910,6 +946,27 @@ export const EMOTION_LABELS = Object.freeze({
   amused: '好笑', content: '平静',
 });
 
+// 情绪的二维画像：valence（正负 -1~1）与 arousal（强弱 0~1）。
+// 离散标签好让模型读懂，数值好让桌宠表情/语气跟着强度走。
+export const EMOTION_PROFILES = Object.freeze({
+  curious: { valence: 0.3, arousal: 0.6 },
+  excited: { valence: 0.8, arousal: 0.9 },
+  lonely: { valence: -0.6, arousal: 0.3 },
+  envious: { valence: -0.4, arousal: 0.5 },
+  worried: { valence: -0.5, arousal: 0.6 },
+  proud: { valence: 0.6, arousal: 0.5 },
+  affectionate: { valence: 0.7, arousal: 0.4 },
+  bored: { valence: -0.2, arousal: 0.2 },
+  amused: { valence: 0.6, arousal: 0.7 },
+  content: { valence: 0.2, arousal: 0.3 },
+});
+
+/** 情绪 → { valence, arousal }；未知情绪回中性偏弱。 */
+export function emotionProfile(emotion) {
+  const p = EMOTION_PROFILES[emotion];
+  return p ? { ...p } : { valence: 0, arousal: 0.4 };
+}
+
 export const DEFAULT_DRIVES = Object.freeze({
   play: 0.20, learn: 0.12, install: 0.10, connect: 0.28, care: 0.22,
   share: 0.20, identity: 0.14, create: 0.05, consume: 0.05,
@@ -1004,9 +1061,18 @@ export function needAffinity(text, roleName = '', roleAliases = []) {
   return out;
 }
 
+// 人格卡里的「性格倾向」→ 引擎参数覆写。只认显式写的词，第一个命中的词生效。
+const PERSONA_OVERRIDES = Object.freeze([
+  { key: 'riskScale', value: 1.25, words: ['胆小', '谨慎', '怕麻烦', '稳重点', '别乱花钱'] },
+  { key: 'riskScale', value: 0.8, words: ['大胆', '敢试', '爱折腾', '勇于尝试'] },
+  { key: 'dailyMaxBonus', value: 1, words: ['话痨', '话多', '爱分享', '多聊聊', '嘴碎'] },
+  { key: 'dailyMaxBonus', value: -1, words: ['高冷', '少打扰', '别烦我', '安静点'] },
+  { key: 'connectFloor', value: 0.1, words: ['黏人', '粘人', '怕孤独', '缺爱'] },
+]);
+
 /**
  * 人格卡 → 动机先验。只做「这个人更可能在乎什么」的偏置，不替代素材/目标。
- * 返回 { bias, traits, text, hasText }；换人格卡后 deriveDrives / 目标生成会跟着变。
+ * 返回 { bias, traits, overrides, text, hasText }；换人格卡后 deriveDrives / 目标生成会跟着变。
  */
 export function analyzePersona(text) {
   const raw = String(text ?? '');
@@ -1021,12 +1087,49 @@ export function analyzePersona(text) {
     if (hits > 0) traits.push({ need, label: NEED_LABELS[need], hits, bias: value });
   }
   traits.sort((a, b) => b.hits - a.hits || b.bias - a.bias);
+  // 性格覆写：胆量 / 话多程度 / 黏人地板。同 key 有多个规则命中时，
+  // 按「词在文本里出现得更早」的生效（主人先写的性格优先）。
+  const overrides = {};
+  const bestIdx = {};
+  for (const rule of PERSONA_OVERRIDES) {
+    for (const word of rule.words) {
+      const idx = t.indexOf(word);
+      if (idx < 0) continue;
+      if (bestIdx[rule.key] == null || idx < bestIdx[rule.key]) {
+        bestIdx[rule.key] = idx;
+        overrides[rule.key] = rule.value;
+      }
+    }
+  }
   return {
     bias,
     traits,
+    overrides,
     text: clip(raw.replace(/\s+/g, ' ').trim(), 300),
     hasText: Boolean(raw.trim()),
   };
+}
+
+/**
+ * 人格覆写并进引擎配置（纯函数，不改入参）：
+ *   · riskScale：胆量乘在风险表上；
+ *   · dailyMaxBonus：每日上限 ±1（dailyMax=0 表示不限，不动）；
+ *   · connectFloor：黏人地板，deriveDrives 里抬 connect 的下限。
+ */
+export function applyPersonaOverrides(config, persona = null) {
+  const ov = persona?.overrides;
+  if (!ov || typeof ov !== 'object') return config;
+  const out = { ...config };
+  if (Number.isFinite(ov.riskScale)) {
+    out.riskScale = Math.min(2, Math.max(0.3, (Number(config.riskScale) || 1) * ov.riskScale));
+  }
+  if (Number.isFinite(ov.dailyMaxBonus) && (Number(out.dailyMax) || 0) > 0) {
+    out.dailyMax = clampInt(out.dailyMax + ov.dailyMaxBonus, out.dailyMax, 0, 24);
+  }
+  out.connectFloor = Number.isFinite(ov.connectFloor)
+    ? Math.min(0.3, Math.max(0, ov.connectFloor))
+    : 0;
+  return out;
 }
 function cleanTopic(text, max = 24) {
   const s = String(text ?? '')
@@ -1092,6 +1195,7 @@ export function deriveDrives({
   personaBias = null,
   needFeedback = null,
   halfLifeHours = 8,
+  connectFloor = 0,
 } = {}) {
   const next = normalizeDrives(drives);
   const hours = drivesAt > 0 ? Math.min(72, Math.max(0, (now - drivesAt) / HOUR)) : 0;
@@ -1127,6 +1231,9 @@ export function deriveDrives({
   const hoursSinceMaster = lastMasterAt > 0 ? Math.max(0, (now - lastMasterAt) / HOUR) : 24;
   // 连接需求会随「多久没和主人说话」慢慢涨；这也是「寂寞/想陪」不是随机出现的原因。
   next.connect = Math.min(0.95, next.connect + Math.min(0.5, (hoursSinceMaster / 24) * 0.4));
+  // 黏人地板（人格覆写 connectFloor）：黏人的人格卡 connect 至少站在此线之上。
+  const cFloor = Math.min(0.3, Math.max(0, Number(connectFloor) || 0));
+  if (cFloor > 0) next.connect = Math.min(0.95, Math.max(next.connect, DEFAULT_DRIVES.connect + cFloor));
   // 最近反复看到的内容，会把对应需求推高（看多了游戏会想玩，看多了工具会想装）。
   for (const material of materials.slice(0, 24)) {
     const affinity = material.needAffinity ?? needAffinity(`${material.title ?? ''} ${material.text ?? ''}`);
@@ -1334,15 +1441,31 @@ export function normalizeGoals(goals, now = Date.now()) {
   return (Array.isArray(goals) ? goals : []).map((g) => normalizeGoal(g, now)).filter(Boolean).slice(-40);
 }
 
+// 风险表：什么需要、什么行动算「大胆」。纯数据，想调性格就覆写它或乘 riskScale。
+const DEFAULT_RISK_TABLE = Object.freeze({
+  install: { ask: 0.55, other: 0.82 },
+  consume: { ask: 0.6, other: 0.85 },
+  identity: 0.05,
+  care: 0.05,
+  connect: 0.05,
+  play: 0.1,
+  learn: 0.15,
+  create: 0.1,
+  share: 0.1,
+  default: 0.2,
+});
+
 function riskFor(domain, action) {
-  if (domain === 'install') return action === 'ask' ? 0.55 : 0.82;
-  if (domain === 'consume') return action === 'ask' ? 0.6 : 0.85;
-  if (domain === 'identity') return 0.05;
-  if (domain === 'care' || domain === 'connect') return 0.05;
-  if (domain === 'play') return 0.1;
-  if (domain === 'learn') return 0.15;
-  if (domain === 'create' || domain === 'share') return 0.1;
-  return 0.2;
+  const entry = DEFAULT_RISK_TABLE[domain];
+  if (typeof entry === 'number') return entry;
+  if (entry && typeof entry === 'object') return action === 'ask' ? entry.ask : entry.other;
+  return DEFAULT_RISK_TABLE.default;
+}
+
+/** 人格卡「胆量」：全表乘 riskScale（0.3~2，1 = 原表）。 */
+function scaledRisk(rawRisk, riskScale = 1) {
+  const scale = Math.min(2, Math.max(0.3, Number(riskScale) || 1));
+  return clamp01(rawRisk * scale, 0.1);
 }
 
 function nextStepFor(action) {
@@ -1387,8 +1510,8 @@ function makeGoal({
   };
 }
 
-/** 一个事件 → 1~3 个候选目标。归属不同，置信度/风险/行动都不同。 */
-function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster } = {}) {
+/** 一个事件 → 1~3 个候选目标。归属不同，置信度/风险/行动都不同。riskScale 统一乘在全表上。 */
+function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster, riskScale = 1 } = {}) {
   const out = [];
   const objectName = event.object.name || '那件事';
   const drive = Number(drives?.[event.domain]) || 0;
@@ -1555,7 +1678,9 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
       }));
     }
   }
-  return out.filter((g) => g.intent);
+  return out
+    .filter((g) => g.intent)
+    .map((g) => ({ ...g, risk: scaledRisk(g.risk, riskScale) }));
 }
 
 function mergeGoal(goals, incoming, { fresh = true } = {}) {
@@ -1733,7 +1858,7 @@ export function formGoalHypotheses({
     const base = analyzeEvent(material, { drives: query, roleName });
     const persistence = obsMap.get(observationKey(base))?.count ?? 1;
     const event = analyzeEvent(material, { drives: query, persistence, roleName });
-    for (const goal of hypothesesForEvent(event, { drives: query, now, lastMasterAt, hoursSinceMaster })) {
+    for (const goal of hypothesesForEvent(event, { drives: query, now, lastMasterAt, hoursSinceMaster, riskScale: Number(config.riskScale) || 1 })) {
       list = mergeGoal(list, goal, { fresh });
     }
   }
@@ -2020,6 +2145,7 @@ export function selectPurpose({
       actionLabel: ACTION_LABELS[action] || ACTION_LABELS.share,
       emotion,
       emotionLabel: EMOTION_LABELS[emotion] || '',
+      emotionProfile: emotionProfile(emotion),
       topic: String(item.topic || '').slice(0, 40),
       text,
       source: String(item.source || '').slice(0, 20),
@@ -2212,9 +2338,14 @@ export function buildPurposePrompt({
     .filter((item) => item.score >= 0.25)
     .map((item) => NEED_LABELS[item.need] || item.need);
   const emotionText = selected?.emotion ? (EMOTION_LABELS[selected.emotion] || '') : '';
+  // 强弱措辞跟情绪画像走：arousal 高就「强烈」，中「明显」，低「隐约」。
+  const intensityWord = (emotion) => {
+    const a = emotionProfile(emotion).arousal;
+    return a >= 0.7 ? '强烈地' : a >= 0.45 ? '明显' : '隐约';
+  };
   const emotionPhrase = selected?.emotion === 'content'
     ? '心里挺平静的'
-    : (emotionText ? `心里隐约有点${emotionText}` : '');
+    : (emotionText ? `心里${intensityWord(selected.emotion)}有点${emotionText}` : '');
   if (topNeeds.length || emotionPhrase) {
     lines.push('【你此刻的状态】'
       + (topNeeds.length ? `最近比较想要：${topNeeds.join('、')}。` : '')
@@ -2556,6 +2687,7 @@ export function summarizePurposeState(state, { config = DEFAULT_PURPOSE_CONFIG, 
     lastEmotion: state.lastEmotion || '',
     lastEmotionLabel: EMOTION_LABELS[state.lastEmotion] || '',
     lastEmotionText: state.lastEmotionText || '',
+    lastEmotionProfile: state.lastEmotion ? emotionProfile(state.lastEmotion) : null,
     lastGoalId: state.lastGoalId || '',
     goals: (Array.isArray(state.goals) ? state.goals : []).slice(0, 5).map((g) => ({
       id: g.id, owner: g.owner, ownerLabel: GOAL_OWNER_LABELS[g.owner] || g.owner,

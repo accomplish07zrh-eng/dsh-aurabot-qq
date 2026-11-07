@@ -299,7 +299,7 @@ test('目的引擎只在开启时使用同一事实；发出才延期，不复�
   assert.deepEqual(purposeState.pending, [])
   assert.deepEqual(purposeState.goals, [])
   s.cfg.memory.followUp = false
-  assert.equal(s.purpose.preview().stats.followUp, 0)
+  assert.equal((await s.purpose.preview()).stats.followUp, 0)
   s.muted.add(`private:${OWNER}`)
   assert.equal((await s.purpose.fire()).outcome, 'muted')
 })
