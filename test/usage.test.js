@@ -225,3 +225,20 @@ test('工具归属：聊天里调用某模块的工具时，它的消耗算到�
   assert.equal(usage.moduleOfTool(''), '')
   assert.equal(usage.moduleOfTool(null), '')
 })
+
+test('按聊天只列群聊和私聊，后台会话只在按模块里看', () => {
+  const at = Date.UTC(2026, 10, 11, 4, 0, 0)
+  const u = { inputTokens: 100, outputTokens: 10 }
+  usage.recordUsage({ module: '聊天', chat: 'group:777', model: 'deepseek-v4.1-flash', usage: u, at })
+  usage.recordUsage({ module: '聊天', chat: 'private:888', model: 'deepseek-v4.1-flash', usage: u, at })
+  usage.recordUsage({ module: '刷 B 站（后台）', chat: 'system:bili', model: 'deepseek-v4.1-flash', usage: u, at })
+  usage.recordUsage({ module: '其他后台任务', chat: '', model: 'deepseek-v4.1-flash', usage: u, at })
+  const r = usage.usageReport({ now: at + 60_000, range: 'today' })
+  const chats = r.current.byChat.map((x) => x.key)
+  assert.deepEqual(chats.sort(), ['group:777', 'private:888'], '按聊天只该有群聊和私聊')
+  assert.ok(chats.every((k) => /^(group|private):/.test(k)))
+  // 后台那两项在按模块里，不能丢
+  const mods = r.current.byModule.map((x) => x.key)
+  assert.ok(mods.includes('刷 B 站（后台）'))
+  assert.ok(mods.includes('其他后台任务'))
+})

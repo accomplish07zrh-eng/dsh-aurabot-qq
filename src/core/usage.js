@@ -398,7 +398,8 @@ export function usageReport({ now = Date.now(), range = '7' } = {}) {
     current: {
       ...totalsOf(rows),
       byModule: groupBy(rows.map((r) => ({ ...r, module: moduleOf(r) })), 'module'),
-      byChat: groupBy(rows, 'chat', 12),
+      // 「按聊天」只列真正的群聊 / 私聊；后台会话（system:xxx）和没有 chat 的调用在「按模块」里看
+      byChat: groupBy(rows.filter((r) => /^(group|private):/.test(String(r.chat || ''))), 'chat', 12),
       byModel: groupBy(rows, 'model'),
     },
   }
