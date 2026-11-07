@@ -246,12 +246,22 @@ function settleModuleCall(core, verdict, outcome, log) {
  * 这样普通模块（douyin / tophub / bili……）不改一行代码，也会被引擎审查并留下会话记录；
  * 只有 broker 档这样走，gate 档与 pass 档行为不变。
  *
+ * broker 档 + 发往主人私聊的**非文本**（图片 / 文件 / 语音 / 纯消息段，无可审文本）→
+ * 「识别不了就直发」口径（2026-11-05 少爷定）：策略源看不了这类内容，再让它们过
+ * 安静时段 / 额度 / 在途串行，只会出现「文字发得出、图片老被拦」的失衡——
+ * 所以与代发同口径：不占额度、不经决断，直接发（outboundDone 防 hub 二次判定）。
+ *
  * 未注入服务（旧环境 / 纯测试）时**不设** outboundDone：让 hub 的第二道保险（若宿主挂了）
  * 仍然生效；两道都没有时就是原样直发，与改造前逐字节等价。
  */
 function governedSend(core, id, ask, run, log) {
   const svc = outboundOf(core)
   if (!svc) return run({ sourceModule: id })
+  // broker 档无可审文本（图片/文件/语音/消息段）发主人私聊：识别不了就直发，不进门闸
+  if (unreviewableBrokerSend(core, ask)) {
+    (log || NOOP_LOG).info?.(`模块「${id}」这条主动发送没有可审文本（图片/文件等），按「识别不了就直发」口径直接发出`)
+    return run({ sourceModule: id, outboundDone: true })
+  }
   const gate = admitModuleCall(core, id, ask, log)
   if (!gate.allow) return null
   // broker 档的纯文本私聊主人：交给宿主代发（引擎决断 + 宿主投递 + 会话记录）
@@ -280,6 +290,35 @@ function governedSend(core, id, ask, run, log) {
     })
   }
   return done(r)
+}
+
+/**
+ * 这次发送里有没有能拿给引擎过目的文本。
+ * 图片 / 文件 / 语音 / 纯消息段的 ask 不带文本（或只有空白），策略源识别不了它们的内容。
+ */
+function reviewableTextOf(ask) {
+  const text = ask && ask.text !== undefined ? String(ask.text) : ''
+  return text.trim()
+}
+
+/**
+ * 该不该按「识别不了就直发」口径跳过门闸直接发？
+ * 条件：broker 档 + 发往治理范围（主人私聊）+ 这次发送没有可审文本。
+ * 纯文本仍走门闸 + 代发决断；gate / pass 档与非 owner 目标行为一律不变。
+ * tier 从服务 status() 读（deny 的 verdict 不带 tier），读不到就按不适用处理。
+ */
+function unreviewableBrokerSend(core, ask) {
+  const svc = outboundOf(core)
+  if (!svc) return false
+  if (reviewableTextOf(ask)) return false
+  const to = String((ask && ask.chatId) || '')
+  if (typeof svc.isGoverned !== 'function' || !svc.isGoverned(to)) return false
+  try {
+    const tier = typeof svc.status === 'function' ? svc.status().tier : null
+    return tier === 'broker'
+  } catch {
+    return false
+  }
 }
 
 /**
