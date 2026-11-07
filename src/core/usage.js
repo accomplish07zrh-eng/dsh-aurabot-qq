@@ -124,6 +124,34 @@ const MODULE_LABELS = {
 }
 
 /**
+ * 聊天轮次里「是某个工具干的活」时，把这一步的用量记到工具所属模块名下，别全算成「聊天」。
+ * 例：聊天里让她刷 B 站 → 她调 `bili_watch` → 下一步读字幕/热评那次调用算「刷 B 站」。
+ * 返回 '' 表示这个工具不属于任何记账模块（就还按「聊天」算）。
+ */
+export function moduleOfTool(name) {
+  const n = String(name || '').trim().toLowerCase()
+  if (!n) return ''
+  // 名字前缀猜归属（bili_watch → bili）；前缀不是模块 id 的，再看这两张表
+  const owner = TOOL_MODULES[n] || n.split('_')[0]
+  return MODULE_LABELS[owner] || ''
+}
+
+// 工具名 → 模块 id：只收「前缀猜不出来」和「前缀会猜错」的，其余走前缀
+const TOOL_MODULES = {
+  // bili 模块注册的，但名字是 qq_ 开头（B 站截图）
+  qq_send_shot: 'bili',
+  qq_list_shots: 'bili',
+  qq_draw_image: 'imagegen',
+  qq_generate_video: 'video',
+  qq_send_sticker: 'stickers',
+  qq_collect_sticker: 'stickers',
+  qq_add_sticker: 'stickers',
+  qq_edit_sticker: 'stickers',
+  qq_save_sticker: 'stickers',
+  qq_import_qq_stickers: 'stickers',
+}
+
+/**
  * 把「聊天 id」或「模块 id」变成记账用的名字。
  *   group:123 / private:456 → 聊天
  *   system:diary / system:bili → 空间日记（后台）/ 刷 B 站（后台）

@@ -209,3 +209,19 @@ test('口径：inputTokens 是未命中缓存的输入，cacheReadTokens 是命�
   const expect = (1000 * 1 + 9000 * 0.02 + 500 * 4) / 1_000_000
   assert.ok(Math.abs(t.cost - expect) < 1e-9, `实际 ${t.cost} 期望 ${expect}`)
 })
+
+test('工具归属：聊天里调用某模块的工具时，它的消耗算到那个功能名下', () => {
+  // 聊天里让她刷 B 站 → 调 bili_watch → 下一步读字幕/热评算「刷 B 站」，不全是「聊天」
+  assert.equal(usage.moduleOfTool('bili_watch'), '刷 B 站')
+  assert.equal(usage.moduleOfTool('bili_comment'), '刷 B 站')
+  assert.equal(usage.moduleOfTool('bili_danmaku'), '刷 B 站')
+  // bili 模块注册的 B 站截图工具，名字是 qq_ 开头，得靠例外表
+  assert.equal(usage.moduleOfTool('qq_send_shot'), '刷 B 站')
+  assert.equal(usage.moduleOfTool('qq_draw_image'), '生图')
+  // 聊天本身的工具不算任何模块（仍记「聊天」）
+  assert.equal(usage.moduleOfTool('qq_send_message'), '')
+  assert.equal(usage.moduleOfTool('qq_chat_history'), '')
+  assert.equal(usage.moduleOfTool('home_where'), '', '认不出的工具不算模块')
+  assert.equal(usage.moduleOfTool(''), '')
+  assert.equal(usage.moduleOfTool(null), '')
+})
