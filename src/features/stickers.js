@@ -98,6 +98,7 @@ export function createStickerStore({ dsh, getConfig, onebot, log }) {
         return { name: '', tags: [], noVision: true }
       }
       const ask = (extra = {}) => askModel(dsh, {
+        module: 'stickers',
         cfg,
         ...(target ? { model: target } : {}),
         system: '你给表情包起名字。只输出一行：不超过 12 个字的中文备注，描述这个表情表达的情绪或内容（例如「委屈巴巴的小猫」「得意地叉腰」）。然后空格，再写 1~3 个标签，从这些里挑：' + DEFAULT_TAGS.join('、') + '。格式：备注 #标签1 #标签2',

@@ -37,6 +37,7 @@ import { createConversationArchive, packEvidence } from './conversation-context.
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
 import { currentTimeLine } from './time-context.js'
 import { SESSION_BACKOFF, isSessionBackoff } from './session-backoff.js'
+import { recordUsage, moduleLabel, moduleOfTool } from '../core/usage.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
 // 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
@@ -113,6 +114,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   const mounts = new Set() // 可遍历的挂载记录：插件卸载时要撤掉仍存活会话里的注册
   const toolDisposers = new Map() // `${sessionKey}|${工具名}` → disposer，防注册表里残留同名工具时挂不上（#90）
   const sessionToChat = new Map() // sessionKey → chatId
+  const sessionTarget = new Map() // sessionKey → { provider, model }：记 token 用量时按这次会话用的模型计价
   const turnState = new Map() // sessionKey → { lastTurn, text, images, senders:Set, system?: {resolve, reject, timedOutAt} }
   const systemTurns = new Map() // chatId → 当前后台轮次，权限档位变化时也不能绕过它
   const systemStarting = new Set() // 建会话和恢复期间，同一个聊天只能有一个调用
@@ -703,6 +705,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
     }
     sessionToChat.set(sessionKey(sid), chat.chatId)
+    if (target) sessionTarget.set(sessionKey(sid), { provider: target.provider, model: target.model })
     mount(agent, chat, level)
     sessionFailures.delete(chat.chatId)
     return { agent, sessionId: sid, level }
@@ -1466,8 +1469,33 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       if (src && src.kind === 'user') st.directOwner = true
       return
     }
+    if (event.type === 'tool/call') {
+      // 记下这一轮最后调的工具：紧跟其后的那次模型调用是「处理工具结果」，算到工具所属模块名下
+      const d = event.data || {}
+      if (d.name) st.lastTool = { name: String(d.name), turn: d.turn }
+      return
+    }
     if (event.type === 'assistant/message') {
       const d = event.data || {}
+      // 用量：DSH 把每次模型调用的 token 数记在这个事件里（含重试）。
+      // 平时按「聊天」记账；如果这一步是在处理某个工具的结果（比如聊天里让她刷 B 站），
+      // 算到那个工具所属的模块名下，别把「刷 B 站」的消耗全算成聊天。
+      // 系统会话（刷小黑盒 / 日记 / 目的引擎那种）本来就按来源记，不受影响。
+      if (d.usage) {
+        const target = sessionTarget.get(key)
+        const viaTool = st.lastTool && st.lastTool.turn === d.turn ? moduleOfTool(st.lastTool.name) : ''
+        st.lastTool = null
+        try {
+          recordUsage({
+            module: viaTool || moduleLabel(chatId),
+            chat: chatId,
+            provider: target?.provider || '',
+            model: target?.model || '',
+            usage: d.usage,
+            at: event.time,
+          })
+        } catch (error) {}
+      }
       if (d.interrupted) return
       // 顺手记下思考：万一这一轮她一个字正文都没写，turn/end 时还有机会把定稿捞回来
       const th = reasoningOf(d.message)

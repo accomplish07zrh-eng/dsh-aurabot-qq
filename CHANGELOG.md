@@ -2,6 +2,7 @@
 
 ## 未发布
 
+- **新增：面板「概览」能看 token 用量和花费**：那排数字后面多一张「今日 token」卡，点开是今日 / 昨日 / 近 7 天 / 近 30 天的调用次数、输入（缓存命中 / 未命中）、输出、合计、命中率和花费，以及按模块 / 聊天 / 模型的明细（点指标卡切换区间）。记账口径参考 qq-agent-plus：每次调用存一行，聊天回合取自 DSH 会话的 `assistant/message`（含重试），后台任务取自 `llm.stream` 的 usage 块，模块名由 `api.ask` 自动带上，聊天里调用某模块的工具时（比如让她刷 B 站）处理工具结果那次调用算到那个功能名下、不占「聊天」，认不出的归到「其他后台任务」。花费按 DeepSeek 官方价（元/百万，峰时翻倍，复用 `src/core/offpeak.js`）拆成新输入 / 缓存命中 / 输出三段算，其它厂商按 LiteLLM 价目表 ×7.2 折元（内置 33 条，可在 `config.usage.pricing` 覆盖；认不出的模型列「未定价」）。只记数字不记聊天内容，按北京时间分天存 `usage.json`，保留 90 天。每次调用只记一行（适配器分片上报多个 usage 也只按最后一次算），聊天回合和后台任务两路口径互斥、不会重复计费。新增 `test/usage.test.js` 13 条、`test/usage-accounting.test.js` 3 条（去重口径）+ 一条面板接口 e2e。
 - 挡住模型把 dsh 的运行期上下文注入（`Time sampled while preparing turn …` / `Browser time zone for this request:` / `Elapsed since the preceding …`）当正文抄进聊天：在 `memoryPromptRanges()` 里按前缀认这三行，出站清理和指纹登记一处修两处生效；模型顺手改写过的变体也拦得住。
 
 ## 未发布

@@ -30,6 +30,7 @@ import { mimeOf } from './chat/inbound.js'
 import { buildFaceIndex } from './chat/faces.js'
 import { FACE_TABLE } from './chat/face-table.js'
 import { dataDir, ensureDir } from './core/store.js'
+import { initUsage, usageReport } from './core/usage.js'
 import { createUpdateChecker, changelogSection, hostEnv, updatePlan, repoOf } from './core/update.js'
 import { parseCommand, runCommand, createMutes, commandList } from './chat/commands.js'
 import { listPersonas, readPersona, savePersona, deletePersona, currentPersonaText, rulesText, seedPersonas } from './persona/personas.js'
@@ -106,6 +107,8 @@ export function apply(ctx) {
   }
   secrets()
   seedPersonas()
+  // token 用量与花费（面板「概览」）：价格表可以在 config.usage.pricing 里覆盖
+  initUsage(cfg.usage?.pricing, cfg.cost?.offPeakHolidays)
 
   // ---------- 人格与规则：通过提示词变量注入到 Aurabot 的两个 preset ----------
   const variable = (n, fn) => ctx.effect(() => ctx.systemPrompt.variable(n, (...args) => captureSystemPrompt(n, cleanText(fn(...args)))), `aurabot: 变量 ${n}`)
@@ -1073,6 +1076,9 @@ export function apply(ctx) {
   const petStatus = () => redactTokens(use('pet')?.status?.() ?? null)
 
   route('/state', async () => overview())
+  // token 用量与花费：今日 / 昨日 / 近 7 天 / 近 30 天，各带模块明细
+  // ?range=today|yesterday|7|30|all —— 面板点哪张指标卡就按哪个区间出明细
+  route('/usage', async (req) => ({ ok: true, ...usageReport({ range: query(req).range || '7' }) }))
 
   route('/save', async (req) => {
     const body = await readBody(req)
@@ -1735,7 +1741,7 @@ export function apply(ctx) {
       text.trim() ? `原文：\n${text}` : '',
     ].filter(Boolean).join('\n')
     try {
-      const out = String(await askModel(ctx, { cfg: getConfig(), system, text: ask, maxTokens: 1500, temperature: 0.6 }) || '')
+      const out = String(await askModel(ctx, { cfg: getConfig(), module: 'persona', system, text: ask, maxTokens: 1500, temperature: 0.6 }) || '')
         .replace(/^```[a-z]*\n?|\n?```$/g, '').replace(new RegExp('^【' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '】\\s*'), '').trim()
       return out ? { ok: true, text: out } : { ok: false, message: '模型没给出内容，再试一次' }
     } catch (error) {
@@ -2079,7 +2085,7 @@ export function apply(ctx) {
     const b = await readBody(req)
     const t = Date.now()
     try {
-      const text = await askModel(ctx, { cfg: { model: { provider: b.provider, model: b.model } }, system: '只回复两个字：在呢', text: '在吗', maxTokens: 800 })
+      const text = await askModel(ctx, { cfg: { model: { provider: b.provider, model: b.model } }, module: 'model-ping', system: '只回复两个字：在呢', text: '在吗', maxTokens: 800 })
       return { ok: true, ms: Date.now() - t, text: text.slice(0, 40) }
     } catch (error) {
       return { ok: false, ms: Date.now() - t, message: error.message }

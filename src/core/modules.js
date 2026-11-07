@@ -581,7 +581,8 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       sendFile: writable('sendFile', (chatId, file, name) => governedSend(core, id, { chatId: String(chatId) }, () => core.hub.sendFile(String(chatId), file, name), obLog)),
       // 把一个音频文件当语音条发出去（不走念文字）
       sendVoiceFile: writable('sendVoiceFile', (chatId, file, note) => governedSend(core, id, { chatId: String(chatId) }, () => core.hub.sendVoiceFile(String(chatId), file, note || `[${id}] 语音`), obLog)),
-      ask: writable('ask', (opts) => core.ask(typeof opts === 'string' ? { text: opts } : opts)),
+      // module: id —— 这次模型调用的用量记到哪个模块名下（面板「概览」的 token 明细）
+      ask: writable('ask', (opts) => core.ask(typeof opts === 'string' ? { text: opts, module: id } : { ...opts, module: id })),
       think: writable('think', (prompt, opts = {}) => core.hub.runSystemTurn(`ext-${id}`, opts.title || def.name || id, String(prompt), opts)),
       onebot: writable('onebot', (action, params, opts) => core.onebot.call(action, params, opts)),
       // 出站治理面（主动发言策略，见 docs/OUTBOUND-POLICY-DESIGN.md）。
