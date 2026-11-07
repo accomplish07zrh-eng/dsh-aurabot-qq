@@ -437,42 +437,52 @@ export function apply(ctx) {
     send(res, 403, { ok: false, message: '管理接口只允许本机访问。远端管理需在配置里显式开启 security.panelRemoteAccess，并务必在反向代理层再加一道认证' })
     return true
   }
-  /** 面板对外主机名（security.publicHostname，反代部署时填面板对外域名；空 = 只有回环算同源）。 */
-  const panelPublicHost = () => String(getConfig().security?.publicHostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
-  /** Origin 主机名是否算「同源」：回环 / localhost / 已配置的面板对外域名。 */
+  /** 主机名归一化：去首尾空白、转小写、去 IPv6 方括号、去结尾点（Host 与 Origin 共用同一口径）。 */
+  const normalizeHost = (raw) => String(raw || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  /** 剥端口：必须在归一化之前剥——IPv6 Host 是 `[::1]:5099`，先去方括号的话结尾是数字、`]` 剥不掉，剩个 `::1]` 就再也匹配不上。 */
+  const stripHostPort = (raw) => String(raw || '').replace(/:\d+$/, '')
+  /**
+   * 面板对外主机名列表（security.publicHostname，反代部署时填面板对外域名；空 = 只有回环算同源）。
+   * 可填多个，用逗号分隔；中文逗号、分号、空白也当分隔符（手写配置时不至于因为多按了个空格就失配）——
+   * 反代部署常见「对外域名 + 内网直连地址」两个入口同时开面板，只认一个值的话另一个入口一保存配置就被 403。
+   * 列表项与请求 Host 走同一口径（先剥端口再归一化）：内网直连地址平时都带端口，照直填进来也不会永不匹配。
+   */
+  const panelPublicHosts = () => String(getConfig().security?.publicHostname || '')
+    .split(/[\s,，;；]+/)
+    .map((item) => normalizeHost(stripHostPort(item)))
+    .filter(Boolean)
+  /** Origin 主机名是否算「同源」：回环 / localhost / 任一已配置的面板对外域名。 */
   const originAllowed = (hostname) => {
-    const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    const h = normalizeHost(hostname)
     if (!h) return false
     if (h === 'localhost' || h.endsWith('.localhost') || isLoopbackAddr(h)) return true
-    const ph = panelPublicHost()
-    return Boolean(ph) && h === ph
+    return panelPublicHosts().includes(h)
   }
   /**
    * 【复审 2·P1-1】管理面 Host 允许名单（防 DNS rebinding）。
    * 攻击：恶意页面把 evil.example 的 DNS rebind 到 127.0.0.1，然后 `fetch('http://evil.example:port/state')`
    * ——socket 是本机回环（本机闸放行）、方法是 GET（不过 CSRF）→ 管理面被「同源可读」：
    * /state、/logs、/bridge/token（返回 bearer）、client-package（含令牌）全部外泄。
-   * 修法：管理面请求的 Host 头必须在白名单内（回环 / localhost / publicHostname）。
+   * 修法：管理面请求的 Host 头必须在白名单内（回环 / localhost / publicHostname 列表任一项）。
    * Host 头虽是请求方可控的，但浏览器同源策略保证「页面 JS 发出的请求 Host = 页面所在的源」——
    * rebinding 页面发出的 Host 就是 evil.example 本身，进不了白名单；同源面板请求 Host 必然是
-   * 127.0.0.1 / localhost / publicHostname 之一。非浏览器客户端（curl/脚本）不受浏览器防护，
+   * 127.0.0.1 / localhost / publicHostname 列表里任一项。非浏览器客户端（curl/脚本）不受浏览器防护，
    * 但它们也不是 rebinding 载体，且有各自的鉴权层。
    */
   const hostAllowedForAdmin = (hostRaw) => {
     // 复审 3·小建议：先剥端口再剥方括号。IPv6 回环 Host 是 `[::1]:5099`——
     // 若先剥 `[` 再剥 `]`，结尾已是数字，`]` 剥不掉，端口剥完剩 `::1]`，会被 403。
-    const h = String(hostRaw || '').toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '').replace(/\.$/, '')
+    const h = normalizeHost(stripHostPort(hostRaw))
     if (!h) return false
     if (h === 'localhost' || h.endsWith('.localhost')) return true
     if (isLoopbackAddr(h)) return true
-    const ph = panelPublicHost()
-    return Boolean(ph) && h === ph
+    return panelPublicHosts().includes(h)
   }
   /** Host 校验 + 失败响应。只用于管理面（模块路由的 Host 另有 Host 闸策略）。 */
   const adminHostBlocked = (req, res) => {
     const hostHeader = String(req.headers?.host || '')
     if (hostAllowedForAdmin(hostHeader)) return false
-    log.warn(`管理接口拒绝异常 Host：${hostHeader}（疑似 DNS rebinding；白名单：回环/localhost/security.publicHostname）`)
+    log.warn(`管理接口拒绝异常 Host：${hostHeader}（疑似 DNS rebinding；白名单：回环/localhost/security.publicHostname 任一项）`)
     send(res, 403, { ok: false, message: '管理接口拒绝该 Host（只接受本机回环、localhost 或已配置的面板对外域名）' })
     return true
   }
