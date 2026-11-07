@@ -18,7 +18,7 @@ import { fetchImage, segmentBytes } from '../core/net.js'
 import { toMono16k } from '../voice/wav.js'
 import { asrConfigured, transcribeAudio } from '../voice/asr.js'
 import { mimeOf } from './inbound.js'
-import { forwardBody, readForward } from './forward.js'
+import { applyForwardBodies, forwardBody, readForward } from './forward.js'
 import { findFfmpeg, findSharp, shrinkImage, shrinkWithSharp } from '../core/img.js'
 import { redact } from '../core/redact.js'
 import { defaultModel, pickReasoningEffort, canSeeImages, modelVision } from '../core/llm.js'
@@ -44,6 +44,7 @@ const LEGACY_WORKSPACE = 'C:\\Aurabot\\qq-chats'
 const MAX_IMAGE_BYTES = 1024 * 1024 * 1024 // 图片大小不设实际限制，只防把内存撑爆
 const MODEL_IMAGE_BYTES = 8 * 1024 * 1024 // 超过这个大小先缩小再给模型
 const MAX_MESSAGE_IMAGES = 8 // 一条消息最多给她看几张，合并转发里的图算在内
+const QUOTE_FORWARD_MAX_CHARS = 1200 // 引用里套的合并转发：正文本身就是那条消息，比普通引用的 300 字放宽；普通引用仍走 300
 export const WORKSPACE_DIR = process.env.AURABOT_WORKSPACE || (existsSync(LEGACY_WORKSPACE) ? LEGACY_WORKSPACE : join(homedir(), 'Aurabot', 'qq-chats'))
 /** 现在用的工作区目录：面板里填了就用填的，否则默认。 */
 export const workspaceDirOf = (cfg) => String(cfg?.workspaceDir || '').trim() || WORKSPACE_DIR
@@ -1646,6 +1647,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       out.images = parsed.images || []
       out.stickers = parsed.stickers || []
       out.records = (parsed.records || []).length
+      // 引用的是一条合并转发：把里面的内容也拉出来。默认跟 forward.expandEarly 一起开——
+      // 她引用别人消息时能看到正文，但被引用消息里套的转发只是占位符，等于没看到。
+      if (parsed.forwards?.length && getConfig().forward?.expandEarly) {
+        const tmp = { forwards: parsed.forwards, images: [], stickers: [] }
+        const full = await expandForwards(tmp, String(parsed.text || ''), { timeoutMs: 5000 })
+        if (full) out.text = full.trim().slice(0, QUOTE_FORWARD_MAX_CHARS)
+        out.images = [...(out.images || []), ...tmp.images].slice(0, 4)
+        out.stickers = [...(out.stickers || []), ...tmp.stickers].slice(0, 4)
+      }
       out.isBot = out.uid === String(selfId || getConfig().botQQ)
       out.ok = true
       out.at = Date.now()
@@ -1857,7 +1867,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (msg.kind === 'group') {
       const buf = groupBuf.get(msg.groupId) || []
       const entryText = msg.text || (!cfg.voice.asr && msg.records.length ? '[发来一条语音]' : '')
-      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: entryText, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId, images: msg.images, stickers: msg.stickers, voicePromise: null, voiceText: '' }
+      groupEntry = { t: now, uid: msg.userId, nick: msg.nickname, text: entryText, at: msg.mentioned, mid: msg.messageId, direct: false, replyId: msg.replyId, images: msg.images, stickers: msg.stickers, forwards: msg.forwards?.length ? [...msg.forwards] : undefined, voicePromise: null, voiceText: '' }
       buf.push(groupEntry)
       while (buf.length > 40) buf.shift()
       groupBuf.set(msg.groupId, buf)
@@ -1891,6 +1901,18 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     if (!allowed.allowed) {
       log.debug(`忽略 ${msg.chatId}（${allowed.reason}）`)
       return
+    }
+    // 合并转发：一进来就展开并写回缓冲，哪怕这条不交给她——否则群里回头问她「上面那条转发说了啥」，她只看得见占位符。
+    // 默认关：开着就是每来一条转发多调一次 get_forward_msg，接口慢的时候会拖慢这一轮。
+    if (cfg.forward?.expandEarly && msg.forwards?.length) {
+      msg.text = await expandForwards(msg, msg.text, { timeoutMs: 5000 })
+      if (disposed) return
+      msg.forwardExpanded = true
+      if (groupEntry) {
+        groupEntry.text = msg.text || groupEntry.text
+        groupEntry.forwards = [...msg.forwards]
+        groupEntry.forwardExpanded = true
+      }
     }
     // 文件先记着，她要读的时候用 qq_read_file 取
     if (msg.files.length) {
@@ -2040,12 +2062,13 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
     // 拼文案
     let text = msg.text
-    if (msg.forwards?.length) {
+    if (msg.forwards?.length && !msg.forwardExpanded) {
       text = await expandForwards(msg, text)
       if (disposed) return
+      msg.forwardExpanded = true
       if (msg.kind === 'group') {
         const last = (groupBuf.get(msg.groupId) || []).findLast?.((x) => x.uid === msg.userId)
-        if (last) last.text = text
+        if (last) { last.text = text; last.forwardExpanded = true }
       }
     }
     const voiceText = cfg.voice.asr && msg.records.length
@@ -2090,15 +2113,15 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   }
 
   /** 把消息里的「[合并转发]」换成里面的聊天记录，里面的图片并进这条消息一起给她看。 */
-  async function expandForwards(msg, text) {
-    let out = text
+  async function expandForwards(msg, text, { timeoutMs = 15000 } = {}) {
+    const bodies = []
     for (const id of msg.forwards.slice(0, 5)) {
-      const r = await readForward(onebot, id, { selfId, faceName: faces.nameOf, log })
+      const r = await readForward(onebot, id, { selfId, faceName: faces.nameOf, log, timeoutMs })
       msg.images.push(...r.images)
       msg.stickers.push(...r.stickers)
-      out = out.replace('[合并转发]', forwardBody(r))
+      bodies.push(forwardBody(r))
     }
-    return out
+    return applyForwardBodies(text, bodies)
   }
 
   // ---------- 戳一戳 ----------
@@ -2205,6 +2228,16 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     const pendingVoices = fresh.filter((x) => x.voicePromise && !x.voiceText).map((x) => x.voicePromise)
     if (pendingVoices.length) await Promise.all(pendingVoices)
     for (const x of buf) x.fed = true
+    // 早先没交给她、因而没展开过的转发：现在要拼提示词了，顺手把内容补上（每条只拉一次）
+    if (getConfig().forward?.expandHistory) {
+      const pending = buf.filter((x) => x.forwards?.length && !x.forwardExpanded).slice(-3)
+      for (const x of pending) {
+        x.forwardExpanded = true // 先标记再拉：这一段重触发时别把同一条转发再消耗一次
+        const full = await expandForwards(x, x.text, { timeoutMs: 5000 })
+        if (full) x.text = full
+        if (disposed) return []
+      }
+    }
     // 引用内容只在这一段真要交给她时才取（缓存在 quoteCache 里，取失败也会记一笔）
     const need = fresh.filter((x) => x.replyId && !('quote' in x))
     if (need.length) {
