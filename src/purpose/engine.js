@@ -206,6 +206,10 @@ export function createPurposeState(now = Date.now()) {
     needFeedback: {},
     lastEmotion: '',
     lastEmotionText: '',
+    // 心情向量：与驱力同款的跨轮状态（每种情绪一个 0~1 强度，随时间衰减）。
+    // 面板按它画「心情进度条」；与 lastEmotion（只是「上次那一刻」）互补。
+    moods: {},
+    moodsAt: now,
     lastGoalId: '',
     // 给设置页画「这一轮链路」用的计数（不参与决策）。
     lastMaterialCount: 0,
@@ -279,6 +283,8 @@ export function normalizePurposeState(raw, now = Date.now()) {
   base.needFeedback = normalizeNeedFeedback(raw.needFeedback);
   base.lastEmotion = String(raw.lastEmotion ?? '').slice(0, 20);
   base.lastEmotionText = clip(raw.lastEmotionText, 30);
+  base.moods = normalizeMoods(raw.moods);
+  base.moodsAt = Number(raw.moodsAt) || 0;
   base.lastGoalId = String(raw.lastGoalId ?? '').slice(0, 24);
   base.lastMaterialCount = clampInt(raw.lastMaterialCount, 0, 0, 999);
   base.lastCandidateCount = clampInt(raw.lastCandidateCount, 0, 0, 99);
@@ -529,6 +535,10 @@ export function applyPurposeOutcome(state, {
   const emotion = memo?.emotionText ? '' : (planned?.emotion || '');
   state.lastEmotion = String(emotion || planned?.emotion || state.lastEmotion || '').slice(0, 20);
   state.lastEmotionText = clip(memo?.emotionText || state.lastEmotionText || '', 30);
+  // 心情向量结算：先衰减旧心情，再给这次的情绪抬一手（面板的心情进度条就吃这里）。
+  const derivedMoods = deriveMoods({ moods: state.moods, moodsAt: state.moodsAt, lastEmotion: state.lastEmotion, now });
+  state.moods = derivedMoods.moods;
+  state.moodsAt = derivedMoods.moodsAt;
   // 目标假设记账：这次主动说了/没说，都会影响下一次的置信度；主人回复在 formGoalHypotheses 里结算。
   const goalId = String(planned?.goalId || '').slice(0, 24);
   const goal = goalId ? (Array.isArray(state.goals) ? state.goals : []).find((g) => g?.id === goalId) : null;
@@ -1287,6 +1297,34 @@ export function satisfyDrives(drives, { need = '', action = '', outcome = 'sent'
     if (need && next[need] != null) next[need] *= 0.85;
   }
   return next;
+}
+
+/** 心情向量归一化：只认十种已知情绪，每维钳到 0~1；未知键丢弃。 */
+export function normalizeMoods(raw = {}) {
+  const next = {};
+  if (isPlainObject(raw)) {
+    for (const emotion of Object.keys(EMOTION_LABELS)) {
+      const v = Number(raw[emotion]);
+      if (Number.isFinite(v)) next[emotion] = clamp01(v);
+    }
+  }
+  return next;
+}
+
+/**
+ * 心情向量的跨轮推导（与 deriveDrives 同款模式）：
+ * 先按半衰期整体向 0 衰减（心情会淡忘），再把「最近一次行动的情绪」明显抬一手——
+ * 刚发生的事在心情里站 C 位。没有基线（不像驱力有 DEFAULT_DRIVES），淡了就是真的淡了。
+ */
+export function deriveMoods({ moods = {}, moodsAt = 0, lastEmotion = '', now = Date.now(), halfLifeHours = 6 } = {}) {
+  const next = normalizeMoods(moods);
+  const hours = moodsAt > 0 ? Math.min(72, Math.max(0, (now - moodsAt) / HOUR)) : 0;
+  const decay = Math.pow(0.5, hours / Math.max(1, Number(halfLifeHours) || 6));
+  for (const emotion of Object.keys(next)) next[emotion] *= decay;
+  if (EMOTION_LABELS[lastEmotion]) {
+    next[lastEmotion] = Math.min(1, (next[lastEmotion] || 0) + 0.45);
+  }
+  return { moods: next, moodsAt: now };
 }
 
 // ── 目标假设层：把「看到的事」变成「一个带归属/置信度/风险的猜测」───────────────
@@ -2708,6 +2746,9 @@ export function summarizePurposeState(state, { config = DEFAULT_PURPOSE_CONFIG, 
     attempts: Number(state.attempts) || 0,
     drives,
     topNeeds,
+    // 心情向量：面板照驱力的样子画每种情绪的进度条
+    moods: normalizeMoods(state.moods),
+    moodsAt: Number(state.moodsAt) || 0,
     pending: (Array.isArray(state.pending) ? state.pending : []).slice(-8).map((p) => ({
       text: p.text, kind: p.kind, need: p.need || '', action: p.action || '', emotion: p.emotion || '',
       hits: Number(p.hits) || 0, createdAt: p.createdAt, expiresAt: p.expiresAt,

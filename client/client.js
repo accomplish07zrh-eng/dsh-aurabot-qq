@@ -2740,7 +2740,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
     }
 
     // 「目的机制」状态卡：链路计数、驱力条、目标假设、载体与节奏。数据走 /panel/purpose/* 代理（模块缺新接口时降级提示）。
-    const DRIVE_LABELS = { play: '玩', learn: '学', install: '装', connect: '连', care: '陪', share: '分', identity: '我', create: '创', consume: '收' }
+    const DRIVE_LABELS = { play: '玩闹', learn: '学习', install: '安装', connect: '陪伴', care: '关心', share: '分享', identity: '自我', create: '创作', consume: '体验' }
+    // 情绪图标：与 engine.js 的 EMOTION_LABELS 十种一一对应（面板只做展示，不重复翻译）
+    const EMOTION_ICONS = { curious: '🤔', excited: '🤩', lonely: '😔', envious: '😒', worried: '😟', proud: '😌', affectionate: '🥰', bored: '😐', amused: '😄', content: '😊' }
+    const EMOTION_LABELS = { curious: '好奇', excited: '兴奋', lonely: '寂寞', envious: '羡慕', worried: '担心', proud: '得意', affectionate: '亲近', bored: '无聊', amused: '好笑', content: '平静' }
     const GOAL_OWNER_LABELS = { self: '自己', owner: '主人', member: '群友', media: '媒体' }
     const PACING_PRESETS = [{ value: 'conservative', label: '保守' }, { value: 'default', label: '默认' }, { value: 'active', label: '活跃' }]
     function PurposeStatus({ toast }) {
@@ -2762,6 +2765,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       if (!p) return null
       const s = p.status || {}
       const drives = Object.entries(s.drives || {}).sort((a, b) => (b[1] || 0) - (a[1] || 0)).slice(0, 5)
+      const moods = Object.entries(s.moods || {}).filter(([, v]) => (v || 0) > 0.02).sort((a, b) => (b[1] || 0) - (a[1] || 0))
       const goals = (s.goals || []).slice(0, 3)
       const chain = [
         ['素材', s.materialCount], ['观察', s.observationCount], ['目标假设', s.goalCount], ['候选', s.candidateCount], ['今日', (s.countToday ?? p.count) + '/' + (s.dailyMax ?? p.dailyMax ?? '?')],
@@ -2780,9 +2784,20 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
             h('div', { className: 'ab-muted ab-small' }, l), h('b', null, n == null ? '—' : n)))) : null,
         p.enabled && drives.length ? h(Row, { label: '驱力', hint: '越高越想说这类话题' },
           h('div', { style: { flex: 1, minWidth: 180 } }, drives.map(([k, v]) => h('div', { key: k, className: 'ab-flex', style: { marginBottom: 3 } },
-            h('span', { className: 'ab-small', style: { width: 28 } }, DRIVE_LABELS[k] || k),
+            h('span', { className: 'ab-small', style: { width: 42, flexShrink: 0 } }, DRIVE_LABELS[k] || k),
             h('div', { className: 'ab-mood', style: { flex: 1 } }, h('i', { style: { width: Math.round((v || 0) * 100) + '%' } })),
             h('span', { className: 'ab-muted ab-small', style: { width: 34, textAlign: 'right' } }, Math.round((v || 0) * 100) + '%'))))) : null,
+        // 心情进度条：与驱力同款的每维一条（数据是引擎里的心情向量，随时间衰减、被最近行动抬升）
+        p.enabled && moods.length ? h(Row, { label: '心情', hint: '各种心情现在的强弱；会随时间淡去，最近一次行动的心情最明显' },
+          h('div', { style: { flex: 1, minWidth: 180 } }, moods.map(([k, v]) => h('div', { key: k, className: 'ab-flex', style: { marginBottom: 3 } },
+            h('span', { className: 'ab-small', style: { width: 42, flexShrink: 0 } }, (EMOTION_ICONS[k] || '💭') + (EMOTION_LABELS[k] || k)),
+            h('div', { className: 'ab-mood', style: { flex: 1 } }, h('i', { style: { width: Math.round((v || 0) * 100) + '%' } })),
+            h('span', { className: 'ab-muted ab-small', style: { width: 34, textAlign: 'right' } }, Math.round((v || 0) * 100) + '%'))))) : null,
+        // 心情状态文字：她上次行动后记下的那一句（保留原有显示）
+        p.enabled ? h(Row, { label: '心情状态', hint: '她上次行动后记下的心情；还没主动找过你时是空的' },
+          h('span', { className: 'ab-muted ab-small' },
+            s.lastEmotionLabel ? (EMOTION_ICONS[s.lastEmotion] || '💭') + ' ' + s.lastEmotionLabel + (s.lastEmotionText ? ' · ' + s.lastEmotionText : '') : '还没有记录')) : null,
+        p.enabled && s.lastText ? h('div', { className: 'ab-note', style: { marginTop: -6 } }, '上次说：「' + s.lastText + '」') : null,
         p.enabled && goals.length ? h('div', { className: 'ab-list', style: { margin: '8px 0' } }, goals.map((g, i) => h('div', { key: g.id || i, className: 'ab-li' },
           h('div', { className: 'meta' }, (g.ownerLabel || GOAL_OWNER_LABELS[g.owner] || g.owner || '?') + ' · 置信 ' + Math.round((g.confidence || 0) * 100) + '% · 风险 ' + Math.round((g.risk || 0) * 100) + '%' + (g.status ? ' · ' + g.status : '')),
           h('div', { className: 'body' }, g.intent || g.object || '（没写意图）')))) : null,
