@@ -10,6 +10,7 @@
 // 另外顺手把模型偶尔漏出来的 Markdown 洗掉——QQ 不渲染 Markdown。
 
 import { currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
+import { stripHtmlFragments } from './html-fragments.js'
 
 export const SILENCE = '[沉默]'
 
@@ -276,6 +277,17 @@ function withoutToolRanges(raw, ranges, start = 0, end = raw.length) {
   return clean + raw.slice(last, end)
 }
 
+/** 合并区间：排序后重叠/相接的合成一段，避免同一段文字被删两次。 */
+function mergeRanges (ranges) {
+  const out = []
+  for (const r of [...ranges].sort((a, b) => a.start - b.start || b.end - a.end)) {
+    const last = out[out.length - 1]
+    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end)
+    else out.push({ start: r.start, end: r.end })
+  }
+  return out
+}
+
 export function stripToolText(text) {
   const raw = String(text || '')
   return withoutToolRanges(raw, toolTextRanges(raw))
@@ -295,26 +307,28 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const active = currentPromptSources()
   const sources = promptSources ?? [...(active?.system.values() || []), active?.context || '', ...(active?.memory || [])]
   const raw = String(text || '')
+  // 先剥 HTML 残片：它们和工具调用、提示词复读互不重叠，按原文坐标并进同一份区间表。
+  const { cuts: htmlCuts } = stripHtmlFragments(raw)
   const tools = toolTextRanges(raw, { ownerPrivate })
-  const toolClean = withoutToolRanges(raw, tools)
+  const baseRanges = mergeRanges([...tools, ...htmlCuts])
+  const toolClean = withoutToolRanges(raw, baseRanges)
   const prompts = (allowPromptEcho ? [] : promptTextRanges(toolClean, fingerprint || promptFingerprint(sources, userText ?? active?.userText ?? '')))
     .sort((a, b) => a.start - b.start || b.end - a.end)
   const promptClean = withoutToolRanges(toolClean, prompts)
   // 主人问设定时保留带解释的完整回答，仅整条复读才拦。
   const removePrompts = prompts.length && (!ownerPrivate || isSilence(visibleContent(promptClean)))
   onPromptDecision?.(Boolean(ownerPrivate && prompts.length && !removePrompts))
-  let ranges = tools
+  let ranges = baseRanges
   if (removePrompts) {
-    // 将工具清洗后的坐标映射回原消息，防止跨文字段或工具与复读混排时错删。
+    // 将清洗后的坐标映射回原消息，防止跨文字段或工具与复读混排时错删。
     const offsets = []
     let r = 0
     for (let i = 0; i < raw.length; i++) {
-      while (r < tools.length && tools[r].end <= i) r++
-      if (r < tools.length && tools[r].start <= i) continue
+      while (r < baseRanges.length && baseRanges[r].end <= i) r++
+      if (r < baseRanges.length && baseRanges[r].start <= i) continue
       offsets.push(i)
     }
-    ranges = [...tools, ...prompts.map((p) => ({ start: offsets[p.start], end: offsets[p.end - 1] + 1 }))]
-      .sort((a, b) => a.start - b.start || b.end - a.end)
+    ranges = mergeRanges([...baseRanges, ...prompts.map((p) => ({ start: offsets[p.start], end: offsets[p.end - 1] + 1 }))])
   }
   let clean = withoutToolRanges(raw, ranges)
   if (ranges.length && isSilence(visibleContent(clean))) {
