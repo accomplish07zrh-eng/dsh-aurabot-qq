@@ -879,3 +879,186 @@ test('素材口：rss-reader 的条目进素材池，朋友线不吃', async () 
   const plain = await makePurpose(hub).p.preview()
   assert.ok(plain.materials.length >= 1)
 })
+
+// ---------- 代发决断（broker 档：api.proactive.submit 的内容先给引擎过目） ----------
+
+test('代发决断：固定一条工作区会话（system:purpose-broker），不按模块/条目分会话', async () => {
+  const hub = makeHub({ reply: '原样' })
+  const { p } = makePurpose(hub)
+  // 三个不同模块、三个不同 itemId 各提交一条：会话名必须都一样
+  await p.brokerReview({ to: `private:${OWNER}`, text: '抖音日报', moduleId: 'douyin', itemId: 'i-douyin' })
+  await p.brokerReview({ to: `private:${OWNER}`, text: 'B站周报', moduleId: 'bili', itemId: 'i-bili' })
+  await p.brokerReview({ to: `private:${OWNER}`, text: '热榜摘要', moduleId: 'tophub', itemId: 'i-tophub' })
+  assert.equal(hub.turns.length, 3, '每条都要真的开决断回合（会话窗口里才看得到过程）')
+  assert.deepEqual(hub.turns.map((t) => t.name), ['purpose-broker', 'purpose-broker', 'purpose-broker'], '会话名固定，不随模块/条目变')
+  // 标题按主人定的名字（不带「QQ · 」前缀，titleFor 会统一拼成「QQ · 目的引擎（代发决断）」）
+  assert.deepEqual(hub.turns.map((t) => t.title), ['目的引擎（代发决断）', '目的引擎（代发决断）', '目的引擎（代发决断）'])
+})
+
+test('代发决断：会话提示词写明是哪个模块提交的（工作区里看得见来源）', async () => {
+  const hub = makeHub({ reply: '原样' })
+  const { p } = makePurpose(hub)
+  await p.brokerReview({ to: `private:${OWNER}`, text: '今天刷到一条视频', moduleId: 'douyin', itemId: 'x' })
+  assert.match(hub.turns[0].prompt, /模块「douyin」/, '提示词要交代提交方')
+  assert.match(hub.turns[0].prompt, /今天刷到一条视频/, '要把原文本带进会话')
+})
+
+test('代发决断：记忆里刚记下同样的内容 ≠ 已经跟主人说过（先写记忆再推送的模块不能因此沉默）', async () => {
+  const now = Date.now()
+  const CONTENT = '刷到条电竞锐评我完全看不懂，可热评有人立flag：IG进决赛就抽十个兄弟喝奶茶'
+  const memories = [
+    // 这条正是「bili 模块刚写进记忆」的稿子：几秒前记下，内容和待发消息几乎一样
+    { id: 'm-fresh', text: '比赛我一个字没看懂，倒被热评那条「进决赛抽十个兄弟喝奶茶」甜到了，这股高兴劲儿比锐评好看多了', importance: 0.8, at: now - 3000, source: 'tool' },
+    { id: 'm-old', text: '主人喜欢看我讲刷到的东西', importance: 0.7, at: now - 3 * 24 * 3600 * 1000, source: 'tool' },
+  ]
+  // 聊天流水：她最近**没有**在私聊里发过这条内容
+  const rows = [
+    { t: now - 3600000, chatId: `private:${OWNER}`, who: '主人', uid: OWNER, text: '早点睡' },
+    { t: now - 3000000, chatId: `private:${OWNER}`, who: 'bot', text: '好，你也早点睡' },
+  ]
+  const hub = { ...makeHub({ reply: '原样' }), chatLogDays: () => ['d'], chatLogOf: () => rows }
+  const p = createPurpose({
+    getConfig: () => ({
+      enabled: true, ownerQQ: OWNER, ownerName: '主人',
+      speakUp: { enabled: false, awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false },
+      ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0 } },
+    }),
+    hub,
+    log: { info() {}, warn() {}, debug() {} },
+    isMuted: () => false, mood: () => null,
+    memory: () => ({ list: () => memories, recall: () => memories.map((m) => ({ it: m, score: 0.9 })), personaPerson: () => null }),
+    personaText: () => '爱撒娇的大肥鱼',
+  })
+  const r = await p.brokerReview({ to: `private:${OWNER}`, text: CONTENT, moduleId: 'bili' })
+  assert.equal(r.send, true, '记忆里有同样内容不算说过，不能因此沉默')
+  const prompt = hub.turns[0].prompt
+  assert.match(prompt, /不等于你已经/, '要明确记忆不等于讲过')
+  assert.match(prompt, /先把看到的东西记进记忆，再推送消息/, '要点明浏览模块「先记忆后推送」的顺序')
+  assert.match(prompt, /只以【你们最近聊过】/, '要以聊天流水作为说过的依据')
+  assert.match(prompt, /刚刚记下的/, '刚写的记忆要标注出来')
+  assert.match(prompt, /最近没发过几乎一样的内容/, '要给出「没说过」的硬证据')
+})
+
+test('代发决断：聊天流水里确实发过类似内容 → 明确提示重复', async () => {
+  const now = Date.now()
+  const CONTENT = '刷到条电竞锐评我完全看不懂，可热评有人立flag：IG进决赛就抽十个兄弟喝奶茶'
+  const rows = [
+    { t: now - 3000000, chatId: `private:${OWNER}`, who: 'bot', text: '爸爸，刷到条电竞锐评我完全看不懂，可热评有人立flag：IG进决赛就抽十个兄弟喝奶茶～' },
+    { t: now - 2000000, chatId: `private:${OWNER}`, who: '主人', uid: OWNER, text: '哈哈哈有意思' },
+  ]
+  const hub = { ...makeHub({ reply: '原样' }), chatLogDays: () => ['d'], chatLogOf: () => rows }
+  const p = createPurpose({
+    getConfig: () => ({
+      enabled: true, ownerQQ: OWNER, ownerName: '主人',
+      speakUp: { enabled: false, awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false },
+      ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0 } },
+    }),
+    hub,
+    log: { info() {}, warn() {}, debug() {} },
+    isMuted: () => false, mood: () => null, memory: () => ({ list: () => [], recall: () => [] }),
+    personaText: () => '',
+  })
+  await p.brokerReview({ to: `private:${OWNER}`, text: CONTENT, moduleId: 'bili' })
+  const prompt = hub.turns[0].prompt
+  assert.match(prompt, /最近已经发过很像的话/, '真发过要明确告诉模型')
+})
+
+test('代发决断：提示词注入人格、心情、相关记忆、人物档案与最近聊天（不再只有一段干巴巴的原文）', async () => {
+  const now = Date.now()
+  const rows = [
+    { t: now - 600000, chatId: `private:${OWNER}`, who: '主人', uid: OWNER, text: '今天有点累，先睡了' },
+    { t: now - 300000, chatId: `private:${OWNER}`, who: 'bot', text: '好，那你早点休息' },
+  ]
+  const hub = { ...makeHub({ reply: '原样' }), chatLogDays: () => ['d'], chatLogOf: () => rows }
+  const memories = [
+    { id: 'm1', text: '主人最近在准备一个很重要的面试', importance: 0.9, about: OWNER },
+    { id: 'm2', text: '主人喜欢大肥鱼叫他爸爸', importance: 0.8, about: OWNER },
+    { id: 'm3', text: '主人说别再半夜发消息吵他', importance: 0.7, about: OWNER },
+  ]
+  const nudges = []
+  const p = createPurpose({
+    getConfig: () => ({
+      enabled: true, ownerQQ: OWNER, ownerName: '主人',
+      speakUp: { enabled: false, awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false },
+      ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0 } },
+    }),
+    hub,
+    log: { info() {}, warn() {}, debug() {} },
+    isMuted: () => false,
+    // 心情：contextLine 有就用它（真实 mood 模块的形态）
+    mood: () => ({ contextLine: () => '（你现在有点低落，因为主人刚说要去睡。这会自然地影响你说话：话少一点、别太闹。）', nudge: (d, r) => nudges.push({ d, r }) }),
+    memory: () => ({
+      list: (q) => memories,
+      recall: () => memories.map((m) => ({ it: m, score: 0.8 })),
+      personaPerson: () => ({ alias: '爸爸', persona: '工作很忙但会陪她', handle: '互相惦记着' }),
+    }),
+    personaText: () => '她是一条住在 QQ 里的大肥鱼，说话软糯、爱撒娇、偶尔犯傻但很贴心。',
+  })
+  await p.brokerReview({ to: `private:${OWNER}`, text: 'B站上有个「怎么养大肥鱼」的教程', moduleId: 'bili' })
+  const prompt = hub.turns[0].prompt
+  // 人格
+  assert.match(prompt, /大肥鱼/, '要带人格（她是谁）')
+  assert.match(prompt, /软糯|撒娇/, '人格描述要进提示词')
+  // 心情
+  assert.match(prompt, /有点低落/, '心情 contextLine 要进提示词')
+  assert.match(prompt, /别太闹|话少/, '心情对说话风格的影响要进提示词')
+  // 记忆（按内容检索）
+  assert.match(prompt, /面试|爸爸|半夜/, '相关记忆要进提示词')
+  // 人物档案
+  assert.match(prompt, /爸爸/, '人物档案（称呼）要进提示词')
+  assert.match(prompt, /互相惦记着/, '相处方式要进提示词')
+  // 最近聊天
+  assert.match(prompt, /今天有点累|早点休息/, '最近的聊天来往要进提示词')
+  // 不掺排程/额度
+  assert.doesNotMatch(prompt, /下次可开口|剩余额度|额度已用/, '审查上下文不该掺排程与额度')
+})
+
+test('代发决断：引擎没开时不过目，按原文放行（决断是增强不是新闸门）', async () => {
+  const hub = makeHub()
+  const { p, cfg } = makePurpose(hub)
+  cfg.ext.purpose.enabled = false
+  const r = await p.brokerReview({ to: `private:${OWNER}`, text: '抖音日报来了', moduleId: 'douyin' })
+  assert.deepEqual(r, { ok: true, send: true, text: '抖音日报来了', reviewed: false })
+  assert.equal(hub.turns.length, 0, '不该起决断回合')
+})
+
+test('代发决断：非主人私聊（朋友/群）不过目，按原文放行', async () => {
+  const hub = makeHub()
+  const { p } = makePurpose(hub)
+  const r = await p.brokerReview({ to: `private:20000009`, text: 'x', moduleId: 'm' })
+  assert.equal(r.send, true)
+  assert.equal(r.text, 'x')
+  assert.equal(hub.turns.length, 0)
+})
+
+test('代发决断：决断为沉默 → 不发；改写 → 用改写文本；出错 → 原文放行', async () => {
+  // 沉默
+  const silentHub = makeHub({ reply: '[沉默]' })
+  const silent = makePurpose(silentHub)
+  const r1 = await silent.p.brokerReview({ to: `private:${OWNER}`, text: '没必要说的', moduleId: 'm', itemId: 'i1' })
+  assert.equal(r1.send, false, '引擎说沉默就不发')
+  assert.equal(silentHub.turns.length, 1)
+  assert.match(silentHub.turns[0].prompt, /没必要说的/, '决断回合的提示词要带上原文本')
+
+  // 改写
+  const rewriteHub = makeHub({ reply: '主人，抖音里那条视频我看到最后了，结尾很有意思' })
+  const rewrite = makePurpose(rewriteHub)
+  const r2 = await rewrite.p.brokerReview({ to: `private:${OWNER}`, text: '抖音日报', moduleId: 'douyin' })
+  assert.equal(r2.send, true)
+  assert.equal(r2.text, '主人，抖音里那条视频我看到最后了，结尾很有意思', '用改写后的文本')
+
+  // 原样
+  const rawHub = makeHub({ reply: '原样' })
+  const raw = makePurpose(rawHub)
+  const r3 = await raw.p.brokerReview({ to: `private:${OWNER}`, text: '就发这句', moduleId: 'm' })
+  assert.equal(r3.send, true)
+  assert.equal(r3.text, '就发这句', '「原样」指令回原文')
+
+  // 决断回合出错：按原文放行（门闸已放行的消息不能被决断故障卡死）
+  const errHub = makeHub()
+  errHub.runSystemTurn = async () => { throw new Error('决断炸了') }
+  const err = makePurpose(errHub)
+  const r4 = await err.p.brokerReview({ to: `private:${OWNER}`, text: '原文直发', moduleId: 'm' })
+  assert.equal(r4.send, true)
+  assert.equal(r4.text, '原文直发')
+})
