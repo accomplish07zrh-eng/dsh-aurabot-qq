@@ -155,21 +155,24 @@ export default {
       // 想找几天前说过的一句话没有入口，这里按关键词翻本地流水（按天存的那份）。
       tools.push(defineTool({
         name: 'qq_search_chatlog',
-        description: '在本地聊天流水里按关键词跨天搜旧对话（只读）。记不清以前说过什么、对方提过的人名约定梗，先搜这个再答；想找「几天前那句话」时比 qq_chat_history 管用。',
+        description: '在本地聊天流水里按关键词跨天搜旧对话（只读）。记不清以前说过什么、对方提过的人名约定梗，先搜这个再答；想找「几天前那句话」时比 qq_chat_history 管用；记得是哪天的就填 date 定点翻。',
         properties: {
           query: str('要搜的关键词，空格分隔表示每个词都要出现'),
           days: int('往回搜多少天，默认 30；0 表示全部'),
+          date: str('可选：只搜这一天，填 2026-03-05 这种日期；填了就忽略 days'),
           chat: str('主人私聊里才能用：只看某个聊天，填 private:QQ号 或 group:群号，不填就是全部；其他场合只搜当前聊天'),
         },
         required: ['query'],
-        execute: async ({ query, days, chat: wanted }) => {
+        execute: async ({ query, days, date, chat: wanted }) => {
           // 跨聊天搜只给主人（full）：群友不能借她翻主人的私聊或别的群
           const only = level === 'full' ? wanted : chat.chatId
           const words = String(query || '').trim().split(/\s+/).filter(Boolean)
           if (!words.length) return { ok: false, message: '关键词是空的' }
+          const wantedDay = String(date || '').trim()
+          if (wantedDay && !/^\d{4}-\d{2}-\d{2}$/.test(wantedDay)) return { ok: false, message: 'date 要填 YYYY-MM-DD 格式的日期' }
           const all = hub.chatLogDays?.() || []
           const n = Number(days)
-          const from = Number.isFinite(n) && n > 0 ? all.slice(-n) : all
+          const from = wantedDay ? all.filter((d) => d === wantedDay) : Number.isFinite(n) && n > 0 ? all.slice(-n) : all
           const hits = []
           for (const day of from) {
             for (const l of hub.chatLogOf?.(day) || []) {
@@ -180,7 +183,7 @@ export default {
               hits.push(`${day.slice(5)} ${hhmm} [${l.chatId}] ${l.who}：${t.slice(0, 120)}`)
             }
           }
-          if (!hits.length) return { ok: true, message: `搜了 ${from.length} 天的流水，没找到「${words.join(' ')}」。` }
+          if (!hits.length) return { ok: true, message: wantedDay && !from.length ? `流水里没有 ${wantedDay} 这天。` : `搜了 ${from.length} 天的流水，没找到「${words.join(' ')}」。` }
           const tail = hits.slice(-40)
           return { ok: true, message: `找到 ${hits.length} 条，最近 ${tail.length} 条：\n${tail.join('\n')}` }
         },

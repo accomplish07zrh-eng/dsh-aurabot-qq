@@ -916,7 +916,7 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     storage.save(s) // 只改命中计数，不动索引
   }
 
-  function recall(query, { about, limit, where = '', context = '', onlyAbout, requireAbout, shown = true, groupChatId = '', includeGroup = false, excludeAbout = '', vectorHits } = {}) {
+  function recall(query, { about, limit, where = '', context = '', onlyAbout, requireAbout, shown = true, groupChatId = '', includeGroup = false, excludeAbout = '', vectorHits, period } = {}) {
     const max = limit ?? getConfig().memory.recallCount
     const id = String(where).split('（')[0]
     const owner = String(getConfig().ownerQQ || '')
@@ -925,7 +925,8 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     // F1：社交场景（群聊 / 非主人私聊）统一加来源可见性，只保留当前聊天产生的普通记忆；
     // 主人私聊（ownerPrivate）保持可以看全部。where 不是真实聊天 id 的内部调用按主人视角处理（向后兼容）。
     const socialScope = Boolean(id) && /^(private|group):/.test(id) && !ownerPrivate
-    const options = { period: pastWindow(query, Date.now(), getConfig().memory.recallTriggers), about, onlyAbout, requireAbout, gistChatId: /^(private|group):/.test(id) && (!id.startsWith('group:') || getConfig().memory.groupMemory !== false) ? id : '', ownerScope: !socialScope, scopeChatId: socialScope ? id : '', groupChatId: getConfig().memory.groupMemory !== false && id === groupChatId && id.startsWith('group:') ? id : '', includeGroup: getConfig().memory.groupMemory !== false && includeGroup && ownerPrivate, excludeAbout: excluded, rrf: getConfig().memory.searchRrf !== false }
+    // 显式给了时间范围（工具/面板定点查）就不再从查询语句里猜时间
+    const options = { period: period ?? pastWindow(query, Date.now(), getConfig().memory.recallTriggers), about, onlyAbout, requireAbout, gistChatId: /^(private|group):/.test(id) && (!id.startsWith('group:') || getConfig().memory.groupMemory !== false) ? id : '', ownerScope: !socialScope, scopeChatId: socialScope ? id : '', groupChatId: getConfig().memory.groupMemory !== false && id === groupChatId && id.startsWith('group:') ? id : '', includeGroup: getConfig().memory.groupMemory !== false && includeGroup && ownerPrivate, excludeAbout: excluded, rrf: getConfig().memory.searchRrf !== false }
     const idx = index()
     // 查询结束到真正回忆之间，记忆可能刚被改写、忘掉或关闭向量检索。
     const valid = Array.isArray(vectorHits) && vectorHits.length ? new Set(vector.validIds(idx.docs.map((d) => d.it))) : null
