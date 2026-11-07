@@ -2,9 +2,24 @@
 // 导出 createMemoryStore 的返回值：add / addEvent / recall / list / contextFor / topicScore / consolidate ……
 // 别的模块（空间日记、B 站、翻唱）会往这里记她的经历；记忆模块关着时它们自己跳过。
 
-import { createMemoryStore, memoryLine, looksLikeRuleMemory } from '../../features/memory.js'
+import { createMemoryStore, memoryLine, looksLikeRuleMemory, parseValidityDate } from '../../features/memory.js'
 export { looksLikeRuleMemory } from '../../features/memory.js'
 import { defineTool, str } from '../../tools/tools.js'
+
+/** 把「2026-03-05」或「2026-03-01..2026-03-31」解析成检索用的时间窗；裸的年月算整月。 */
+function parsePeriod(text) {
+  const parts = String(text || '').split('..').map((s) => s.trim()).filter(Boolean)
+  if (!parts.length || parts.length > 2) return null
+  const bareMonth = (s) => /^(去年|今年|上个月|上月|本月|这个月)(?:\d{1,2}月)?$/.test(s)
+  const dayEnd = (ms) => new Date(new Date(ms).getFullYear(), new Date(ms).getMonth(), new Date(ms).getDate() + 1).getTime() - 1
+  const monthEnd = (ms) => new Date(new Date(ms).getFullYear(), new Date(ms).getMonth() + 1, 1).getTime() - 1
+  const start = parseValidityDate(parts[0])
+  if (!start) return null
+  if (parts.length === 1) return { start, end: bareMonth(parts[0]) ? monthEnd(start) : dayEnd(start) }
+  const end = parseValidityDate(parts[1])
+  if (!end || end < start) return null
+  return { start, end: bareMonth(parts[1]) ? monthEnd(end) : dayEnd(end) }
+}
 
 export default {
   id: 'memory',
@@ -70,10 +85,10 @@ export default {
         }),
         defineTool({
           name: 'recall_memory',
-          description: '翻一翻记忆库：想不起对方以前说过什么、喜欢什么、约过什么时用。query 写关键词或一句话。',
-          properties: { query: str('想找什么') },
+          description: '翻一翻记忆库：想不起对方以前说过什么、喜欢什么、约过什么时用。query 写关键词或一句话；想按时间定点查就再填 period。',
+          properties: { query: str('想找什么'), period: str('可选：只翻这段时间的事，写 2026-03-05 或 2026-03-01..2026-03-31，也认「去年3月」；不填就按相关性翻全部') },
           required: ['query'],
-          execute: async ({ query }) => {
+          execute: async ({ query, period }) => {
             // 群聊 / 非主人私聊里只翻「这个人自己」的记忆，不能把主人的私事翻出来。
             // F2：群聊的 onlyAbout 必须是本轮说话的人（以前 chat.userId 为空 → 完全不按人物过滤，能翻到不在场的人）。
             const owner = chat.kind === 'private' && String(chat.userId) === String(api.config().ownerQQ || '')
@@ -86,8 +101,10 @@ export default {
                 : (chat.userId ? [String(chat.userId)] : [])
             const onlyAbout = owner ? undefined : speakers
             const about = owner ? chat.userId : (chat.kind === 'group' ? speakers : chat.userId)
+            const window = period ? parsePeriod(period) : null
+            if (period && !window) return { ok: false, message: 'period 没认出来，写 2026-03-05 或 2026-03-01..2026-03-31' }
             const vectorHits = await memory.vectorHits(query)
-            const hits = await memory.recallAsync(String(query || ''), { about, onlyAbout, requireAbout: !owner, excludeAbout: owner ? '' : api.config().ownerQQ, includeGroup: owner, groupChatId: chat.kind === 'group' ? current : '', limit: 8, where: current + '（翻记忆）', vectorHits })
+            const hits = await memory.recallAsync(String(query || ''), { about, onlyAbout, requireAbout: !owner, excludeAbout: owner ? '' : api.config().ownerQQ, includeGroup: owner, groupChatId: chat.kind === 'group' ? current : '', limit: 8, where: current + '（翻记忆）', vectorHits, period: window ?? undefined })
             return hits.length ? { ok: true, message: hits.map((h) => memoryLine(h.it)).join('；') } : { ok: true, message: '没想起相关的事' }
           },
         }),

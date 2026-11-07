@@ -84,6 +84,25 @@ test('聊天流水：群聊传入其他聊天也只能搜索当前群，不能�
   assert.match(otherGroup.message, /没找到/)
 })
 
+test('聊天流水：date 定点只搜那一天，格式不对会拒绝，没有那天会说明', async () => {
+  const builder = searchBuilder()
+  const tool = searchTool(builder, { kind: 'private', userId: 'fictional-owner', chatId: 'private:fictional-owner' }, 'full')
+
+  const oneDay = await tool.execute({ query: '共同暗号', days: 0, date: '2032-03-01' })
+  assert.equal(oneDay.ok, true)
+  assert.match(oneDay.message, /找到 2 条/)
+  assert.match(oneDay.message, /本群的旧记录|仅私聊的记录/)
+  assert.doesNotMatch(oneDay.message, /新记录|其他群的/)
+
+  const missing = await tool.execute({ query: '共同暗号', date: '2032-03-09' })
+  assert.equal(missing.ok, true)
+  assert.match(missing.message, /流水里没有 2032-03-09/)
+
+  const bad = await tool.execute({ query: '共同暗号', date: '2032年3月' })
+  assert.equal(bad.ok, false)
+  assert.match(bad.message, /YYYY-MM-DD/)
+})
+
 test('常驻记忆：超过 900 字截断并加省略号，恰好 900 字保留原文', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'aurabot-fixes-memory-'))
   const oldDir = process.env.AURABOT_DATA_DIR
