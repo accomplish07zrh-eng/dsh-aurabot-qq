@@ -283,6 +283,61 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   const disposedError = () => Object.assign(new Error('Aurabot 插件已卸载'), { code: 'AURABOT_DISPOSED' })
   const assertActive = () => { if (disposed) throw disposedError() }
 
+  // 主动发言出站门闸（见 docs/OUTBOUND-POLICY-DESIGN.md / CONTRACT §4）。
+  // 宿主装配时经 setOutboundGuard 注入；未注入时（纯测试 / 旧环境）这里是 null，
+  // 所有发送路径与改造前逐字节等价，零额外开销。
+  // 约定：guard(ask) 返回 null 表示「拦下」（调用方据此按失败处理）；
+  // 返回对象表示放行，其中可带 settle(outcome) 供 hub 结算这次预占。
+  let outboundGuard = null
+  /**
+   * 注入门闸判定函数。传 null 可撤销（测试/热重载用）。
+   * @param {((ask: object) => object|null)|null} fn
+   */
+  function setOutboundGuard(fn) {
+    outboundGuard = typeof fn === 'function' ? fn : null
+    return outboundGuard !== null
+  }
+
+  /**
+   * 这条发送要不要过门闸。
+   * - 没注入门闸（旧环境 / 纯测试）→ 不过，逐字节等价于改造前；
+   * - `outboundDone` 为真 → 上游（modules.js 的模块包装层）已经判过并会自己结算，别再判一次；
+   * - 只有带 `sourceModule`（模块发起）或显式 `enginePolicy`（引擎路径）才归治理管，
+   *   hub 内部发送（回合回复、命令回执、语音补表情……）永远不带这两个标记，行为不变。
+   */
+  function wantsOutbound(opts) {
+    if (!outboundGuard || !opts) return false
+    if (opts.outboundDone) return false
+    return Boolean(opts.sourceModule || opts.enginePolicy)
+  }
+
+  /** 门闸判定：门闸自己抛错按放行处理（治理故障不得阻断正常回复）。 */
+  function passOutbound(ask) {
+    if (!outboundGuard) return { action: 'allow', reason: 'no-guard' }
+    try {
+      const r = outboundGuard(ask)
+      return r === null ? { action: 'deny', reason: 'guard-null' } : (r || { action: 'allow', reason: 'guard-ok' })
+    } catch (error) {
+      log.warn('出站门闸判定出错，本条按放行处理：', error && error.message)
+      return { action: 'allow', reason: 'guard-error' }
+    }
+  }
+
+  /**
+   * 结算一次门闸预占（sent / failed）。
+   * 预占是策略源扣掉的预算，不结算就会永远挂着（下一次判定变成 busy），所以放行后必须回调；
+   * 门闸没提供 settle（旧门闸 / 纯测试）时是空操作。
+   */
+  function settleOutbound(verdict, outcome) {
+    const settle = verdict && verdict.settle
+    if (typeof settle !== 'function') return
+    try {
+      settle(outcome)
+    } catch (error) {
+      log.warn(`出站结算失败（${outcome}）：`, error && error.message)
+    }
+  }
+
   // 拆条间隔可在卸载时立即结束，后面的消息不再投递。
   function pause(ms) {
     if (disposed) return Promise.resolve()
@@ -808,20 +863,38 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   }
 
   // quiet：这一条是额外的（比如语音后面补发的表情），失败了不算到这一轮头上（deliver 按 failStore 里的条数判断整条有没有发出去）。
-  async function sendSegments(chatId, message, note, { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false } = {}) {
+  async function sendSegments(chatId, message, note, opts = {}) {
+    const { force = false, isCurrent = null, throwOnError = false, timeoutMs, quiet = false } = opts
     if (disposed) return null
+    // 出口层第二道保险：模块直接调 scopedHub.sendSegments/sendImage/sendFile/sendFile 时也要过门闸。
+    // 只认带 sourceModule（模块发起）或 enginePolicy（引擎路径）的请求；hub 内部发送不带这两个标记，行为不变。
+    // outboundVerdict：逻辑入口（sendText / deliver）已经判过了，这里不重复判，但由真实出口处结算。
+    let verdict = opts.outboundVerdict || null
+    if (wantsOutbound(opts)) {
+      verdict = passOutbound({ chatId, note, sourceModule: opts.sourceModule, enginePolicy: opts.enginePolicy, cause: opts.cause, itemId: opts.itemId, kind: 'segments' })
+      if (verdict.action === 'deny') {
+        log.info(`出站被策略拦下（${verdict.reason || 'deny'}）→ ${chatId}：${opts.sourceModule || opts.enginePolicy || ''} [${note || ''}]`)
+        return null
+      }
+      // 往下走的是真实出口：成功后结算成 sent（失败/异常分支各自结算成 failed）
+      opts = { ...opts, sourceModule: undefined, enginePolicy: undefined, cause: undefined, itemId: undefined }
+    }
     const cfg = getConfig()
     const tgt = targetOf(chatId)
-    if (!tgt) return null
+    // 目标解析不出来（chatId 写了别的形态）：门闸若已放行要结算成 failed，否则预占永远挂着
+    if (!tgt) return settleOutboundFailed(verdict)
     const cleaning = cleaningFor(chatId)
     // 转发到其他平台的 send 钩子也只能拿到清洗后的正文。
     message = cleanOutboundSegments(message, cleaning)
-    if (!message.length) return null
+    if (!message.length) return settleOutboundFailed(verdict)
     // 扩展模块最后改一次（加签名、过滤敏感词、转发到别处……）；返回 null 就不发
     if (hooks?.send) {
       try {
         const next = await hooks.send(message, { chatId, note, force })
-        if (next === null) { log.info(`扩展模块拦下了 → ${chatId}：${note}`); return null }
+        if (next === null) {
+          log.info(`扩展模块拦下了 → ${chatId}：${note}`)
+          return settleOutboundFailed(verdict)
+        }
         if (Array.isArray(next)) message = next
       } catch (error) {
         log.warn('扩展模块改写发送内容出错：', error.message)
@@ -829,21 +902,22 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     // 钩子可能重新写入工具标记；最终网关出口仍使用同一份清洗。
     message = cleanOutboundSegments(message, cleaning)
-    if (!message.length || disposed || (isCurrent && !isCurrent())) return null
+    if (!message.length || disposed || (isCurrent && !isCurrent())) return settleOutboundFailed(verdict)
     const cap = captureStore.getStore()
     if (cap) {
       cap.push({ chatId, note, message })
       if (outputScope.getStore()?.chatId === chatId) outputScope.getStore().sent++
+      settleOutbound(verdict, 'sent')
       return { message_id: 'sim-' + cap.length }
     }
     if (force) {}
     else if (!cfg.enabled) {
       log.info(`总开关关着，没发 → ${chatId}：${note}`)
-      return null
+      return settleOutboundFailed(verdict)
     }
     else if (cfg.dryRun) {
       log.info(`试运行（没真发）→ ${chatId}：${note}`)
-      return null
+      return settleOutboundFailed(verdict)
     }
     const action = tgt.kind === 'group' ? 'send_group_msg' : 'send_private_msg'
     const sourceGroupId = tgt.kind === 'private' ? privateSources.get(tgt.id) : ''
@@ -856,6 +930,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
       bump('sent')
       if (outputScope.getStore()?.chatId === chatId) outputScope.getStore().sent++
+      settleOutbound(verdict, 'sent')
       return r
     } catch (error) {
       // 网关预热/短暂不可达：确定没发出去的消息放进补发队列，连上后按 TTL 补发。
@@ -870,10 +945,18 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       }
       bump('errors')
       log.warn(`发到 ${chatId} 失败：`, error.message)
+      // 结果不确定（超时 / 断线）时按 uncertain 结算：可能已经发出去了，不能当没发去退款重发
+      settleOutbound(verdict, isDefiniteFailure(error) ? 'failed' : 'uncertain')
       if (throwOnError) throw error
       if (!quiet) failStore.getStore()?.push(error.message)
       return null
     }
+  }
+
+  /** 门闸放行但这一步没发出去：结算成 failed 并把 null 返回给调用方（保持旧真值语义）。 */
+  function settleOutboundFailed(verdict) {
+    settleOutbound(verdict, 'failed')
+    return null
   }
 
   /** replyId：要引用回复的那条 QQ 消息（可选）。 */
@@ -882,15 +965,30 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   const mention = (userId, segs = []) => (userId && !segs.some((s) => s.type === 'at' && String(s.data?.qq) === String(userId)) ? [{ type: 'at', data: { qq: String(userId) } }, { type: 'text', data: { text: ' ' } }] : [])
 
   async function sendText(chatId, text, replyId, missed, userId, opts = {}) {
+    // 主动发言门闸（只在模块调用路径生效：模块快捷 API / scoped hub 会带 sourceModule）。
+    // hub 内部发送（回复、命令回执、语音补表情……）不带 sourceModule，行为与改造前完全一致。
+    // 被拦一律返回 null —— 铁律：旧调用口的真值语义不变（设计稿 §1.4）。
+    // 这里是**逻辑入口**：判过之后把 verdict 传给 sendSegments（真实出口）去结算，不再重复判定。
+    let verdict = opts && opts.outboundVerdict ? opts.outboundVerdict : null
+    if (wantsOutbound(opts)) {
+      verdict = passOutbound({ chatId, text, sourceModule: opts.sourceModule, enginePolicy: opts.enginePolicy, cause: opts.cause, itemId: opts.itemId, kind: 'text' })
+      if (verdict.action === 'deny') {
+        log.info(`出站被策略拦下（${verdict.reason || 'deny'}）→ ${chatId}：${opts.sourceModule || opts.enginePolicy || ''}`)
+        return null
+      }
+      // 已经判过了：摘掉标记，只在 opts 里留 verdict 让出口层结算（同一条消息不该扣两份额度）
+      opts = { ...opts, sourceModule: undefined, enginePolicy: undefined, cause: undefined, itemId: undefined, outboundVerdict: undefined }
+    }
     // 先清洗，避免调用参数或提示词里的 @ / 表情变成真正的消息段。
     text = cleanOutboundText(text, cleaningFor(chatId))
-    if (!text.trim()) return null
+    if (!text.trim()) return settleOutboundFailed(verdict)
     // 文字里的 <face:名字> 换成 QQ 系统表情，和文字在同一条消息里；系统表情关着就去掉标签
     let segs = getConfig().stickers.faces ? textToSegments(text, faces.idOf) : [{ type: 'text', data: { text: stripFaceTags(text) } }]
     // 群里的 @名字 / <at:QQ号> 换成真 @（对方会收到提醒）
     if (chatId.startsWith('group:') && hasMention(text)) segs = expandMentions(segs, await membersOf(chatId.slice(6)), missed)
-    if (!segs.length || (segs.length === 1 && segs[0].type === 'text' && !segs[0].data.text.trim())) return null
-    return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60), opts)
+    if (!segs.length || (segs.length === 1 && segs[0].type === 'text' && !segs[0].data.text.trim())) return settleOutboundFailed(verdict)
+    // 真正出去的是 sendSegments：把 verdict 交下去让它按真实结果结算（sent / failed / uncertain）
+    return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60), verdict ? { ...opts, outboundVerdict: verdict } : opts)
   }
 
   async function sendVoice(chatId, text, replyId, userId) {
@@ -944,7 +1042,14 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
-  /** 戳回去：私聊戳对方，群里戳最近戳她的人（没人戳过就戳这一段最后说话的人）。 */
+  /**
+   * 戳回去：私聊戳对方，群里戳最近戳她的人（没人戳过就戳这一段最后说话的人）。
+   *
+   * 这条**不走出站门闸**（主动发言策略），是有意的：
+   * - 它是「回应型」动作——别人先戳了她，她才戳回去，不是主动搭话；
+   * - 设计稿 §2 非目标明确写了「不拦回应型发言」。
+   * 戳一戳也不产生消息、不占发言额度，硬塞进治理只会让「回敬一下」也被拦，反而伤手感。
+   */
   async function pokeBack(chatId) {
     const cfg = getConfig()
     const group = chatId.startsWith('group:') ? chatId.slice(6) : ''
@@ -1144,12 +1249,82 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
   }
 
+  /**
+   * 引擎路径的策略源解析器（CONTRACT §4：`deliver(chatId, text, {enginePolicy})` 走 reserve，
+   * 跳过主动门闸，但**仍照旧**走总开关 / 试运行 / 禁言——那些在 deliverTurn 内部，本函数不碰）。
+   * 宿主在装配时注入：name → 策略源对象（purpose / speakup，都是 proactive-policy.js 的工厂产物）。
+   * 未注入或解析不到时，deliver 完全按旧行为直发（旧环境零影响）。
+   */
+  let outboundEngineResolver = null
+  /**
+   * 注入引擎策略源解析器。传 null 可撤销。
+   * @param {((name: string) => object|null)|null} fn
+   */
+  function setOutboundEngineResolver(fn) {
+    outboundEngineResolver = typeof fn === 'function' ? fn : null
+    return outboundEngineResolver !== null
+  }
+
+  /** 解析 deliver 的 enginePolicy：可以是策略源对象本身，也可以是名字（交给宿主解析）。 */
+  function resolveEnginePolicy(spec) {
+    if (!spec) return null
+    if (typeof spec === 'object') return typeof spec.reserve === 'function' ? spec : null
+    if (typeof spec !== 'string' || !outboundEngineResolver) return null
+    try {
+      const p = outboundEngineResolver(spec)
+      return p && typeof p.reserve === 'function' ? p : null
+    } catch (error) {
+      log.warn('解析引擎策略源出错，这条按未指定策略直发：', error && error.message)
+      return null
+    }
+  }
+
   /** 一轮回复落地：拆条、语音、表情。 */
   function deliver(chatId, text, opts = {}) {
     const active = currentPromptSources()
     const current = active || outputSources.get(chatId)
     const sources = current && { ...current, system: new Map(current.system), memory: [...current.memory] }
-    return outputScope.run({ chatId, sources, sent: 0, blocked: false, allowPromptEcho: false }, () => deliverTurn(chatId, text, opts))
+    return outputScope.run({ chatId, sources, sent: 0, blocked: false, allowPromptEcho: false }, () => deliverWithEnginePolicy(chatId, text, opts))
+  }
+
+  /**
+   * deliver 的引擎策略分支：
+   * - 没指定 enginePolicy（默认）→ 一步不变地走 deliverTurn；
+   * - 指定了 → 先 reserve 一份逻辑发言预算：拒绝就当「这轮不说话」返回 undefined（与 silent 同口径，
+   *   调用方本来就按真值判断 outcome）；放行则投递后按真实结果 commit（sent / failed / uncertain）。
+   */
+  async function deliverWithEnginePolicy(chatId, text, opts) {
+    const policy = resolveEnginePolicy(opts.enginePolicy)
+    if (!policy) return deliverTurn(chatId, text, opts)
+    let reserved
+    try {
+      reserved = policy.reserve({ to: chatId, sourceModule: opts.enginePolicyName || '', itemId: opts.itemId || '', at: Date.now() })
+    } catch (error) {
+      log.warn('引擎策略源 reserve 抛错，这一轮不发：', error && error.message)
+      reserved = { ok: false, reason: 'error' }
+    }
+    if (!reserved || reserved.ok !== true || !reserved.reserveId) {
+      log.info(`${chatId}：引擎策略源没有放行（${(reserved && reserved.reason) || 'unknown'}），这一轮不发`)
+      return undefined
+    }
+    const reserveId = String(reserved.reserveId)
+    let outcome = 'failed'
+    try {
+      const r = await deliverTurn(chatId, text, opts)
+      // deliverTurn 的 sent 计数在 outputScope 里：真发出去过才算 sent，否则按 failed 结算（退款口径交给策略源）
+      outcome = (outputScope.getStore()?.sent || 0) > 0 ? 'sent' : 'failed'
+      return r
+    } catch (error) {
+      // 抛错 = 结果未知（可能已经发出去了）：按 uncertain 结算，绝不退款重发
+      outcome = 'uncertain'
+      throw error
+    } finally {
+      try {
+        if (typeof policy.commit === 'function') policy.commit(reserveId, { outcome })
+      } catch (error) {
+        log.warn(`引擎策略源 commit 失败（${outcome}）：`, error && error.message)
+      }
+    }
   }
 
   async function deliverTurn(chatId, text, opts = {}) {
@@ -2844,6 +3019,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     maybeReact,
     deliver,
     sendText,
+    // 主动发言出站门闸的注入点（宿主装配时用；不注入则完全惰性）
+    setOutboundGuard,
+    // 引擎路径（deliver 的 opts.enginePolicy）策略源解析器注入点（不注入则 deliver 行为不变）
+    setOutboundEngineResolver,
     sendVoice,
     sendVoiceFile,
     sendFile,
