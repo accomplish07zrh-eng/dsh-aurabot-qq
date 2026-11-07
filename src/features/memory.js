@@ -2116,6 +2116,9 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     return true
   }
 
+  // 印象到期就删，但被反复想起过的（≥ 这个次数）先结晶成永久记忆，不跟着消失
+  const CRYSTALLIZE_MIN_HITS = 3
+
   async function compressOld() {
     if (getConfig().memory.gistEnabled === false) return true
     const now = Date.now()
@@ -2124,9 +2127,19 @@ export function createMemoryStore({ dsh, getConfig, hub, log, fetchImpl }) {
     const snapshot = load()
     const old = (snapshot.gists || []).filter((g) => g.kind === 'gist' && g.level === 1 && !(g.origin === 'chatlog' && snapshot.gistDone?.[g.day]?.[g.chatId]) && safeGistText(g.text, g.chatId) && now - (saidTime(g) || g.at || 0) > (getConfig().memory.gistDays ?? 180) * 86400_000)
     for (const [key, items] of compressionGroups(old)) if (!await compressGroup(key, items, 'gists', 2)) return false
+    const keepImpressionMs = (getConfig().memory.impressionDays ?? 365) * 86400_000
+    const expiring = (load().gists || []).filter((g) => g.kind === 'gist' && g.level === 2 && now - (g.at || 0) > keepImpressionMs)
+    let crystallized = 0
+    for (const g of expiring) {
+      if ((g.hits || 0) < CRYSTALLIZE_MIN_HITS) continue
+      const r = add({ text: g.text, about: g.about || '', importance: 0.7, source: 'gist', chatId: g.chatId, saidAt: saidTime(g) || g.at, scope: g.scope || '', tier: 0 })
+      if (r.ok) crystallized++
+    }
+    if (crystallized) log.info(`印象结晶：${crystallized} 条被反复想起的旧印象留成了永久记忆`)
+    // 重新读快照再删：上面 add() 已经落过盘，用旧引用会把结晶出的记忆覆盖回去
     const state = load()
     const before = (state.gists || []).length
-    state.gists = (state.gists || []).filter((g) => g.level !== 2 || now - (g.at || 0) <= (getConfig().memory.impressionDays ?? 365) * 86400_000)
+    state.gists = (state.gists || []).filter((g) => g.level !== 2 || now - (g.at || 0) <= keepImpressionMs)
     if (state.gists.length !== before) {
       state.rev = (state.rev || 0) + 1
       save(state)
