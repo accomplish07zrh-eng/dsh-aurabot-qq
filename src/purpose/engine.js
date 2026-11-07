@@ -393,11 +393,15 @@ export function bestReplyHourShift(at, replyHours = [], { maxShiftMs = 3 * HOUR 
 /**
  * 星期分桶：今天是不是主人常回话的日子？不是就往未来 7 天里第一个高回流日挪（≤7 天）。
  * 样本 <7 条不偏置；今天已是高回流日（≥最佳日 50%）不动。
+ * 分散度门槛：非零桶 <2 不偏置——样本全挤在一个星期几（某一天聊得特别多）不代表
+ * 「主人只在那天回话」，照着偏会把下次主动整整推走一周（2026-11-06 实测踩到）。
  */
 export function bestReplyWeekdayShift(at, replyWeekday = [], { minSamples = 7 } = {}) {
   const hist = normalizeCounts(replyWeekday, 7);
   const total = hist.reduce((s, v) => s + v, 0);
   if (total < minSamples) return 0;
+  const days = hist.filter((v) => v > 0).length;
+  if (days < 2) return 0;
   const best = Math.max(...hist);
   if (best <= 0) return 0;
   const cur = hist[new Date(at).getDay()];
