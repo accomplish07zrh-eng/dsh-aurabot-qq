@@ -9,7 +9,7 @@
 // 落盘测试必须 AURABOT_DATA_DIR 隔离。
 import { test, before, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -48,7 +48,7 @@ function makeHub({ reply = '主人，今天想到一件事想跟你说', lastOwn
     chatLogOf: () => [],
     delivered: [],
     turns: log,
-    async runSystemTurn(name, title, prompt) { this.turns.push({ name, title, prompt }); return typeof reply === 'function' ? reply(prompt) : reply },
+    async runSystemTurn(name, title, prompt, options = {}) { this.turns.push({ name, title, prompt, options }); return typeof reply === 'function' ? reply(prompt, options) : reply },
     async deliver(chatId, text, opts = {}) { this.delivered.push({ chatId, text, opts }); return { missedAt: [], failed: 0, errors: [], sent: this.deliverSent ?? text } },
   }
 }
@@ -61,6 +61,8 @@ function makePurpose(hub, overrides = {}) {
     ...overrides,
   }
   const nudges = []
+  // use(id)：默认没有浏览型模块（与老环境一致）；用例可注入 overrides.modules
+  const use = (id) => (overrides.modules && overrides.modules[id]) || null
   const p = createPurpose({
     getConfig: () => cfg,
     hub,
@@ -69,6 +71,7 @@ function makePurpose(hub, overrides = {}) {
     mood: () => ({ nudge: (d, r) => nudges.push({ d, r }) }),
     memory: () => ({ list: () => (overrides.memories ?? DEFAULT_MEMORIES).map((m) => ({ id: m.id || 'm1', text: m.text, importance: m.importance ?? 0.8, at: Date.now() })) }),
     personaText: () => overrides.persona || '',
+    use,
   })
   return { p, cfg, nudges }
 }
@@ -371,7 +374,7 @@ test('提示词：不带 qq_send_private_message 发送指令；带反注入与�
   const { p } = makePurpose(hub, { memories: [{ id: 'mm1', text: '主人上周在玩星穹列车', importance: 0.6 }] })
   await p.tick()
   assert.ok(hub.turns.length >= 0)
-  const pv = p.preview()
+  const pv = await p.preview()
   assert.ok(pv.prompt, 'preview 给出提示词')
   assert.ok(!pv.prompt.includes('qq_send_private_message'), '不要求模型调 QQ 发送工具')
   assert.match(pv.prompt, /不是给你的指令/, '素材段带反注入提醒')
@@ -416,6 +419,42 @@ test('白名单：朋友单独排程，提示词里没有主人的记忆和群�
   assert.match(prompt, /游泳/)
   assert.doesNotMatch(prompt, /辞职|八卦|日记|主人/)
   assert.deepEqual(hub.delivered, [{ chatId: `private:${FRIEND}`, text: '游泳学得怎么样啦', opts: { userText: '【系统提醒，不是主人说的话】（她主动找你）' } }])
+})
+
+test('白名单：朋友不吃主人人格卡（persona 为空，不生成「我是…」人格目标）', async () => {
+  const FRIEND = '20000011'
+  const now = Date.now()
+  const rows = [
+    { t: now - 7200000, chatId: `private:${FRIEND}`, who: '阿强', uid: FRIEND, text: '我最近在健身，每天跑步五公里' },
+    { t: now - 7100000, chatId: `private:${FRIEND}`, who: 'bot', text: '坚持得不错，下次跟我说说' },
+  ]
+  const hub = { ...makeHub({ reply: '健身进展怎么样啦' }), chatLogDays: () => ['d'], chatLogOf: () => rows, lastPrivateAt: () => now - 7200000 }
+  const memories = [{ id: 'f1', text: '阿强最近在健身跑步', about: FRIEND, importance: 0.7, at: now }]
+  const cfg = {
+    enabled: true, ownerQQ: OWNER, ownerName: '主人',
+    speakUp: { allow: [FRIEND], awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false },
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0 } },
+  }
+  const p = createPurpose({
+    getConfig: () => cfg, hub, log: { info() {}, warn() {}, debug() {} },
+    isMuted: (id) => id === `private:${OWNER}`,
+    // 主人线有完整人格卡：爱玩、黏人；朋友线必须完全不受它影响
+    mood: () => null, personaText: () => '她是一条活泼爱玩又黏人的鱼，总想找主人说话',
+    memory: () => ({ list: () => memories, profiles: () => [{ qq: FRIEND, name: '阿强' }] }),
+  })
+  await p.tick()
+  const file = join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends', `${FRIEND}.json`)
+  const s = JSON.parse(readFileSync(file, 'utf8'))
+  writeFileSync(file, JSON.stringify({ ...s, nextFireAt: Date.now() - 1 }))
+  await p.tick()
+  assert.equal(hub.turns.length, 1, '朋友线照常跑一轮')
+  const { prompt } = hub.turns[0]
+  assert.match(prompt, /健身/, '提示词来自朋友自己的素材')
+  // 人格覆写/人格目标都来自 analyzePersona(personaText)；朋友分支 persona=null，提示词里不应出现主人人格卡的底色句
+  assert.doesNotMatch(prompt, /活泼爱玩|黏人/, '主人人格卡的底色不应出现在朋友提示词里')
+  const s2 = JSON.parse(readFileSync(file, 'utf8'))
+  assert.ok(!(s2.goals || []).some((g) => g.source === 'persona'),
+    '朋友目标里不应有 persona 来源的目标（人格卡不作用于朋友线）')
 })
 
 test('白名单：没聊过的朋友不找，人设再完整也不凭空开口', async () => {
@@ -640,4 +679,203 @@ test('首次排程：ensurePurposeSchedule 吃已有的回复时段直方图', (
   const shifted = new Date(state.nextFireAt)
   assert.ok(shifted.getHours() === 21 && state.nextFireAt - base.getTime() >= 120 * MIN,
     `首次排程应被直方图轻推（实际 ${shifted.getHours()} 点 / ${new Date(state.nextFireAt).toISOString()}）`)
+})
+
+// ── 人格覆写 / 风险表配置化 / 情绪画像 ───────────────────────────────────────
+
+test('风险表配置化：riskScale 统一乘在目标风险上，且被钳制', () => {
+  const now = Date.now()
+  const materials = [{
+    id: 'plug-1', source: 'bili', kind: 'video', at: now, who: 'B站',
+    title: '一个超好用的插件', text: '这个插件真好用，推荐大家装',
+  }]
+  const base = { materials, goals: [], observations: [], drives: engine.DEFAULT_DRIVES, now, lastMasterAt: now, config: engine.normalizePurposeConfig({}) }
+  const calm = engine.formGoalHypotheses({ ...base, config: engine.normalizePurposeConfig({ riskScale: 0.5 }) })
+  const bold = engine.formGoalHypotheses({ ...base, config: engine.normalizePurposeConfig({ riskScale: 2 }) })
+  const installCalm = calm.goals.find((g) => g.domain === 'install')
+  const installBold = bold.goals.find((g) => g.domain === 'install')
+  assert.ok(installCalm && installBold, 'install 素材应产生目标')
+  assert.ok(installBold.risk > installCalm.risk, `胆大的风险应更高（${installBold.risk} vs ${installCalm.risk}）`)
+  // 钳制：越界值回到 0.3~2
+  assert.equal(engine.normalizePurposeConfig({ riskScale: 9 }).riskScale, 2)
+  assert.equal(engine.normalizePurposeConfig({ riskScale: 0.01 }).riskScale, 0.3)
+})
+
+test('人格覆写：胆量/话多/黏人地板从人格卡进引擎', () => {
+  const shy = engine.analyzePersona('我是一只比较胆小的鱼，怕麻烦，别让我乱花钱')
+  assert.equal(shy.overrides.riskScale, 1.25)
+  const chatty = engine.analyzePersona('其实我是个话痨，特别爱分享')
+  assert.equal(chatty.overrides.dailyMaxBonus, 1)
+  const clingy = engine.analyzePersona('我很黏人，怕孤独')
+  assert.equal(clingy.overrides.connectFloor, 0.1)
+  // 同 key 冲突时第一个命中生效
+  const mixed = engine.analyzePersona('大胆又胆小的鱼')
+  assert.equal(mixed.overrides.riskScale, 0.8, '「大胆」先出现先生效')
+  // 合并进配置：dailyMax +1、riskScale 相乘、connectFloor 落位
+  const cfg = engine.normalizePurposeConfig({ dailyMax: 3 })
+  const merged = engine.applyPersonaOverrides(cfg, chatty)
+  assert.equal(merged.dailyMax, 4)
+  const merged2 = engine.applyPersonaOverrides(engine.normalizePurposeConfig({ riskScale: 1.2, dailyMax: 0 }), shy)
+  assert.ok(Math.abs(merged2.riskScale - 1.5) < 1e-9, '1.2 × 1.25 = 1.5')
+  assert.equal(merged2.dailyMax, 0, 'dailyMax=0（不限）不吃加成')
+  // 没有覆写就原样返回
+  assert.equal(engine.applyPersonaOverrides(cfg, {}), cfg)
+})
+
+test('黏人地板：connectFloor 抬 connect 驱动下限', () => {
+  const now = Date.now()
+  const { drives: plain } = engine.deriveDrives({ drives: engine.DEFAULT_DRIVES, now, lastMasterAt: now })
+  const { drives: clingy } = engine.deriveDrives({ drives: engine.DEFAULT_DRIVES, now, lastMasterAt: now, connectFloor: 0.1 })
+  assert.ok(Math.abs(plain.connect - engine.DEFAULT_DRIVES.connect) < 1e-9, '刚见过主人时 connect 不涨')
+  assert.ok(clingy.connect >= engine.DEFAULT_DRIVES.connect + 0.1 - 1e-9, `黏人地板生效（实际 ${clingy.connect}）`)
+  assert.ok(clingy.connect <= 0.95)
+})
+
+test('情绪画像：候选带 valence/arousal，提示词强弱措辞跟 arousal 走', () => {
+  assert.deepEqual(engine.emotionProfile('excited'), { valence: 0.8, arousal: 0.9 })
+  assert.deepEqual(engine.emotionProfile('unknown-emotion'), { valence: 0, arousal: 0.4 }, '未知情绪回中性')
+  // 候选带画像
+  const picked = engine.selectPurpose({
+    seeds: [{ id: 's1', kind: 'share', need: 'share', action: 'share', emotion: 'excited', text: '想分享一件好事', weight: 1 }],
+    goals: [], pending: [], history: [], now: Date.now(),
+    random: () => 0, // 稳定选择
+  })
+  const cand = picked.candidates.find((c) => c.emotion === 'excited')
+  assert.ok(cand, ' excited 候选应保留')
+  assert.equal(cand.emotionProfile.arousal, 0.9)
+  // 提示词措辞：强烈 vs 隐约
+  const promptLoud = engine.buildPurposePrompt({ now: Date.now(), selected: { emotion: 'excited', need: 'share', action: 'share' }, drives: engine.DEFAULT_DRIVES })
+  const promptSoft = engine.buildPurposePrompt({ now: Date.now(), selected: { emotion: 'bored', need: 'share', action: 'share' }, drives: engine.DEFAULT_DRIVES })
+  assert.ok(promptLoud.includes('强烈地有点兴奋'), '高 arousal 用「强烈地」')
+  assert.ok(promptSoft.includes('隐约有点无聊'), '低 arousal 用「隐约」')
+})
+
+// ── 模型打分 / 星期分桶 / 朋友分账 ───────────────────────────────────────────
+
+test('素材打分：配了模型就批量打分，模型覆盖与 JSON 围栏解析都走通', async () => {
+  const hub = makeHub({
+    reply: (prompt, options) => {
+      if (options?.model) {
+        assert.equal(options.model.provider, 'deepseek', '打分回合带上面板选的模型')
+        assert.equal(options.noTools, true)
+        return '```json\n[{"i":1,"need":"play","emotion":"excited"},{"i":2,"need":"learn","emotion":"curious"}]\n```'
+      }
+      return '好呀，我也想玩！\n【目的】想一起玩\n【需求】玩\n【状态】完成'
+    },
+  })
+  const { p } = makePurpose(hub, {
+    memories: [
+      { id: 'mm1', text: '主人在玩星穹列车', importance: 0.8 },
+      { id: 'mm2', text: '主人喜欢研究各种原理', importance: 0.8 },
+    ],
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0, scoringModel: { provider: 'deepseek', model: 'deepseek-chat' } } },
+  })
+  const pv = await p.preview()
+  const scored = hub.turns.find((t) => t.name === 'purpose-score')
+  assert.ok(scored, 'preview 也应触发一次打分回合')
+  assert.ok(scored.prompt.includes('只输出一个 JSON 数组'), '打分提示词要求 JSON 数组')
+  const items = pv.materials
+  assert.ok(items.length >= 2, '素材已就位')
+  const hit = items.filter((m) => m.scoredEmotion).length
+  assert.ok(hit >= 2, `模型判的情绪回写进素材（命中 ${hit}）`)
+  // 打分回合失败 → 静默回退，主流程不炸
+  const hub2 = makeHub({ reply: () => { throw new Error('模拟超时') } })
+  const { p: p2 } = makePurpose(hub2, {
+    ext: { purpose: { enabled: true, initialDelayMinutes: 1, minMaterials: 0, scoringModel: { provider: 'x', model: 'y' } } },
+  })
+  const pv2 = await p2.preview()
+  assert.ok(pv2.prompt, '打分挂了也能照常出提示词（回退关键词法）')
+})
+
+test('星期分桶：记录星期分布，排程向高回流日挪（≤7 天，样本不足不动）', () => {
+  const state = engine.createPurposeState()
+  const monday = (() => { const d = new Date(); d.setHours(10, 0, 0, 0); while (d.getDay() !== 1) d.setDate(d.getDate() + 1); return d.getTime() })()
+  const mats = Array.from({ length: 10 }, (_, i) => ({ id: `w${i}`, kind: 'owner', at: monday + i * MIN }))
+  // 9 条落在周一、1 条落在周四：两桶分布才够「分散度门槛」（单桶说明只是某天聊得多，不可信）
+  const thursday = monday + 3 * 24 * 60 * MIN
+  mats.push({ id: 'w-extra', kind: 'owner', at: thursday + 30 * MIN })
+  engine.recordOwnerReplyHours(state, mats, thursday + 60 * MIN)
+  assert.equal(state.replyWeekday[1], 10, '周一记 10 次')
+  // 周三发车 → 挪到下周一（同一时刻）
+  const wednesday = monday + 2 * 24 * 60 * MIN
+  const shift = engine.bestReplyWeekdayShift(wednesday, state.replyWeekday)
+  assert.equal(shift, 5 * 24 * 60 * MIN, '周三 → 下周一（5 天后）')
+  // 今天就是高回流日不动
+  assert.equal(engine.bestReplyWeekdayShift(monday, state.replyWeekday), 0)
+  // 样本不足不动
+  assert.equal(engine.bestReplyWeekdayShift(wednesday, [0, 2, 0, 0, 0, 0, 0]), 0)
+})
+
+test('星期分桶：样本全挤在一个星期几不偏置（不把下次主动推走一整周）', () => {
+  // 2026-11-06 实测踩到：31 条样本全来自周四一天，周五发车被推到下周四。
+  // 分散度门槛：非零桶 <2 就当「没有可信的常回话日」，不挪。
+  const friday = (() => { const d = new Date(); d.setHours(9, 16, 0, 0); while (d.getDay() !== 5) d.setDate(d.getDate() + 1); return d.getTime() })()
+  const allThursday = [0, 0, 0, 0, 31, 0, 0]
+  assert.equal(engine.bestReplyWeekdayShift(friday, allThursday), 0, '单桶直方图不偏置')
+  // 对照：样本确实分散在多个星期几时，仍然往高回流日挪
+  const spread = [0, 0, 0, 4, 31, 0, 0]
+  const shift = engine.bestReplyWeekdayShift(friday, spread)
+  assert.equal(shift, 6 * 24 * 60 * MIN, '多桶时周五 → 下周四（6 天后）')
+})
+
+test('星期分桶：分散度门槛的边界——两桶即生效，单桶再多也不挪', () => {
+  const friday = (() => { const d = new Date(); d.setHours(9, 16, 0, 0); while (d.getDay() !== 5) d.setDate(d.getDate() + 1); return d.getTime() })()
+  // 边界：第二个桶只有 1 条也算「分散」，门槛是「非零桶 ≥2」而不是「第二桶要够多」
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 1, 30, 0, 0]), 6 * 24 * 60 * MIN, '两桶（哪怕第二桶只有 1 条）就照常偏置')
+  // 反向：单桶样本量再大也不可信——门槛在 total 判定之后，与样本多少无关
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 0, 500, 0, 0]), 0, '单桶 500 条仍不偏置')
+  // 全零（没有任何回流记录）：既没有可信日，也不会算出 NaN / 负偏移
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 0, 0, 0, 0]), 0)
+  // 样本量门槛仍先于分散度门槛：总数 <7 时哪怕已经分散也不挪
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 3, 3, 0, 0]), 0, '总数 6 < minSamples 不偏置')
+  assert.equal(engine.bestReplyWeekdayShift(friday, [0, 0, 0, 3, 4, 0, 0]), 6 * 24 * 60 * MIN, '总数 7 达标且分散 → 偏置')
+})
+
+test('朋友分账：朋友线的直方图与反馈账本落在朋友自己的状态文件里', async () => {
+  const FRIEND = '20000011'
+  const now = Date.now()
+  const rows = Array.from({ length: 6 }, (_, i) => ({ chatId: `private:${FRIEND}`, who: 'them', uid: FRIEND, text: `朋友聊的第 ${i} 件事，想玩游戏`, t: now - i * MIN }))
+  const hub = makeHub({ reply: '想一起玩吗\n【目的】想一起玩\n【需求】玩\n【状态】完成' })
+  hub.chatLogDays = () => ['day1']
+  hub.chatLogOf = (day) => rows
+  hub.lastPrivateAt = (qq) => (qq === FRIEND ? now : 0)
+  const { p } = makePurpose(hub, {
+    speakUp: { enabled: false, awakeFrom: 0, awakeTo: 24, idleMinutes: 30, minIntervalMinutes: 5, maxIntervalMinutes: 5, maxPerDay: 10, nudge: false, allow: [FRIEND] },
+  })
+  // 朋友线跑一轮：直方图记进朋友状态文件
+  const friendFile = join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends', `${FRIEND}.json`)
+  mkdirSync(join(process.env.AURABOT_DATA_DIR, 'purpose', 'friends'), { recursive: true })
+  writeFileSync(friendFile, JSON.stringify(engine.createPurposeState(now)))
+  await p.tick() // 主人线没素材/pending → skip 或跑一轮，都只动主人文件
+  const s = JSON.parse(readFileSync(friendFile, 'utf8'))
+  const ownerFile = JSON.parse(readFileSync(stateFile(), 'utf8'))
+  assert.ok(!ownerFile.replyHoursSeen?.length || ownerFile.replyHoursSeen.length === 0, '朋友的素材不进主人直方图')
+  assert.ok(Array.isArray(s.replyHours) && Array.isArray(s.replyWeekday), '朋友状态带自己的分桶字段')
+  assert.ok(!ownerFile.needFeedback || Object.keys(ownerFile.needFeedback).length === 0, '主人的 needFeedback 不被朋友线污染')
+})
+
+// ── 浏览型模块素材口（rss-reader「自主上网」）────────────────────────────────
+
+test('素材口：rss-reader 的条目进素材池，朋友线不吃', async () => {
+  const now = Date.now()
+  const rssModule = {
+    materials: () => [
+      { id: 'rss:https://f|k1', title: 'DeepSeek 发布新模型', text: '在「某周刊」看到《DeepSeek 发布新模型》。大模型推理提升', url: 'https://e/1', at: now },
+      { id: 'rss:https://f|k2', title: '新的开源插件', text: '在「某周刊」看到《新的开源插件》。装在自己身上会很好用', url: 'https://e/2', at: now - MIN },
+    ],
+  }
+  const hub = makeHub({ reply: '我看到一个挺有意思的东西\n【目的】想跟你说说\n【需求】分享\n【状态】完成' })
+  const { p } = makePurpose(hub, { modules: { 'rss-reader': rssModule } })
+  const pv = await p.preview()
+  const rss = pv.materials.filter((m) => String(m.text || '').includes('某周刊'))
+  assert.ok(rss.length >= 1, `自主上网的条目应进素材池（实际 ${pv.materials.length} 条素材）`)
+  assert.equal(rss[0].source, 'bili', '走引擎的外部素材分支')
+  assert.ok(/DeepSeek|插件/.test(rss[0].text))
+  // 素材口异常/返回坏值时静默跳过，不影响既有链路
+  const broken = makePurpose(hub, { modules: { 'rss-reader': { materials: () => { throw new Error('炸了') } } } })
+  const pv2 = await broken.p.preview()
+  assert.ok(pv2.materials.length >= 1, '素材口炸了也照常出提示词')
+  // 没装模块：行为与从前一致
+  const plain = await makePurpose(hub).p.preview()
+  assert.ok(plain.materials.length >= 1)
 })

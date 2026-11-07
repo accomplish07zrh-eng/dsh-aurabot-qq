@@ -225,9 +225,9 @@ test('目的引擎以当前名识别自我素材和身份话题，保留旧称�
       deliver: async (_chat, text) => { sent.push(text); return { sent: text } },
     },
   })
-  assertName(purpose.preview().prompt)
+  assertName((await purpose.preview()).prompt)
   s.select('alice', 'Alice')
-  assertName(purpose.preview().prompt, 'Alice')
+  assertName((await purpose.preview()).prompt, 'Alice')
   s.cfg.persona.current = 'claude'
   assert.equal((await purpose.fire()).outcome, 'sent')
   assertName(prompts[0])
