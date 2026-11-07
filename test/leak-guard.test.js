@@ -123,3 +123,48 @@ test('注入块登记进指纹时取整段（toEndOfText），出站清理只取
   assert.ok(!memoryPromptRanges(GROUP_BLOCK).some((r) => r.end > GROUP_BLOCK.length))
 })
 
+
+// 宿主 time-context 每一步都注入这三行，模型会顺着往下写，甚至改写后半句。
+const TIME_INJECTED =
+  'Time sampled while preparing turn 56, step 4: 2026-11-06T18:36:36+08:00[Asia/Shanghai]\n' +
+  'Browser time zone for this request: unavailable. Ask the user to clarify otherwise-unqualified dates and times.\n' +
+  'Elapsed since the preceding step context: unavailable.'
+
+test('复读 time-context 注入：整块删掉，她自己写的两句留下', () => {
+  const out = `存好啦\n170/318 还在跑\n\n${TIME_INJECTED}`
+  const cleaned = cleanOutboundText(out, { promptSources: [TIME_INJECTED], ownerPrivate: true })
+  assert.equal(cleaned.trim(), '存好啦\n170/318 还在跑')
+})
+
+test('模型改写过的 time-context 变体也拦得住（后半句换成 amongst questions）', () => {
+  const out =
+    'Time sampled while preparing turn 56, step 5: 2026-11-06T18:36:37+08:00[Asia/Shanghai]\n' +
+    'Browser time zone for this request: unavailable. Ask the user to clarify amongst questions.\n\n' +
+    '存好啦\n\n170/318 还在跑'
+  const cleaned = cleanOutboundText(out, { ownerPrivate: true })
+  assert.doesNotMatch(cleaned, /Time sampled|Browser time zone|amongst questions/)
+  assert.match(cleaned, /存好啦/)
+  assert.match(cleaned, /170\/318 还在跑/)
+})
+
+test('整条只有 time-context 复读：判沉默', () => {
+  assert.equal(cleanOutboundText(TIME_INJECTED, { promptSources: [TIME_INJECTED], ownerPrivate: true }), '')
+})
+
+test('time-context 行夹在正文中间，只删这几行', () => {
+  const out = '先说一句\nBrowser time zone for this request: unavailable.\n后面还有'
+  assert.equal(cleanOutboundText(out, { ownerPrivate: true }), '先说一句\n后面还有')
+})
+
+test('正常聊天不会被 time-context 规则误伤', () => {
+  for (const text of ['我去吃饭啦', '现在几点啦 该睡了吧', '时区不一样嘛']) {
+    assert.equal(cleanOutboundText(text, { ownerPrivate: true }), text)
+  }
+})
+
+test('注入侧登记指纹时取到结尾，出站清理只吃到自己的话', () => {
+  assert.deepEqual(memoryPromptRanges(TIME_INJECTED, { toEndOfText: true }).length, 1)
+  const mixed = `${TIME_INJECTED}\n我去吃饭啦`
+  const ranges = memoryPromptRanges(mixed)
+  assert.equal(mixed.slice(ranges[0].start, ranges[0].end).includes('我去吃饭啦'), false)
+})

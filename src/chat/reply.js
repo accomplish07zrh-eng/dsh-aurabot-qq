@@ -9,7 +9,7 @@
 //   - 整轮只输出 `[沉默]`（或空）= 这次不说话（群聊插话用）
 // 另外顺手把模型偶尔漏出来的 Markdown 洗掉——QQ 不渲染 Markdown。
 
-import { currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
+import { contextInjectionRanges, currentPromptSources, promptFingerprint, promptTextRanges } from '../security/leak-guard.js'
 import { stripHtmlFragments } from './html-fragments.js'
 
 export const SILENCE = '[沉默]'
@@ -309,7 +309,9 @@ export function cleanOutboundText(text, { warn, promptSources, fingerprint, user
   const raw = String(text || '')
   // 先剥 HTML 残片：它们和工具调用、提示词复读互不重叠，按原文坐标并进同一份区间表。
   const { cuts: htmlCuts } = stripHtmlFragments(raw)
-  const tools = toolTextRanges(raw, { ownerPrivate })
+  // time-context 注入不是提示词复读，主人私聊的复读豁免不该放过它，这里直接并进必删区间。
+  const tools = [...toolTextRanges(raw, { ownerPrivate }), ...contextInjectionRanges(raw)]
+    .sort((a, b) => a.start - b.start || b.end - a.end)
   const baseRanges = mergeRanges([...tools, ...htmlCuts])
   const toolClean = withoutToolRanges(raw, baseRanges)
   const prompts = (allowPromptEcho ? [] : promptTextRanges(toolClean, fingerprint || promptFingerprint(sources, userText ?? active?.userText ?? '')))
