@@ -41,6 +41,10 @@
 
 - 路径：`api.dataDir('purpose', 'purpose-state.json')` → `~/.dsh/plugins-data/aurabot/purpose/purpose-state.json`
 - 结构照 surfcore 引擎（`createPurposeState`）：`version, day, countToday, lastRunAt, lastAttemptAt, lastSentAt, lastOutcome('sent'|'silent'|'failed'|'delivery-failed'|'interrupted'|'pending'), lastPurpose, lastText, nextFireAt, attempts, drives{9维0~1}, drivesAt, lastEmotion(+Text), lastGoalId, lastMaterialCount, lastCandidateCount, goals[], observations[], pending[], history[], lastSkip`
+- 行为学习字段：`replyHours[24]`（主人私聊时刻直方图，`replyHoursSeen` 记已计素材 id 防重复）——
+  排程在间隔基础上向主人更常回话的小时轻推（最多 3h，样本 <5 不偏置）；
+  `needFeedback{need:{positive,negative,neutral}}`（主人回执按需要维度记账）——
+  ≥5 样本后正反馈率 ≥60% 抬该维驱动地板 +0.08，≤30% 向默认值加速回落。
 - goals 条目：`id, owner('self'|'owner'|'member'|'media'), domain(9 need), object{type,name}, intent, evidence[≤4], confidence, value, urgency, risk, action, nextStep, status('hypothesis'|'active'|'confirmed'|'rejected'|'done'|'expired'), emotion, createdAt, lastSeenAt, expiresAt, attempts, sightings, source`
 - 另有 `purpose/nudge.json`（追问去重标记，非引擎字段，勿展示）。
 - 从旧版升级：`speakup.json` 只读迁移当日 count，之后不再读写（可保留不删）。
@@ -48,7 +52,12 @@
 ## 4. drives 向量结构
 
 9 维 0~1：`play 玩 / learn 学 / install 装 / connect 陪 / care 关心 / share 分享 / identity 自我 / create 创作 / consume 体验`。
-- 随时间向默认值衰减（半衰 8h）；`connect` 随主人沉默时长上升；素材亲和推高；`sent` 后对应维 ×0.45。
+- 随时间向默认值衰减（半衰 8h，`ext.purpose.driveHalfLifeHours` 可调）；`connect` 随主人沉默时长上升；
+  素材亲和推高（带否定前缀守卫：「不想玩」不算玩欲）；`sent` 后对应维 ×0.45。
+- **显式感受结算**：备忘新增【感受】行（可选），形如「玩+0.10 欲+0.12 喜-0.05」——
+  中文需要词/英文 need 键直接叠加进九维驱动（每项 ±0.5 封顶，叠加在满足衰减之后）；
+  「喜」折算成 moodDelta（±10）由接线层 `mood.nudge` 执行，叠加在情绪表之上；
+  「欲/意」按本次目的的【需求】维度结算，写不出维度就丢弃，不瞎猜。
 - **mood 对接**：`sent` 后按情绪 nudge `api.use('mood').nudge(delta, '主动搭话：<目的前20字>')`——
   `affectionate/excited +5、proud/amused +4、lonely -3、bored/worried/envious -2、content 0`；silent 不推。
 - **心情判定兼容**：投递走 `hub.runSystemTurn` + `hub.deliver(text, { own:true, userText:'【系统提醒，…】' })`，
@@ -60,6 +69,12 @@
 **开关**：`config.ext.purpose.enabled`（模块 defaults 播种，**默认 false**）。
 **调参**：`config.ext.purpose.*`：`minMaterials / initialDelayMinutes / maxCandidates / promptMaxChars`，
 另有覆写位 `awakeFrom/awakeTo/minIntervalMinutes/maxIntervalMinutes/maxPerDay/idleMinutes`。
+选择层与驱动调参（本轮新增，均有安全钳制）：`pendingShareProbability`（惦记优先概率，默认 0.5）、
+`lonelyEmotionWeight / enviousEmotionWeight`（情绪排序加成，默认 1.2 / 1.1）、
+`needRepeatPenalty / needRepeatPenalty2`（连续同需要降权，默认 0.72 / 0.65）、
+`driveHalfLifeHours`（驱动衰减半衰期，默认 8）。
+提示词超长时先按素材权重从尾部逐行丢弃（主人私聊永远最后丢），整段丢完才退回首尾盲切；
+备忘解析有兜底：忘写【】但写了「目的：…」裸标签行、或回执为 JSON（中/英文键）都能解析。
 **沿用主动搭话的设置**（保持作息单一真相）：`config.speakUp.awakeFrom/awakeTo`（派生引擎安静时段；全天=关闭安静）、
 `idleMinutes`（→ idleThreshold）、`minIntervalMinutes/maxIntervalMinutes`（→ gap）、`maxPerDay`（→ dailyMax）——
 ext.purpose 同名键可覆写。
