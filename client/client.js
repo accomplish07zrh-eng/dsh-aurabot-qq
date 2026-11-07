@@ -2863,6 +2863,9 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       const [bcfg, setBcfg] = useState(null)
       // 人物大小倍率的本地编辑态（0.5~2，点「保存」才下发）
       const [scVal, setScVal] = useState(null)
+      // 物理三参数（重力/弹力/动作频率）的本地编辑态：null = 还没动过，直接用服务端下发值；
+      // 改过就用本地值（改了一半别被 8 秒轮询冲掉），点各自的「保存」才下发
+      const [ph, setPh] = useState(null)
       const [bhErr, setBhErr] = useState('')
       const [quar, setQuar] = useState(null)
       const [quarErr, setQuarErr] = useState('')
@@ -2999,6 +3002,33 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       // 行为与安全：c = 本地草稿（改了一半别被 8 秒轮询冲掉）|| 服务端真值
       const c = bcfg || bh || {}
       const saveBehCfg = async (patch, msg) => { await savePet(patch, msg); setBcfg(null); loadBehavior() }
+      // ---------- 物理三参数（重力/弹力/动作频率）的草稿读写：null = 跟着服务端值走 ----------
+      const pv = (k, fallback) => (ph && ph[k] != null ? ph[k] : fallback)
+      const setPv = (k, v) => setPh((old) => ({ ...(old || {}), [k]: v }))
+      // 只清掉刚保存的那一项的草稿，别把另外两项改了一半的输入一起冲掉
+      const clearPv = (k) => setPh((old) => {
+        if (!old) return null
+        const next = { ...old }
+        delete next[k]
+        return Object.keys(next).length ? next : null
+      })
+      // 桌宠设置的写入通道：**优先走 /panel/pet/config**（宿主里专门给桌宠卡片开的那条白名单通道）。
+      // 白名单里已登记这六项（见 src/host.js /panel/pet/config 的 petGravity/petRestitution/
+      // petAnimRate/petShowBalance/petClickChase/petTeaseChase），正常情况走的就是这条正规路。
+      // 下面保留的 /save 回退**不是**主路径，而是「宿主白名单未同步」时的兼容退路：
+      // 用户装的模块比面板新时，会撞上「模块已有新设置键、宿主白名单还没补」的窗口期，
+      // 那会儿 /panel/pet/config 会以「没有可保存的字段」失败；有这条退路，控件不会在窗口期变成假控件。
+      // /save 是面板给扩展模块写设定的既有通用通道（{ ext: { 模块id: {...} } }），
+      // mergeFromPanel 深合并、normalize 只保留 ext 下的对象、不会丢未知键；
+      // 两条路最终都落到 ext.pet 这同一个地方，模块 api.settings() 读的就是它。
+      // 【教训 · 三处必须同步】模块 settings 新增键 → 本文件控件 + 宿主白名单 + 模块 defaults，缺一即假控件。
+      const savePetSetting = async (patch, okMsg) => {
+        let r = await post('/panel/pet/config', patch)
+        if (!r || r.ok === false) r = await post('/save', { ext: { pet: patch } })
+        if (r && r.ok !== false) { toast(okMsg || '保存好了', 'ok'); return true }
+        toast((r && r.message) || '没成功', 'err')
+        return false
+      }
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '桌宠', desc: '把「大肥鱼」请到桌面上：一个小小的ta待在屏幕角落，主动搭话走气泡；你也可以点ta聊天。' },
         h('div', { className: 'ab-flex', style: { marginBottom: 8 } },
@@ -3020,6 +3050,44 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
         // 只有 1.0.4 以上的桌宠模块才支持松手落地开关（老模块不显示，免得拨了没反应）
         pet?.releaseLand != null ? h(Row, { label: '松手后落地', hint: '开：拖动松手后按甩出速度抛出去、落回屏幕底部（带 Q 弹挤压）。关：松手停在哪就在哪，不抛也不落' },
           h(Switch, { on: pet.releaseLand !== false, onChange: async (v) => { setBusy('land'); try { await savePet({ petReleaseLand: v }, v ? '松手落地已开启' : '松手落地已关闭：松手停在哪就在哪') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })) : null,
+        // ============================================================
+        // 【教训 · 面板是硬编码的，不是按模块 settings 自动渲染的】
+        // 桌宠是**内置模块**，它的 settings 数组（模块侧 declarative 声明）在面板里根本不会生成表单——
+        // 面板只给「用户自己从模块市场装的扩展模块」按 settings 渲染卡片。所以模块那边加了
+        // 设置项、defaults 也齐、/config 也下发，用户在面板上照样一个字都看不到：
+        //   **模块 settings 里新增一个键，必须同时在宿主这里补一个写入白名单（/panel/pet/config）
+        //     和一个本文件里的控件，否则就是「后端有、面板看不见」的半截功能。**
+        //   三处必须同步：模块 defaults/settings 声明 + 宿主 /panel/pet/config 白名单 + 本文件控件；
+        //   缺任何一处都是「假控件」（看得见、点了存不进去，轮询还会把值弹回去）。
+        // 下面这六项（重力/弹力/动作频率/查看余额/点击追鼠标/晃鼠标勾引追）就是 1.0.14 新加的，
+        // 全部用 pet 顶层实际下发的字段做守卫（老模块 1.0.13 及以前不会有这些字段）：
+        //   pet.physics?.gravity、pet.physics?.restitution、pet.animRate、
+        //   pet.balanceEnabled、pet.clickChase、pet.teaseChase
+        // 老模块下这一整段都不渲染，免得给用户看一堆拨了没反应的假控件。
+        // ============================================================
+        pet?.physics?.gravity != null ? h(Row, { label: '重力', hint: '下落加速度，越小飘得越久、越大落得越快（默认 1400）' },
+          h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+            h('input', { type: 'range', min: 200, max: 4000, step: 50, style: { flex: 1, minWidth: 120, accentColor: 'var(--ab-sea, #2a86c6)' }, value: Number(pv('gravity', pet.physics.gravity)), onChange: (e) => setPv('gravity', e.target.value) }),
+            h('input', { className: 'ab-input', type: 'number', min: 200, max: 4000, step: 50, style: { width: '84px' }, value: pv('gravity', pet.physics.gravity), onChange: (e) => setPv('gravity', e.target.value) }),
+            h(Btn, { small: true, disabled: busy === 'grav', onClick: async () => { const v = Number(pv('gravity', pet.physics.gravity)); if (!(v >= 200 && v <= 4000)) { toast('重力要填 200 ~ 4000 之间的数', 'err'); return } setBusy('grav'); try { const ok = await savePetSetting({ petGravity: Math.round(v) }, '重力已保存'); if (ok) clearPv('gravity') } finally { setBusy(''); load() } } }, busy === 'grav' ? '保存中…' : '保存'))) : null,
+        pet?.physics?.restitution != null ? h(Row, { label: '弹力', hint: '落地反弹保留速度比例，越大越 Q 弹（默认 0.78）' },
+          h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+            h('input', { type: 'range', min: 0.3, max: 0.95, step: 0.01, style: { flex: 1, minWidth: 120, accentColor: 'var(--ab-sea, #2a86c6)' }, value: Number(pv('restitution', pet.physics.restitution)), onChange: (e) => setPv('restitution', e.target.value) }),
+            h('input', { className: 'ab-input', type: 'number', min: 0.3, max: 0.95, step: 0.01, style: { width: '84px' }, value: pv('restitution', pet.physics.restitution), onChange: (e) => setPv('restitution', e.target.value) }),
+            h(Btn, { small: true, disabled: busy === 'rest', onClick: async () => { const v = Number(pv('restitution', pet.physics.restitution)); if (!(v >= 0.3 && v <= 0.95)) { toast('弹力要填 0.3 ~ 0.95 之间的数', 'err'); return } setBusy('rest'); try { const ok = await savePetSetting({ petRestitution: Math.round(v * 100) / 100 }, '弹力已保存'); if (ok) clearPv('restitution') } finally { setBusy(''); load() } } }, busy === 'rest' ? '保存中…' : '保存'))) : null,
+        pet?.animRate != null ? h(Row, { label: '动作频率', hint: '动画节奏倍率，>1 更活泼（默认 1）' },
+          h('div', { className: 'ab-flex', style: { alignItems: 'center', gap: 8 } },
+            h('input', { type: 'range', min: 0.5, max: 2, step: 0.1, style: { flex: 1, minWidth: 120, accentColor: 'var(--ab-sea, #2a86c6)' }, value: Number(pv('animRate', pet.animRate)), onChange: (e) => setPv('animRate', e.target.value) }),
+            h('input', { className: 'ab-input', type: 'number', min: 0.5, max: 2, step: 0.1, style: { width: '84px' }, value: pv('animRate', pet.animRate), onChange: (e) => setPv('animRate', e.target.value) }),
+            h('span', { className: 'ab-muted ab-small', style: { whiteSpace: 'nowrap' } }, '倍'),
+            h(Btn, { small: true, disabled: busy === 'anim', onClick: async () => { const v = Number(pv('animRate', pet.animRate)); if (!(v >= 0.5 && v <= 2)) { toast('动作频率要填 0.5 ~ 2 之间的数', 'err'); return } setBusy('anim'); try { const ok = await savePetSetting({ petAnimRate: Math.round(v * 10) / 10 }, '动作频率已保存'); if (ok) clearPv('animRate') } finally { setBusy(''); load() } } }, busy === 'anim' ? '保存中…' : '保存'))) : null,
+        // 查看余额 / 点击追鼠标 / 晃鼠标勾引追：三个开关，即点即存（跟「松手后落地」同一个范式）
+        pet?.balanceEnabled != null ? h(Row, { label: '查看余额', hint: '开 = 右键菜单显示「查看余额」（读当前 DeepSeek 账户余额）；默认开' },
+          h(Switch, { on: pet.balanceEnabled !== false, onChange: async (v) => { setBusy('bal'); try { await savePetSetting({ petShowBalance: v }, v ? '右键菜单会显示「查看余额」' : '右键菜单不再显示「查看余额」') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })) : null,
+        pet?.clickChase != null ? h(Row, { label: '点击追鼠标', hint: '开 = 点她会扑上来抓鼠标；默认关（不抓鼠标）' },
+          h(Switch, { on: pet.clickChase === true, onChange: async (v) => { setBusy('click'); try { await savePetSetting({ petClickChase: v }, v ? '点击会追鼠标了' : '点击不再抓鼠标') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })) : null,
+        pet?.teaseChase != null ? h(Row, { label: '晃鼠标勾引追', hint: '开 = 在她跟前晃鼠标她会扑上来；默认关（不抓鼠标）' },
+          h(Switch, { on: pet.teaseChase === true, onChange: async (v) => { setBusy('tease'); try { await savePetSetting({ petTeaseChase: v }, v ? '晃鼠标会勾引她追了' : '晃鼠标不再勾引她') } catch (e) { toast(e.message) } finally { setBusy(''); load() } } })) : null,
         // 只有 pet 1.0.5 以上的模块才有对话框（老模块不显示这些行，免得拨了没反应）
         chatCfg ? h('div', { style: { marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--ab-line, #dbe5ea)' } },
           h('div', { className: 'ab-small ab-muted', style: { marginBottom: 2 } },
