@@ -78,9 +78,41 @@ export function deletePersona(id) {
   if (existsSync(f)) unlinkSync(f)
 }
 
+/** 名字和正文使用同一张人格卡；不缓存，保存或切换后下一次读取立即生效。 */
+function currentPersona(currentId) {
+  try {
+    const selected = readPersona(currentId)
+    if (selected) return selected
+    const first = listPersonas()[0]
+    return first ? readPersona(first.id) : null
+  } catch (error) { return null }
+}
+
+/** 当前人格文件头的 name；缺失、空白或读取失败时沿用默认名。 */
+export function selfName(cfg) {
+  const p = currentPersona(cfg?.persona?.current)
+  // parsePersona 默认把 id 当显示名；这里仅接受文件头里明确写出的名字。
+  return (p && parsePersona('', p.raw).name.trim()) || '大肥鱼'
+}
+
+/** 旧称只用于识别历史数据，不注入当前人格的提示词。 */
+export function selfNames(cfg) {
+  return [...new Set([selfName(cfg), '大肥鱼', '肥鱼', '鱼鱼'])]
+}
+
+export function isSelfName(value, cfg) {
+  const name = String(value || '').trim().replace(/^[「“"']|[」”"']$/g, '').toLowerCase()
+  if (!name) return false
+  return ['我', '自己', '我自己', '本人', '你', '你自己', ...selfNames(cfg)]
+    .some((alias) => {
+      const n = alias.toLowerCase()
+      return name === n || name.startsWith(n) && /^(?:自己|本人|的(?:人设|外貌|喜好|设定|性格|身份))/.test(name.slice(n.length))
+    })
+}
+
 /** 当前人格正文；找不到就退回第一个，再不行给一句兜底，保证提示词变量永远有值。 */
 export function currentPersonaText(currentId) {
-  const p = readPersona(currentId) || (listPersonas()[0] && readPersona(listPersonas()[0].id))
+  const p = currentPersona(currentId)
   return p ? p.body : '你是「大肥鱼」，一个住在 QQ 里、说话简短口语化的女孩子。'
 }
 

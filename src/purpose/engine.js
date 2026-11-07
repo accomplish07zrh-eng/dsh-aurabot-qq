@@ -504,6 +504,7 @@ export function collectMaterials({
   config = DEFAULT_PURPOSE_CONFIG,
   ownerUin = '',
   roleName = '',
+  roleAliases = [],
   conversations = [],
   biliEntries = [],
   memoryRecords = [],
@@ -518,7 +519,7 @@ export function collectMaterials({
     const key = `${item.source}|${item.kind}|${item.text}`;
     if (seen.has(key)) return;
     seen.add(key);
-    items.push(enrichMaterial(item, roleName));
+    items.push(enrichMaterial(item, roleName, roleAliases));
   };
   const stats = { qq: 0, bili: 0, memory: 0, thought: 0, followUp: 0 };
   // 接线层复用记忆库的资格检查，这里只接受仍然到期的一件。
@@ -816,7 +817,7 @@ const NEED_WORDS = Object.freeze({
   connect: ['主人', '陪', '寂寞', '孤独', '抱', '亲', '喜欢', '爱', '关系', '一起', '聊天', '晚安', '早安', '想你'],
   care: ['面试', '考试', '加班', '累', '生病', '医院', '压力', '难过', '开心', '吃饭', '睡觉', '工作', '休息'],
   share: ['好笑', '离谱', '可爱', '好看', '梗', '笑死', '分享', '给你看', '有趣', '震撼', '绝了'],
-  identity: ['ai', '机器人', '人机', '意识', '记忆', '自我', '是谁', '大肥鱼', '模型', '人格', '灵魂'],
+  identity: ['ai', '机器人', '人机', '意识', '记忆', '自我', '是谁', '模型', '人格', '灵魂'],
   create: ['写文', '画画', '二创', '剪辑', '编曲', '做视频', '手工', '创作', '拍'],
   consume: ['想吃', '想喝', '想买', '想去', '展览', '店', '旅行', '门票', '礼物', '好吃', '好喝'],
 });
@@ -840,7 +841,7 @@ const POSITIVE_RE = /开心|喜欢|爱|可爱|好笑|笑死|厉害|治愈|温暖
 const NEGATIVE_RE = /难过|累|焦虑|害怕|孤独|寂寞|羡慕|嫉妒|生气|烦|压力|遗憾|哭|担心|崩溃/;
 const AROUSAL_RE = /笑死|炸|疯|激动|震撼|刺激|太|超|绝了|!!!|！！/;
 const RELATION_RE = /爱|关系|人机|机器人|ai|寂寞|孤独|陪|想你|主人/;
-const SELF_REF_RE = /大肥鱼|肥鱼|ai|人工智能|机器人|模型|人格|插件|harness|dsh/;
+const SELF_REF_RE = /ai|人工智能|机器人|模型|人格|插件|harness|dsh/;
 
 /** 0~1 的驱动向量；坏值回默认，不抛。 */
 export function normalizeDrives(input) {
@@ -854,13 +855,14 @@ export function normalizeDrives(input) {
 }
 
 /** 一段文本指向哪些需要（0~1/维）；没有任何命中时至少给 share 一点底。 */
-export function needAffinity(text) {
+export function needAffinity(text, roleName = '', roleAliases = []) {
   const t = String(text ?? '').toLowerCase();
   const out = {};
   let any = 0;
   for (const need of PURPOSE_NEEDS) {
     let hits = 0;
     for (const word of NEED_WORDS[need]) if (t.includes(word)) hits += 1;
+    if (need === 'identity' && [roleName, ...roleAliases].some((name) => name && t.includes(String(name).toLowerCase()))) hits += 1;
     const value = Math.min(1, hits / 2.5);
     out[need] = value;
     if (value > 0) any += 1;
@@ -921,10 +923,10 @@ export function extractTopic(text, title = '') {
   return cleanTopic(clip(raw, 18));
 }
 
-function isSelfReference(text, roleName = '') {
-  const raw = String(text ?? '');
-  if (roleName && raw.includes(roleName)) return true;
-  return SELF_REF_RE.test(raw.toLowerCase());
+function isSelfReference(text, roleName = '', roleAliases = []) {
+  const raw = String(text ?? '').toLowerCase();
+  if ([roleName, ...roleAliases].some((name) => name && raw.includes(String(name).toLowerCase()))) return true;
+  return SELF_REF_RE.test(raw);
 }
 
 function emotionCues(text) {
@@ -937,12 +939,12 @@ function emotionCues(text) {
 }
 
 /** 把素材压成注意力需要的样子：自我相关 / 需求向量 / 主题 / 情绪线索。 */
-function enrichMaterial(item, roleName = '') {
+function enrichMaterial(item, roleName = '', roleAliases = []) {
   const text = `${item?.title ?? ''} ${item?.text ?? ''} ${item?.quote ?? ''}`;
   return {
     ...item,
-    selfRef: isSelfReference(text, roleName),
-    needAffinity: needAffinity(text),
+    selfRef: isSelfReference(text, roleName, roleAliases),
+    needAffinity: needAffinity(text, roleName, roleAliases),
     topic: item?.topic || extractTopic(text, item?.title),
     cues: emotionCues(text),
   };
@@ -1067,7 +1069,7 @@ function subjectOf(material) {
 
 function analyzeEvent(material, { drives = DEFAULT_DRIVES, persistence = 1, roleName = '' } = {}) {
   const text = `${material?.title ?? ''} ${material?.text ?? ''} ${material?.quote ?? ''}`;
-  const affinity = material?.needAffinity ?? needAffinity(text);
+  const affinity = material?.needAffinity ?? needAffinity(text, roleName);
   const domain = topNeedOf(affinity, drives);
   const subject = subjectOf(material);
   const addressed = Boolean(roleName && String(material?.text ?? '').includes(roleName));
@@ -1709,7 +1711,7 @@ export function minePurposeSeeds({
   const add = (kind, text, material, weight = 1, extra = {}) => {
     const clean = clip(text, 120);
     if (!clean || clean.length < 4) return;
-    const aff = material?.needAffinity ?? needAffinity(textOf(material));
+    const aff = material?.needAffinity ?? needAffinity(textOf(material), roleName);
     const need = extra.need || topNeedOf(aff, query);
     const emotion = extra.emotion || appraiseMaterial({ material, need, now, lastMasterAt });
     seeds.push({
@@ -1751,7 +1753,7 @@ export function minePurposeSeeds({
       const title = m.title ? `《${m.title}》` : '';
       if (DESIRE_RE.test(`${text} ${m.title ?? ''}`)) {
         add('ask', `你在B站看到${title || '一个东西'}，有点想试试，想跟主人提一句`, m, 1.2, {
-          need: topNeedOf(m.needAffinity || needAffinity(text), query), action: 'ask',
+          need: topNeedOf(m.needAffinity || needAffinity(text, roleName), query), action: 'ask',
         });
       } else if (m.meta?.favorite || Number(m.meta?.score) >= 12 || (m.quote && m.quote.length >= 12)) {
         add('share', `想跟主人说说你在B站看的${title || '那条视频'}`, m, 1.0, {
@@ -1777,7 +1779,7 @@ export function minePurposeSeeds({
     } else if (m.kind === 'thought') {
       const kind = m.meta?.motivation === 'curiosity' ? 'curiosity' : 'share';
       add(kind, `你心里还惦记着「${clip(m.text, 36)}」`, m, 1.5, {
-        need: topNeedOf(m.needAffinity || needAffinity(text), query),
+        need: topNeedOf(m.needAffinity || needAffinity(text, roleName), query),
         action: kind === 'curiosity' ? 'curiosity' : 'share',
       });
     } else if (m.kind === 'member') {

@@ -12,6 +12,7 @@
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { cleanOutboundText } from '../chat/reply.js'
 import { followUpHint } from '../features/memory.js'
+import { selfName, selfNames } from '../persona/personas.js'
 import {
   DEFAULT_PURPOSE_CONFIG, PURPOSE_NEEDS, NEED_LABELS,
   normalizePurposeConfig, createPurposeState, normalizePurposeState,
@@ -23,8 +24,6 @@ import {
 } from './engine.js'
 
 const MINUTE = 60_000
-// 她的自称：用于聊天流水标注与「名字：」前缀清洗（与 Aurabot 的桌宠形象同名）。
-const ROLE = '大肥鱼'
 // mood 模块靠 userText 的「【系统提醒」前缀把主动回合判成 origin='speak-up'（mood/index.js 的判定），
 // deliver 路径本身没有 userText，这里补一个同款前缀，保住心情判定链路。
 const MOOD_PREFIX = '【系统提醒，不是主人说的话】（她主动找你）'
@@ -68,13 +67,17 @@ export function purposeConfig(cfg = {}) {
   })
 }
 
-/** 模型回包清洗：去掉备忘段、引号、「大肥鱼：」前缀；空/沉默返回 ''。 */
-export function cleanReply(raw, options) {
+/** 模型回包清洗：去掉备忘段、引号、自称前缀；空/沉默返回 ''。 */
+export function cleanReply(raw, options, cfg) {
   let s = String(raw ?? '')
   const cut = /(^|\n)\s*(?:[【\[]\s*(?:目的|需求|情绪|类型|状态|待续)\s*[】\]]|[【\[]?\s*内部备忘)/.exec(s)
   if (cut) s = s.slice(0, cut.index) // 内部备忘不发到 QQ
   s = s.replace(/^[「“"'']+/, '').replace(/[」”"'']+$/, '')
-  s = s.replace(new RegExp(`^${ROLE}\\s*[:：]\\s*`), '')
+  for (const name of selfNames(cfg)) {
+    if (s.slice(0, name.length).toLowerCase() !== name.toLowerCase()) continue
+    const tail = s.slice(name.length)
+    if (/^\s*[:：]/.test(tail)) { s = tail.replace(/^\s*[:：]\s*/, ''); break }
+  }
   s = cleanOutboundText(s, options).trim()
   if (!s || s.replace(/\s/g, '').startsWith(SILENCE)) return ''
   return s
@@ -150,7 +153,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
             time: Number(e.t) || 0,
             isSelf: e.who === 'bot',
             isOwner: e.chatId === ownerKey && e.who !== 'bot',
-            sender: e.who === 'bot' ? ROLE : String(e.uid || '群友'),
+            sender: e.who === 'bot' ? selfName(cfg) : String(e.uid || '群友'),
           })
         }
       }
@@ -170,7 +173,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const materials = collectMaterials({
       now, config,
       ownerUin: friend || cfg.ownerQQ,
-      roleName: ROLE,
+      roleName: selfName(cfg),
+      roleAliases: selfNames(cfg),
       conversations: conversations(cfg, now, friend),
       biliEntries: [], // 首期不接 B站/Qzone 素材，字段留扩展
       memoryRecords: memoryRecords(friend),
@@ -185,10 +189,10 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const { goals, observations } = formGoalHypotheses({
       // 跟进的排程和次数只属于事实，不再生成另一份目标或观察账本。
       materials: materials.items.filter((m) => m.kind !== 'memory-follow-up'), goals: state.goals, observations: state.observations,
-      drives, now, lastMasterAt, config, roleName: ROLE, persona,
+      drives, now, lastMasterAt, config, roleName: selfName(cfg), persona,
     })
     const seeds = minePurposeSeeds({
-      materials: materials.items, now, roleName: ROLE, config,
+      materials: materials.items, now, roleName: selfName(cfg), config,
       drives, history: state.history, lastMasterAt,
     })
     return { materials, persona, lastMasterAt, drives, goals, observations, seeds, followUp }
@@ -214,7 +218,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       drives: ctx.drives,
     }) + `\n6) 这一轮不能用任何工具：直接输出你要发的那句话即可（会自动转发给${name}）。不想说就整段只输出 ${SILENCE}。`
     const body = friend ? prompt.replaceAll('主人', name) : prompt // 朋友不是她的主人
-    return [body, selected?.kind === 'memory-follow-up' ? followUpHint(ctx.followUp) : ''].filter(Boolean).join('\n')
+    return [`你是「${selfName(cfg)}」。`, body, selected?.kind === 'memory-follow-up' ? followUpHint(ctx.followUp) : ''].filter(Boolean).join('\n')
   }
 
   // ---------- 载体分发（互斥铁律：一轮只发一处，永不双发） ----------
@@ -316,7 +320,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       log.warn?.('目的：生成出错：', error?.message)
     }
     const memo = parsePurposeMemo(raw)
-    const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
+    const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) }, getConfig())
     let outcome
     if (!text) {
       outcome = genError ? 'failed' : 'silent' // 模型有权跳过（【状态】跳过 / [沉默]），silent 不硬发
@@ -380,7 +384,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const prompt = `【系统提醒，不是${owner}说的话】你刚才跟${owner}说「${String(lb.text || '').slice(-60)}」，${owner}已经 ${idle} 分钟没回了。可以轻轻追一句（比如「人呢」「睡着啦？」，或者换个话题），别催、别抱怨；觉得${owner}在忙就只回 ${SILENCE}。这一轮不能用工具，直接输出那句话。`
     try {
       const raw = await hub.runSystemTurn('purpose-nudge', 'QQ · 主动搭话（追问）', prompt, { timeoutMs: 120000, noTools: true })
-      const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) })
+      const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) }, getConfig())
       if (text) await hub.deliver(chatIdOf(cfg), text, { userText: MOOD_PREFIX }) // 不带 own:true，同上：hub 桥接进下次对话
     } catch (error) {
       log.warn?.('目的：追问出错：', error?.message)

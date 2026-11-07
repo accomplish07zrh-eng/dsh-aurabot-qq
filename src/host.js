@@ -91,7 +91,7 @@ export function apply(ctx) {
       if (onebotState === 'connected') onebot.restart()
     }
     secrets()
-    if (bridge && before.bridge.dshTools !== cfg.bridge.dshTools) bridge.refresh()
+    if (bridge && (before.bridge.dshTools !== cfg.bridge.dshTools || before.persona.current !== cfg.persona.current)) bridge.refresh()
     if (mods && (JSON.stringify(before.modules) !== JSON.stringify(cfg.modules) || before.safeMode !== cfg.safeMode)) mods.sync().catch(() => {})
     mods?.emit('config', cfg, before)
     if (JSON.stringify(before.backup?.remote) !== JSON.stringify(cfg.backup?.remote)) scheduleRemoteBackup()
@@ -1512,6 +1512,7 @@ export function apply(ctx) {
   route('/persona/save', async (req) => {
     const b = await readBody(req)
     const p = savePersona(b.id, b)
+    bridge.refresh()
     return { ok: true, persona: p, message: '人格已保存，下一轮起生效' }
   })
   route('/persona/delete', async (req) => {
