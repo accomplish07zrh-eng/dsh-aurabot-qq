@@ -36,6 +36,7 @@ import { noticeText } from './notices.js'
 import { createConversationArchive, packEvidence } from './conversation-context.js'
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
 import { currentTimeLine } from './time-context.js'
+import { SESSION_BACKOFF, isSessionBackoff } from './session-backoff.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
 // 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
@@ -114,7 +115,10 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   const turnState = new Map() // sessionKey → { lastTurn, text, images, senders:Set, system?: {resolve, reject, timedOutAt} }
   const systemTurns = new Map() // chatId → 当前后台轮次，权限档位变化时也不能绕过它
   const systemStarting = new Set() // 建会话和恢复期间，同一个聊天只能有一个调用
-  const systemFailures = new Map() // chatId → { count, until }
+  const systemFailures = new Map() // 已启动轮次的失败 / 超时恢复；建会话失败发生在它之前
+  const sessionFailures = new Map() // chatId → 工作区挂载失败退避，QQ 和后台共用
+  const sessionCreating = new Map() // chatId → 正在创建的 Promise，防 QQ 并发绕过退避
+  const SESSION_BACKOFF_MS = [1, 5, 15, 30, 60].map((minutes) => minutes * 60_000)
   const SYSTEM_STUCK_GRACE_MS = 5 * 60_000
   const SYSTEM_BACKOFF = [2, 5, 15, 30, 60, 120].map((minutes) => minutes * 60_000)
   const groupBuf = new Map() // groupId → [{t, uid, nick, text, at, replyId, quote}]
@@ -469,11 +473,95 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     return wanted && cfg.ext?.autotelic?.presetIdOverride ? wanted : presetFor(level, cfg)
   }
 
+  const systemChatId = (name, scope = '') => {
+    const suffix = String(scope || '').trim().replace(/[^\w:-]/g, '').slice(0, 32)
+    return suffix ? `system:${name}:${suffix}` : `system:${name}`
+  }
+
+  function sessionFailure(chatId) {
+    const failure = sessionFailures.get(chatId)
+    // 主人换了工作区后立即允许尝试，不把旧工作区的故障带过去。
+    if (failure && failure.workspacePath !== workspaceDirOf(getConfig())) {
+      sessionFailures.delete(chatId)
+      return null
+    }
+    return failure
+  }
+
+  function backoffError(chatId, failure, cause) {
+    return Object.assign(new Error(`${chatId}：会话冷却中，${Math.ceil(Math.max(0, failure.until - Date.now()) / 60_000)} 分钟后再试${failure.message ? `；${failure.message}` : ''}`, cause ? { cause } : undefined), {
+      code: SESSION_BACKOFF, chatId, retryAt: failure.until,
+    })
+  }
+
+  function systemSessionCooldown(name, { key = '' } = {}) {
+    const chatId = systemChatId(name, key)
+    const failure = [sessionFailure(chatId), systemFailures.get(chatId)].find((item) => item && Date.now() < item.until)
+    return failure ? { ...failure, chatId, retryAt: failure.until } : null
+  }
+
+  /** 只处理 create 明确报告的新建孤儿；不能拿恢复失败或普通错误里的 id 去删会话。 */
+  async function cleanOrphan(error, ws, c) {
+    const match = String(error?.message || '').match(/session ["']([^"']+)["'] was created but could not attach to workspace ["']([^"']+)["']/i)
+    const details = error?.data || error?.details
+    const sid = match?.[1] || (error?.code === 'session/workspace-attach-failed' ? details?.sessionId : '')
+    const workspaceId = match?.[2] || details?.workspaceId
+    const reg = dsh.workspaceRegistry || dsh.get('workspaceRegistry')
+    const attached = sid && (reg?.list?.() || []).some((workspace) => (workspace.sessionIds || []).some((id) => sessionKey(id) === sessionKey(sid)))
+    if (!sid || workspaceId !== ws.id || attached || Object.values(map().chats).some((entry) => sessionKey(entry.sessionId) === sessionKey(sid)) || sessionToChat.has(sessionKey(sid))) {
+      log.debug?.('新会话挂载失败：无法确认孤儿会话身份，未清理')
+      return
+    }
+    // 当前 DSH 的 SessionController 没有删除 / 关闭入口；兼容提供这些入口的宿主。
+    // 和 create / rename 一样使用 { sessionId } 请求，绝不直接删宿主文件或拿 cancel 冒充删除。
+    const cleanup = typeof c.delete === 'function' ? c.delete : typeof c.close === 'function' ? c.close : null
+    if (!cleanup) {
+      log.debug?.(`孤儿会话 ${sid} 无法清理：宿主 sessionController 没有删除或关闭接口`)
+      return
+    }
+    try {
+      const result = await cleanup.call(c, { sessionId: sid })
+      if (result === false || result?.ok === false) throw new Error(result?.message || '宿主拒绝清理')
+      log.debug?.(`已清理未挂上工作区的孤儿会话 ${sid}`)
+    } catch (cleanupError) {
+      log.debug?.(`孤儿会话 ${sid} 清理失败：${cleanupError.message}`)
+    }
+  }
+
   async function createSession(chat, level) {
+    const failure = sessionFailure(chat.chatId)
+    if (failure && Date.now() < failure.until) throw backoffError(chat.chatId, failure)
+    if (sessionCreating.has(chat.chatId)) return sessionCreating.get(chat.chatId)
+    const task = Promise.resolve().then(() => createSessionNow(chat, level))
+    sessionCreating.set(chat.chatId, task)
+    try { return await task } finally { if (sessionCreating.get(chat.chatId) === task) sessionCreating.delete(chat.chatId) }
+  }
+
+  async function createSessionNow(chat, level) {
+    const workspacePath = workspaceDirOf(getConfig())
     const ws = await ensureWorkspace()
     assertActive()
     const preset = presetForChat(chat, level)
-    const r = await controller().create({ workspaceId: ws.id, agentPreset: preset })
+    const c = controller()
+    let r
+    try {
+      r = await c.create({ workspaceId: ws.id, agentPreset: preset })
+    } catch (error) {
+      if (disposed || !(error?.code === 'session/workspace-attach-failed' || /could not attach to workspace/i.test(String(error?.message || '')))) throw error
+      const previous = sessionFailure(chat.chatId)
+      const count = (previous?.count || 0) + 1
+      const tier = Math.min(count - 1, chat.kind === 'system' ? SESSION_BACKOFF_MS.length - 1 : 1)
+      const delay = SESSION_BACKOFF_MS[tier]
+      const message = `DSH 无法把新会话挂到工作区 ${workspacePath}，可在 DSH 里检查该工作区或删掉重建`
+      const failure = { count, tier, until: Date.now() + delay, workspacePath, message, error: String(error?.message || error) }
+      sessionFailures.set(chat.chatId, failure)
+      if (!previous || tier > previous.tier) log.warn(`${chat.chatId}：${message}；${delay / 60_000} 分钟后再试${chat.kind === 'system' ? '' : '；QQ 消息已保留，下次消息到来时重试'}`)
+      try { await cleanOrphan(error, ws, c) } catch (cleanupError) {
+        log.debug?.(`检查孤儿会话失败，未清理：${cleanupError.message}`)
+      }
+      assertActive()
+      throw backoffError(chat.chatId, failure, error)
+    }
     assertActive()
     const sid = String(r.sessionId)
     try {
@@ -501,6 +589,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
 
   /** 拿到这个 QQ 会话对应的活 agent（没有就建，权限档位变了就换新会话）。 */
   async function agentFor(chat) {
+    const failure = sessionFailure(chat.chatId)
+    if (failure && Date.now() < failure.until) throw backoffError(chat.chatId, failure)
     const cfg = getConfig()
     const level = chat.kind === 'system' ? (chat.noTools ? 'chat' : 'social') : levelFor(cfg, chat)
     // 复用键是 entry.preset（resolved 后的值）：presetId 变了 preset 就变，自然触发一次重建（预期行为）
@@ -558,6 +648,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     sessionToChat.set(sessionKey(sid), chat.chatId)
     mount(agent, chat, level)
+    sessionFailures.delete(chat.chatId)
     return { agent, sessionId: sid, level }
   }
 
@@ -1929,7 +2020,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
   }
 
   /** 群聊这一段的提示词：之前的几句当背景，上次交给她之后群里新说的话全部列出来，让她看完整段再回。 */
-  async function groupPrompt(chat, mode, imageRoom = 0) {
+  async function groupPrompt(chat, mode, imageRoom = 0, refOffset = 0) {
     const name = await groupName(chat.groupId)
     const buf = groupBuf.get(chat.groupId) || []
     // 时间戳可能同一毫秒：直接取上一轮之后的消息，避免紧接着到达的消息丢失。
@@ -1949,8 +2040,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     // 新消息带编号，她想专门回某一条时可以引用；编号 → QQ 消息 ID 记下来，发的时候换成引用
     const refs = {}
     const numbered = fresh.map((x, i) => {
-      if (x.mid && x.mid !== '0') refs[i + 1] = { mid: x.mid, uid: x.uid, direct: Boolean(x.direct) }
-      return `[${i + 1}] ${line(x)}`
+      if (x.mid && x.mid !== '0') refs[i + 1 + refOffset] = { mid: x.mid, uid: x.uid, direct: Boolean(x.direct) }
+      return `[${i + 1 + refOffset}] ${line(x)}`
     })
     groupRefs.set(chat.groupId, refs)
     const query = fresh.map((x) => x.text).filter(Boolean).join('\n')
@@ -1990,7 +2081,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     }
     const archiveMessages = fresh.filter(x => x.text).map(x => ({ role: 'user', text: x.text,
       speakerId: String(x.uid || ''), at: x.t, id: x.mid && x.mid !== '0' ? 'qq:' + chat.groupId + ':' + x.mid : randomUUID() }))
-    return { text: text + mediaNote, query, speakers, autoReply: pickAutoReply(fresh), images: [...quotedImages, ...extraImages], archiveMessages }
+    return { text: text + mediaNote, query, speakers, autoReply: pickAutoReply(fresh), images: [...quotedImages, ...extraImages], archiveMessages, freshCount: fresh.length }
   }
 
   // ---------- 连发合并：人常常一口气发好几句，等对方说完再一起交给她，别一句一回 ----------
@@ -2027,6 +2118,32 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     p.timer.unref?.()
   }
 
+  function retainSessionMessages(chatId, p, content) {
+    // 不设重试定时器：等下一条 QQ 消息来时重试；尚未交给 agent 的原文和图片都保留。
+    if (p.chat.kind === 'group') {
+      p.retryContent = content
+      p.retryArchiveMessages = p.archiveMessages
+      p.retryQuery = p.query
+      p.retrySpeakers = p.speakers
+      p.retryRefs = groupRefs.get(p.chat.groupId) || {}
+      p.images = [] // 已在 retryContent 里，下次只追加新来的图片
+    }
+    const next = pending.get(chatId)
+    if (next) {
+      clearTimeout(next.timer)
+      p.texts.push(...next.texts)
+      p.images = [...p.images, ...next.images].slice(0, MAX_MESSAGE_IMAGES)
+      for (const sender of next.senders) p.senders.add(sender)
+      p.count += next.count
+      p.wantVoice ||= next.wantVoice
+      p.stickerPick = (p.stickerPick || 0) + (next.stickerPick || 0)
+      if ((RANK[next.mode] || 3) > (RANK[p.mode] || 3)) p.mode = next.mode
+    }
+    p.waiting = false
+    p.timer = null
+    pending.set(chatId, p)
+  }
+
   async function flush(chatId) {
     if (disposed) return
     const p = pending.get(chatId)
@@ -2044,6 +2161,7 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       try {
         await pushToSession(p.chat, content, first, { wantVoice: p.wantVoice, extraSenders: rest, queryText: query, steer: true })
       } catch (error) {
+        if (isSessionBackoff(error)) { retainSessionMessages(chatId, p, content); return }
         bump('errors')
         log.error(`插话进 DSH 失败（${chatId}）：`, error.message)
       }
@@ -2065,14 +2183,20 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
         arr.push(Date.now())
         groupInterjects.set(gid, arr)
       }
-      const gp = await groupPrompt(p.chat, p.mode, Math.max(0, 4 - p.images.length))
+      const refOffset = Math.max(0, ...Object.keys(p.retryRefs || {}).map(Number))
+      const gp = await groupPrompt(p.chat, p.mode, Math.max(0, 4 - p.images.length), refOffset)
       if (disposed) return
       if (gp.speakers.length) lastSpeaker.set(chatId, [...p.senders].pop() || gp.speakers.at(-1))
-      content = [{ type: 'text', text: gp.text + hint }, ...p.images, ...(gp.images || [])]
-      p.query = gp.query
-      p.speakers = gp.speakers
+      const freshContent = [{ type: 'text', text: gp.text + hint }, ...p.images, ...(gp.images || [])]
+      // groupPrompt 会把消息标为已喂给她；失败重试时仍要带上上次的内容和图片。
+      // 编号也一起保留，新消息接着编号，避免旧消息的引用误指到新消息。
+      if (p.retryRefs) groupRefs.set(p.chat.groupId, { ...p.retryRefs, ...groupRefs.get(p.chat.groupId) })
+      const retainedIds = new Set((p.retryArchiveMessages || []).map((message) => message.id))
+      content = p.retryContent ? [...p.retryContent, ...(gp.freshCount ? freshContent : [])] : freshContent
+      p.query = [p.retryQuery, gp.query].filter(Boolean).join('\n')
+      p.speakers = [...new Set([...(p.retrySpeakers || []), ...gp.speakers])]
       p.autoReply = gp.autoReply
-      p.archiveMessages = gp.archiveMessages
+      p.archiveMessages = [...(p.retryArchiveMessages || []), ...gp.archiveMessages.filter((message) => !retainedIds.has(message.id))]
     } else {
       content = [{ type: 'text', text: p.texts.join('\n') + hint }, ...p.images]
     }
@@ -2083,6 +2207,12 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
       const query = p.query ?? p.texts.map((t) => t.replace(/^【私聊】[^：]*：/, '')).join('\n')
       await pushToSession(p.chat, content, first, { wantVoice: p.wantVoice, extraSenders: rest, queryText: query, speakers: p.speakers, autoReply: p.autoReply, archiveMessages: p.archiveMessages })
     } catch (error) {
+      if (isSessionBackoff(error)) {
+        retainSessionMessages(chatId, p, content)
+        busy.delete(chatId)
+        running.delete(chatId)
+        return
+      }
       release(chatId)
       bump('errors')
       log.error(`转进 DSH 失败（${chatId}）：`, error.message)
@@ -2366,10 +2496,9 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
    *  presetId：可选，后台会话点名用哪个 preset（如 aurabot-autotelic）。默认空字符串行为完全不变；
    *  是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。 */
   async function runSystemTurn(name, title, prompt, { timeoutMs = 180000, noTools = false, key: scope = '', presetId = '' } = {}) {
-    const suffix = String(scope || '').trim().replace(/[^\w:-]/g, '').slice(0, 32)
     // presetId（P0.4）：后台会话点名用哪个 preset（如 aurabot-autotelic）。默认 undefined 行为完全不变；
     // 是否真生效由 presetForChat 决定（noTools 压过它 + 主人的 ext.autotelic.presetIdOverride 开关）。
-    const chat = { chatId: suffix ? `system:${name}:${suffix}` : `system:${name}`, kind: 'system', title, noTools: !!noTools, presetId: String(presetId || '') }
+    const chat = { chatId: systemChatId(name, scope), kind: 'system', title, noTools: !!noTools, presetId: String(presetId || '') }
     assertActive()
     if (systemStarting.has(chat.chatId)) throw new Error('这个后台会话的上一轮还没结束')
     systemStarting.add(chat.chatId)
@@ -2377,8 +2506,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     try {
       const current = systemTurns.get(chat.chatId)
       if (current?.st.system && current.st.system.timedOutAt == null) throw new Error('这个后台会话的上一轮还没结束')
-      const failure = systemFailures.get(chat.chatId)
-      if (failure && Date.now() < failure.until) throw new Error(`后台会话冷却中，${Math.ceil((failure.until - Date.now()) / 60_000)} 分钟后再试`)
+      const failure = systemSessionCooldown(name, { key: scope })
+      if (failure) throw backoffError(chat.chatId, failure)
       if (current?.st.system && Date.now() - current.st.system.timedOutAt < SYSTEM_STUCK_GRACE_MS) throw new Error('这个后台会话的上一轮还没结束')
       if (current?.needsRecovery || current?.st.system) {
         try { await recoverSystemTurn(chat.chatId, current) } catch (error) {
@@ -2684,6 +2813,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     systemTurns.clear()
     systemStarting.clear()
     systemFailures.clear()
+    sessionFailures.clear()
+    sessionCreating.clear()
     privateSources.clear()
     quoteCache.clear()
     busy.clear()
@@ -2723,6 +2854,8 @@ export function createHub({ dsh, getConfig, log, onebot, outbox, stickers, tts, 
     pushToSession,
     titleFilter,
     runSystemTurn,
+    systemSessionCooldown,
+    sessionHealth: () => [...sessionFailures.keys()].map((chatId) => ({ chatId, ...sessionFailure(chatId) })).filter((row) => row.message),
     runSubagentTurn,
     subagentFor,
     turnSendersAllOwner,

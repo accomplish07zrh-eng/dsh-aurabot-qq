@@ -11,6 +11,7 @@
 
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { cleanOutboundText } from '../chat/reply.js'
+import { isSessionBackoff } from '../chat/session-backoff.js'
 import { followUpHint } from '../features/memory.js'
 import { selfName, selfNames } from '../persona/personas.js'
 import {
@@ -272,6 +273,8 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
 
   // ---------- 生成 + 投递 + 回执（hub.deliver 内部吞错，成功判定看返回值） ----------
   async function runOnce({ reason = '定时', config, state, force = false, friend = '' } = {}) {
+    const cooldown = hub.systemSessionCooldown?.('purpose', { key: friend })
+    if (cooldown) return { outcome: 'skipped-cooldown', retryAt: cooldown.retryAt }
     const cfg = getConfig()
     const now = Date.now()
     ensurePurposeDay(state, now)
@@ -307,6 +310,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
 
     const prompt = promptFor(cfg, config, picked.purpose, { ...ctx, candidates: picked.candidates }, state, now, friend)
     // 投递即占今日次数（模型回合已经花钱了）；引擎随后按真结局结算
+    const beforeAttempt = { ...state }
     markPurposeDelivered(state, { now, planned: picked.purpose })
     saveState(state, friend)
 
@@ -316,6 +320,12 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       log.info?.(`目的（${reason}）：${picked.purpose.text}`)
       raw = await hub.runSystemTurn('purpose', 'QQ · 主动搭话（目的回合）', prompt, { timeoutMs: 180000, noTools: true, key: friend })
     } catch (error) {
+      if (isSessionBackoff(error)) {
+        // 查询与真正调用之间也可能进入冷却；这一轮没启动，不占次数或失败账。
+        Object.assign(state, beforeAttempt)
+        saveState(state, friend)
+        return { outcome: 'skipped-cooldown', retryAt: error.retryAt }
+      }
       genError = error
       log.warn?.('目的：生成出错：', error?.message)
     }
@@ -377,6 +387,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     if (flag.nudgedFor === lb.at) return false
     if (!/[？?]|吗|呢|嘛|没$/.test(String(lb.text || '').trim())) return false
     if (!(quietMs > 15 * MINUTE && quietMs < 40 * MINUTE)) return false
+    if (hub.systemSessionCooldown?.('purpose-nudge')) return false
     writeJson(nudgeFile(), { nudgedFor: lb.at }) // 引擎状态文件会被 normalize 洗字段，追问标记单独存
     if (Math.random() >= 0.5) return true
     const idle = Math.round(quietMs / MINUTE)
@@ -387,6 +398,10 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
       const text = cleanReply(raw, { warn: (message) => log.warn?.(`目的：${message}`) }, getConfig())
       if (text) await hub.deliver(chatIdOf(cfg), text, { userText: MOOD_PREFIX }) // 不带 own:true，同上：hub 桥接进下次对话
     } catch (error) {
+      if (isSessionBackoff(error)) {
+        writeJson(nudgeFile(), flag)
+        return false
+      }
       log.warn?.('目的：追问出错：', error?.message)
     }
     return true
@@ -398,6 +413,7 @@ export function createPurpose({ getConfig, setConfig, hub, log, isMuted, mood, m
     const now = Date.now()
     const state = loadState(config, now, friend)
     if (!friend && await maybeNudge(cfg, state, now)) return true
+    if (hub.systemSessionCooldown?.('purpose', { key: friend })) return false
     const env = {
       enabled: true, modeOk: true, dshReady: true, paused: false, ownerAllowed: true,
       busy: false, friendOk: true, budgetBlocked: false, // Aurabot 无 token 预算/好友探测服务，恒可用（留 env 位）

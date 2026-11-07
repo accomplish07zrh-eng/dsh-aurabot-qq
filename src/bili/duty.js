@@ -4,6 +4,7 @@
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { createBiliApi, findVideoId, parseCookie } from './api.js'
 import { loginSessionKey, recoverLoginPause } from './login-pause.js'
+import { isSessionBackoff } from '../chat/session-backoff.js'
 import { lookWithVision, visionState } from './vision.js'
 import { createShotStore, shotPath, clockOf } from './shots.js'
 
@@ -98,6 +99,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       const arr = pickJson(out, []).map((k) => String(k).trim()).filter(Boolean)
       if (arr.length) return arr.slice(0, 3)
     } catch (error) {
+      if (isSessionBackoff(error)) throw error
       log.debug('挑关键词失败：', error.message)
     }
     return interests.sort(() => Math.random() - 0.5).slice(0, 3)
@@ -197,6 +199,8 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
     const c = cfg()
     if (busy) return { ok: false, message: '正在刷' }
     if (!c.enabled && !force) return { ok: false, message: 'B 站没打开' }
+    const cooldown = hub.systemSessionCooldown?.('bili')
+    if (cooldown) return { ok: false, skipped: true, retryAt: cooldown.retryAt, message: '后台会话冷却中' }
     busy = true
     const s = today(load())
     try {
@@ -293,6 +297,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       log.info(`刷了一轮 B 站：看了 ${looked.length} 个，评论 ${commented} 条，分享 ${shared} 个，截图 ${shotSent} 张`)
       return { ok: true, message: `看了 ${looked.length} 个视频，评论 ${commented} 条，分享给你 ${shared} 个${shotSent ? '，还发了张截图' : ''}`, watched: looked.length, commented, shared, shots: shotSent }
     } catch (error) {
+      if (isSessionBackoff(error)) return { ok: false, skipped: true, retryAt: error.retryAt, message: error.message }
       log.warn('刷 B 站出错：', error.message)
       return { ok: false, message: error.message }
     } finally {
@@ -305,6 +310,8 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
   async function checkReplies() {
     const c = cfg()
     if (!c.reply) return { ok: false, message: '回复没打开' }
+    const cooldown = hub.systemSessionCooldown?.('bili')
+    if (cooldown) return { ok: false, skipped: true, retryAt: cooldown.retryAt, message: '后台会话冷却中' }
     const s = today(load())
     s.lastReplyCheck = Date.now()
     let n = 0
@@ -339,6 +346,7 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
       s.repliedFeed = [...done].slice(-300)
       return { ok: true, message: `回了 ${n} 条`, replied: n }
     } catch (error) {
+      if (isSessionBackoff(error)) return { ok: false, skipped: true, retryAt: error.retryAt, message: error.message }
       return { ok: false, message: error.message }
     } finally {
       save(s)
@@ -422,12 +430,12 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi
   async function tick() {
     const g = getConfig()
     const c = g.bili
-    if (!g.enabled || !c.enabled) return
+    if (!g.enabled || !c.enabled || hub.systemSessionCooldown?.('bili')) return
     const h = new Date().getHours()
     if (h < g.speakUp.awakeFrom || h >= g.speakUp.awakeTo) return
     const s = today(load())
     if (c.reply && Date.now() - (s.lastReplyCheck || 0) > 20 * 60_000 && (await account()).isLogin) await checkReplies()
-    if (c.autoBrowse && s.runs < c.maxRunsPerDay && Date.now() - (s.lastRun || 0) > c.intervalHours * 3600_000) await run()
+    if (!hub.systemSessionCooldown?.('bili') && c.autoBrowse && s.runs < c.maxRunsPerDay && Date.now() - (s.lastRun || 0) > c.intervalHours * 3600_000) await run()
   }
 
   return {
