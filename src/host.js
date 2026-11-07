@@ -1019,6 +1019,22 @@ export function apply(ctx) {
     if (Number.isFinite(b.petScale)) patch.petScale = Math.min(2, Math.max(0.5, Math.round(b.petScale * 20) / 20))
     // 松手后落地：布尔透传（模块侧缺省当开，别让老面板把抛掷关没）
     if (typeof b.petReleaseLand === 'boolean') patch.petReleaseLand = b.petReleaseLand
+    // ---------- 物理三参数 + 余额开关 + 抓鼠标两开关（pet 1.0.14 起在模块库） ----------
+    // 【教训 · 三处必须同步】模块 settings 里新增一个键 → 必须同时补
+    //   ① 本白名单（否则保存被「没有可保存的字段」挡回）
+    //   ② client/client.js 里的控件（面板是硬编码 React，不会按 settings 渲染）
+    //   ③ 模块自己的 defaults/settings 声明
+    // 三处缺一即「假控件」：面板上看得见、点了存不进去，而且因为写不进 ext.pet，
+    // 8 秒轮询还会把刚拖好的值弹回原处。桌宠是内置模块，它的 settings 同样不渲染成表单。
+    // 取值口径与模块那边一致：坏值/非有限值一律忽略（不写进 patch，保持原值），
+    // 越界按模块 settings 的 min/max 夹边界；步进与取整的整形在前端做（面板已 round）。
+    if (Number.isFinite(b.petGravity)) patch.petGravity = Math.min(4000, Math.max(200, b.petGravity))
+    if (Number.isFinite(b.petRestitution)) patch.petRestitution = Math.min(0.95, Math.max(0.3, b.petRestitution))
+    if (Number.isFinite(b.petAnimRate)) patch.petAnimRate = Math.min(2, Math.max(0.5, b.petAnimRate))
+    // 三个开关：布尔直接透传（余额默认开 = 模块侧 `!== false`；抓鼠标默认关 = `=== true`）
+    for (const k of ['petShowBalance', 'petClickChase', 'petTeaseChase']) {
+      if (typeof b[k] === 'boolean') patch[k] = b[k]
+    }
     // 对话框（pet 1.0.5 起在模块库，模块自己的 settings 同样不渲染成表单；这里仍是唯一写入通道）
     for (const k of ['petChatEnabled', 'petChatBlurHide']) {
       if (typeof b[k] === 'boolean') patch[k] = b[k]
