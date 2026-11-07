@@ -196,6 +196,12 @@ export async function askModel (dsh, o) {
     system: cleanText(o.system || ''),
     messages,
     maxTokens: o.maxTokens || 600,
+    // 后台调用没有聊天会话，得自己带一个会话标识：opencode 那条路由要求请求头
+    // x-opencode-session（DSH 的 opencode-headers.js 从 options.sessionId 取），
+    // 不带就整轮 400 MissingSessionID —— 表现是「更新短期状态 / 补写人物小档案 /
+    // 空闲提炼」每分钟失败一次，聊天不受影响（聊天走的是真会话）。
+    // 固定值即可：它只用来让上游把同一来源的请求归到一条路由上。
+    sessionId: o.sessionId || 'aurabot-background',
   }
   let temperature = o.temperature ?? 0.3
   let effort = await pickReasoningEffort(dsh, t.provider, t.model, o.reasoningEffort === undefined ? 'low' : o.reasoningEffort)

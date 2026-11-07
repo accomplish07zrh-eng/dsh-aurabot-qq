@@ -4527,7 +4527,10 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       useEffect(() => {
         let alive = true
         fetch(API + '/modules/panel?id=' + encodeURIComponent(m.id) + '&t=' + Date.now(), { cache: 'no-store' }).then((r) => (r.ok ? r.text() : Promise.reject(new Error('读不到 panel.js')))).then((src) => {
-          const call = (p, body) => (body === undefined ? get('/ext/' + m.id + p) : post('/ext/' + m.id + p, body))
+          // 接口挂载位置跟服务端一致：内置模块（以及从内置搬出去的）接口在根路径，别的模块在自己 /ext/<id>/ 下。
+          // 按老写法一律拼 /ext/<id>，内置模块面板里的 call('/x') 会去请求 /ext/<id>/x，直接 404。
+          const base = m.routesAtRoot ? '' : '/ext/' + m.id
+          const call = (p, body) => (body === undefined ? get(base + p) : post(base + p, body))
           const ui = { Card, Btn, Switch, Row, Empty, Select, Seg, Range }
           const C = new Function('React', 'h', 'ui', 'call', src)(React, h, ui, call)
           if (typeof C !== 'function') throw new Error('panel.js 最后要 return 一个组件（函数）')
@@ -5899,7 +5902,16 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,
       // 标签页：内置的按模块在不在跑决定显示；自己写的模块有设置或面板的各占一页
       const mods = st.modules || []
       const running = (id) => { const m = mods.find((x) => x.id === id); return Boolean(m && m.running) }
-      const hasUi = (m) => m.running === 'user' && !m.builtin && !TABS.some((t) => t.id === m.id) && ((m.settings || []).length || m.panel)
+      // 哪些模块的界面已经有内置页：标签页自己的 id，或者在 TAB_MODS 里给某个内置页供内容的模块
+      // （memory 的界面就在「心情与记忆」「人物记忆」里，purpose 在「主动搭话」里）。
+      // 这些模块不再单独占一页，免得同一个东西出现两个标签。
+      const hasBuiltinPage = (id) => TABS.some((t) => t.id === id) || Object.values(TAB_MODS).some((ids) => ids.includes(id))
+      // 哪些模块单独占一页：自己写的模块有设置或面板就各占一页；内置模块只在声明了 panel 时单独占一页
+      // （设置照样在内置标签页里改）。为什么允许内置模块带面板：面板只按「有没有声明 panel」判断，
+      // 内置模块自己写了 panel.js 也应该能显示，不然那文件永远没入口。
+      const hasUi = (m) => !hasBuiltinPage(m.id) && (m.running === 'user' && !m.builtin
+        ? Boolean((m.settings || []).length || m.panel)
+        : m.running === 'builtin' && Boolean(m.panel))
       // 写了 tab 的模块嵌进那个内置标签页；没写（或写的页不存在）的单独一页
       // 旧模块的 tab: 'persona' 原本嵌在「人格」，继续放回原页。
       const tabOf = (m) => m.tab === 'persona' ? 'character' : m.tab
